@@ -8,5 +8,7 @@
 6. Bind validation and review to the current exact head SHA.
 7. Treat stale evidence as absent.
 8. Do not ask a person merely to press Merge.
-9. Stop only for a substantive unresolved decision, genuine unavailable permission, or a human-only provider/account action.
-10. `ai-no-merge` always stops merge execution.
+9. Before any stop, audit repository metadata, workflows/jobs, checks/reviews, permissions, idempotency, and alternative connected repair paths.
+10. Routine failures, retry exhaustion, no progress, ambiguity, protected-path denial, and merge state are non-notifying internal stops with no human action.
+11. Human notification is allowed only for the three canonical account/provider UI reason codes defined in `docs/OPERATING_RULES.md`, with exact Issue, Pull Request, SHA, attempted paths, impossibility evidence, one canonical UI action, and automatic-resumption condition.
+12. `ai-no-merge` always stops merge execution.
