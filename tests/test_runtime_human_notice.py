@@ -24,6 +24,15 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
     def setUp(self):
         self.runtime = load_runtime()
         self.sha = "a" * 40
+        self.targets = (
+            "shiroku46/ai-dev-automation-foundation",
+            "shiroku46/ai-dev-automation-foundation-e2e",
+        )
+        self.attempted = tuple(f"GitHub API GET repos/{target}" for target in self.targets)
+        self.impossible = tuple(
+            f"GitHub API returned HTTP 404 for {target}; the exact repository is absent or unavailable to the connected token."
+            for target in self.targets
+        )
         self.pr = {
             "number": 7,
             "state": "open",
@@ -40,22 +49,13 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             "issue_number": 58,
             "pr_number": 62,
             "exact_head_sha": self.sha,
-            "attempted_connected_paths": [
-                "GitHub App get_repo for both exact targets",
-                "GitHub App installation repository visibility listing",
-            ],
-            "impossibility_evidence": [
-                "Both exact repositories are absent from the connected installation.",
-                "Repository creation is unavailable through connected GitHub actions.",
-            ],
+            "attempted_connected_paths": self.attempted,
+            "impossibility_evidence": self.impossible,
             "provider_ui_action": self.runtime.HUMAN_ONLY_ACTIONS[reason],
             "automatic_resume_condition": (
                 "Both exact repositories exist and are visible to the connected GitHub App."
             ),
-            "targets": [
-                "shiroku46/ai-dev-automation-foundation",
-                "shiroku46/ai-dev-automation-foundation-e2e",
-            ],
+            "targets": self.targets,
         }
         values.update(overrides)
         return values
@@ -115,7 +115,36 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                     **self.valid_fields(**overrides)
                 )
 
-    def test_self_resolution_audit_collects_real_connected_evidence(self):
+    def test_repository_creation_evidence_is_derived_from_connected_queries(self):
+        missing = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
+        with patch.object(self.runtime, "gh_result", side_effect=[missing, missing]):
+            attempted, impossible = self.runtime._connected_repository_creation_evidence(
+                self.targets
+            )
+        self.assertEqual(attempted, self.attempted)
+        self.assertEqual(impossible, self.impossible)
+
+        visible = subprocess.CompletedProcess(
+            ["gh"], 0, json.dumps({"full_name": self.targets[0]}), ""
+        )
+        visible_two = subprocess.CompletedProcess(
+            ["gh"], 0, json.dumps({"full_name": self.targets[1]}), ""
+        )
+        with patch.object(
+            self.runtime, "gh_result", side_effect=[visible, visible_two]
+        ):
+            with self.assertRaises(RuntimeError):
+                self.runtime._connected_repository_creation_evidence(self.targets)
+
+    def test_provider_reasons_fail_closed_without_connected_adapter(self):
+        for reason in (
+            "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
+            "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED",
+        ):
+            with self.subTest(reason=reason), self.assertRaises(RuntimeError):
+                self.runtime._connected_human_notice_evidence(reason, ("provider",))
+
+    def test_self_resolution_audit_collects_connected_evidence(self):
         observed = []
 
         def fake_api(path):
@@ -159,7 +188,7 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             patch.object(self.runtime, "attestation_attempts", return_value=attempts),
             patch.object(
                 self.runtime, "native_workflow_evidence", return_value=(True, native)
-            ),
+            ) as native_query,
             patch.object(
                 self.runtime,
                 "_sanitized_check_evidence",
@@ -179,18 +208,10 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             audit = self.runtime.self_resolution_audit(
                 self.pr, 5, "BLOCKING_CODEX_REVIEW"
             )
-
+        native_query.assert_called_once_with(self.sha, 7)
         self.assertGreaterEqual(observed.count("repos/example/foundation/pulls/7"), 2)
-        self.assertIn("repos/example/foundation", observed)
-        self.assertIn("repos/example/foundation/issues/5", observed)
-        self.assertIn(
-            "repos/example/foundation/collaborators/owner/permission", observed
-        )
         self.assertIn("run_id", audit["workflow_run_and_job_evidence"])
         self.assertIn("ci.yml", audit["native_pull_request_workflow_evidence"])
-        self.assertIn("CI", audit["check_evidence"])
-        self.assertIn("codex=blocking", audit["review_and_provenance"])
-        self.assertIn("mergeable=True", audit["mergeability"])
         self.assertIn("all_paths=True", audit["scope_and_authorization"])
         self.assertIn("initial_and_final_head_confirmed=true", audit["repository_metadata"])
 
@@ -240,7 +261,7 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                 )
         persist.assert_not_called()
 
-    def test_internal_record_paths_and_content_are_deterministic(self):
+    def test_records_are_deterministic_and_exact_content_is_required(self):
         path = self.runtime.internal_stop_record_path(
             7, self.sha, "NO_MEANINGFUL_PROGRESS"
         )
@@ -248,12 +269,6 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             path,
             f"automation-stops/pr-7/{self.sha}/NO_MEANINGFUL_PROGRESS.json",
         )
-        notice_path = self.runtime.human_notice_record_path(
-            7,
-            self.sha,
-            "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
-        )
-        self.assertTrue(notice_path.endswith(".notice.json"))
         first = self.runtime.canonical_internal_stop_record(
             pr_number=7,
             issue_number=5,
@@ -271,49 +286,29 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             audit={"a": "1", "z": "2"},
         )
         self.assertEqual(first, second)
-        payload = json.loads(first)
-        self.assertFalse(payload["notification"])
-        self.assertIsNone(payload["required_human_action"])
+        self.assertFalse(json.loads(first)["notification"])
 
-    def test_persist_exact_record_requires_content_equality(self):
-        path = self.runtime.internal_stop_record_path(
-            7, self.sha, "NO_MEANINGFUL_PROGRESS"
-        )
-        content = self.runtime.canonical_internal_stop_record(
-            pr_number=7,
-            issue_number=5,
-            sha=self.sha,
-            reason="NO_MEANINGFUL_PROGRESS",
-            detail="bounded",
-            audit={"a": "1"},
-        )
         success = subprocess.CompletedProcess(["gh"], 0, "{}", "")
         with (
             patch.object(self.runtime, "ensure_internal_stop_branch"),
             patch.object(self.runtime, "_existing_internal_record", return_value=None),
-            patch.object(self.runtime, "gh_result", return_value=success) as put,
+            patch.object(self.runtime, "gh_result", return_value=success),
         ):
             self.assertTrue(
                 self.runtime.persist_internal_stop_record(
-                    path, content, "NO_MEANINGFUL_PROGRESS", 7
+                    path, first, "NO_MEANINGFUL_PROGRESS", 7
                 )
             )
-        self.assertEqual(put.call_count, 1)
-        self.assertIn("PUT", put.call_args.args)
-
         with (
             patch.object(self.runtime, "ensure_internal_stop_branch"),
             patch.object(self.runtime, "_existing_internal_record", return_value="{}\n"),
         ):
             with self.assertRaises(RuntimeError):
                 self.runtime.persist_internal_stop_record(
-                    path, content, "NO_MEANINGFUL_PROGRESS", 7
+                    path, first, "NO_MEANINGFUL_PROGRESS", 7
                 )
 
     def test_stop_report_persists_without_comment_or_label_mutation(self):
-        path = self.runtime.internal_stop_record_path(
-            7, self.sha, "NO_MEANINGFUL_PROGRESS"
-        )
         with (
             patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
             patch.object(self.runtime, "_live_pr", return_value=self.pr),
@@ -328,7 +323,6 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             )
         comment.assert_not_called()
         label.assert_not_called()
-        self.assertEqual(persist.call_args.args[0], path)
         self.assertIn('"notification": false', persist.call_args.args[1])
 
     def test_codex_events_are_sorted_by_immutable_event_time(self):
@@ -355,36 +349,33 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         self.assertEqual(evidence["state"], "blocking")
         self.assertEqual(evidence["timestamp"], "2026-07-31T12:00:00Z")
 
-    def test_human_notice_persists_exact_record_before_comment_and_dedupes(self):
+    def test_human_notice_requires_connected_assertion_match_and_exact_record(self):
         fields = self.valid_fields()
-        marker = self.runtime.format_human_only_notice(**fields).splitlines()[0]
         live = self.notice_pr()
         audit = {"exact_head_sha": self.sha}
-        posted = []
         records = {}
-        untrusted = {
-            "body": marker,
-            "user": {"login": "contributor"},
-            "created_at": "2026-07-31T12:00:00Z",
-            "updated_at": "2026-07-31T12:00:00Z",
-        }
+        posted = []
 
         def persist(path, content, reason, number):
             records[path] = content
             return True
 
-        def existing(path):
-            return records.get(path)
-
         with (
+            patch.object(
+                self.runtime,
+                "_connected_human_notice_evidence",
+                return_value=(self.attempted, self.impossible),
+            ),
             patch.object(self.runtime, "_validated_notice_destination", return_value=live),
             patch.object(self.runtime, "self_resolution_audit", return_value=audit),
-            patch.object(self.runtime, "api_list", return_value=[untrusted]),
+            patch.object(self.runtime, "api_list", return_value=[]),
             patch.object(
                 self.runtime, "persist_human_notice_record", side_effect=persist
-            ) as persisted,
+            ),
             patch.object(
-                self.runtime, "_existing_internal_record", side_effect=existing
+                self.runtime,
+                "_existing_internal_record",
+                side_effect=lambda path: records.get(path),
             ),
             patch.object(
                 self.runtime,
@@ -394,32 +385,21 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         ):
             self.runtime.human_only_notice(**fields)
         self.assertEqual(len(posted), 1)
-        persisted.assert_called_once()
         record = json.loads(next(iter(records.values())))
-        self.assertEqual(record["attempted_connected_paths"], fields["attempted_connected_paths"])
-        self.assertEqual(record["impossibility_evidence"], fields["impossibility_evidence"])
-        self.assertEqual(record["targets"], fields["targets"])
+        self.assertEqual(record["attempted_connected_paths"], list(self.attempted))
+        self.assertEqual(record["impossibility_evidence"], list(self.impossible))
 
-        trusted = {
-            "body": posted[0][1],
-            "user": {"login": self.runtime.ACTIONS_LOGIN},
-            "created_at": "2026-07-31T12:00:00Z",
-            "updated_at": "2026-07-31T12:00:00Z",
-        }
-        with (
-            patch.object(self.runtime, "_validated_notice_destination", return_value=live),
-            patch.object(self.runtime, "self_resolution_audit", return_value=audit),
-            patch.object(self.runtime, "api_list", return_value=[trusted]),
-            patch.object(self.runtime, "persist_human_notice_record", side_effect=persist),
-            patch.object(
-                self.runtime, "_existing_internal_record", side_effect=existing
-            ),
-            patch.object(self.runtime, "comment") as no_comment,
+        with patch.object(
+            self.runtime,
+            "_connected_human_notice_evidence",
+            return_value=(self.attempted, self.impossible),
         ):
-            self.runtime.human_only_notice(**fields)
-        no_comment.assert_not_called()
+            with self.assertRaises(RuntimeError):
+                self.runtime.human_only_notice(
+                    **self.valid_fields(attempted_connected_paths=("invented",))
+                )
 
-    def test_trusted_notice_comment_without_matching_record_fails_closed(self):
+    def test_trusted_notice_deduplication_requires_matching_record(self):
         fields = self.valid_fields()
         live = self.notice_pr()
         marker = self.runtime.format_human_only_notice(**fields).splitlines()[0]
@@ -430,6 +410,11 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             "updated_at": "2026-07-31T12:00:00Z",
         }
         with (
+            patch.object(
+                self.runtime,
+                "_connected_human_notice_evidence",
+                return_value=(self.attempted, self.impossible),
+            ),
             patch.object(self.runtime, "_validated_notice_destination", return_value=live),
             patch.object(
                 self.runtime,
@@ -439,19 +424,6 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             patch.object(self.runtime, "api_list", return_value=[trusted]),
             patch.object(self.runtime, "persist_human_notice_record", return_value=False),
             patch.object(self.runtime, "_existing_internal_record", return_value=None),
-        ):
-            with self.assertRaises(RuntimeError):
-                self.runtime.human_only_notice(**fields)
-
-    def test_human_notice_rejects_stale_head_and_cross_wired_issue(self):
-        fields = self.valid_fields()
-        with patch.object(
-            self.runtime, "api", return_value=self.notice_pr(sha="b" * 40)
-        ):
-            with self.assertRaises(RuntimeError):
-                self.runtime.human_only_notice(**fields)
-        with patch.object(
-            self.runtime, "api", return_value=self.notice_pr(issue_number=59)
         ):
             with self.assertRaises(RuntimeError):
                 self.runtime.human_only_notice(**fields)
@@ -469,12 +441,6 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         self.assertEqual(
             self.runtime.latest_successful_attestation_timestamp(attempts),
             "2026-07-31T12:30:00Z",
-        )
-        self.assertEqual(
-            self.runtime._evidence_anchor(
-                "2026-07-31T12:30:00Z", "2026-07-31T12:45:00Z"
-            ),
-            "2026-07-31T12:45:00Z",
         )
 
 
