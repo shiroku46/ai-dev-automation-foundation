@@ -132,9 +132,10 @@ class WorkflowSecurityTest(unittest.TestCase):
 
     def test_codex_request_deduplication_ignores_untrusted_marker_comments(self):
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
-        request_function = runtime.split("def request_codex", 1)[1].split("def supervise", 1)[0]
-        self.assertIn('get("login") == ACTIONS_LOGIN', request_function)
-        self.assertIn('item.get("created_at") == item.get("updated_at")', request_function)
+        request_section = runtime.split("def _codex_request_exists", 1)[1].split("def supervise", 1)[0]
+        self.assertIn('get("login") == ACTIONS_LOGIN', request_section)
+        self.assertIn('item.get("created_at") == item.get("updated_at")', request_section)
+        self.assertIn("if _codex_request_exists(pr_number, sha):", request_section)
 
     def test_source_issue_and_negative_e2e_close_are_owner_trusted(self):
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
