@@ -27,6 +27,16 @@ def internal_audit(reason: Reason, sha: str = SHA) -> SelfResolutionAudit:
     )
 
 
+def human_action(reason: Reason) -> str:
+    if reason == Reason.HUMAN_REPOSITORY_UI:
+        return "Create or reconnect the named repository or GitHub App installation in the account-level provider UI."
+    if reason == Reason.HUMAN_CREDENTIAL_UI:
+        return "Complete the required credential, MFA, CAPTCHA, hardware-key, trusted-device, or provider verification in the provider UI."
+    if reason == Reason.HUMAN_DISCONNECTED_INTEGRATION:
+        return "Reconnect the disconnected integration in the provider UI."
+    raise AssertionError(f"unexpected human-only reason: {reason}")
+
+
 def human_audit(reason: Reason, sha: str = SHA) -> SelfResolutionAudit:
     return SelfResolutionAudit(
         completed=True,
@@ -37,10 +47,10 @@ def human_audit(reason: Reason, sha: str = SHA) -> SelfResolutionAudit:
             "checked callable reconnection and credential renewal paths",
         ),
         impossibility_evidence=(
-            "the connected tools expose no account-level creation or identity-verification UI",
+            "the connected tools expose no required account or identity-verification UI",
         ),
-        minimal_human_action="Create or reconnect the named repository in the provider UI.",
-        automatic_resume_condition="The repository becomes visible to the connected GitHub App.",
+        minimal_human_action=human_action(reason),
+        automatic_resume_condition="The required repository, credential, or integration state becomes visible to the connected automation.",
     )
 
 
@@ -137,7 +147,7 @@ class RecoverySupervisorTest(unittest.TestCase):
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
         self.assertEqual(decision.reason, Reason.EXHAUSTED)
 
-    def test_bounded_fix_binds_nonempty_run_fingerprint_sha_and_paths(self):
+    def test_bounded_fix_binds_stripped_nonempty_run_fingerprint_sha_and_paths(self):
         fix = BoundedFixEvidence(SHA, "run-1", "fingerprint", ("a.py",))
         state = State(
             1,
@@ -167,19 +177,25 @@ class RecoverySupervisorTest(unittest.TestCase):
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
         self.assertEqual(decision.reason, Reason.AMBIGUOUS)
 
-        empty_identity = State(
-            1,
-            2,
-            SHA,
-            FAILED,
-            deterministic_failure=True,
-            bounded_fix=BoundedFixEvidence(SHA, "", "", ("a.py",)),
-            allowed_fix_paths=("a.py",),
-            self_resolution_audit=internal_audit(Reason.AMBIGUOUS),
-        )
-        empty_decision = decide(empty_identity)
-        self.assertEqual(empty_decision.action, Action.INTERNAL_STOP)
-        self.assertEqual(empty_decision.reason, Reason.AMBIGUOUS)
+        for empty_value in ("", "   "):
+            with self.subTest(empty_value=repr(empty_value)):
+                empty_identity = State(
+                    1,
+                    2,
+                    SHA,
+                    FAILED,
+                    deterministic_failure=True,
+                    concrete_failure_run_id=empty_value,
+                    concrete_failure_fingerprint=empty_value,
+                    bounded_fix=BoundedFixEvidence(
+                        SHA, empty_value, empty_value, ("a.py",)
+                    ),
+                    allowed_fix_paths=("a.py",),
+                    self_resolution_audit=internal_audit(Reason.AMBIGUOUS),
+                )
+                empty_decision = decide(empty_identity)
+                self.assertEqual(empty_decision.action, Action.INTERNAL_STOP)
+                self.assertEqual(empty_decision.reason, Reason.AMBIGUOUS)
 
     def test_idempotency_is_order_independent(self):
         first = State(
@@ -284,6 +300,22 @@ class RecoverySupervisorTest(unittest.TestCase):
             "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
         )
 
+    def test_forbidden_human_action_cannot_request_merge(self):
+        audit = human_audit(Reason.HUMAN_CREDENTIAL_UI)
+        forbidden = SelfResolutionAudit(
+            **{**audit.__dict__, "minimal_human_action": "Press Merge"}
+        )
+        state = State(
+            1,
+            2,
+            SHA,
+            risk_flags=("provider-ui",),
+            self_resolution_audit=forbidden,
+        )
+        decision = decide(state)
+        self.assertEqual(decision.action, Action.RUN_SELF_RESOLUTION_AUDIT)
+        self.assertNotEqual(decision.action, Action.ESCALATE_HUMAN)
+
     def test_stale_wrong_reason_or_empty_audit_is_rejected(self):
         exhausted = State(
             1,
@@ -321,11 +353,31 @@ class RecoverySupervisorTest(unittest.TestCase):
                 reason_family=Reason.HUMAN_CREDENTIAL_UI.value,
                 attempted_connected_paths=("   ",),
                 impossibility_evidence=("", "  "),
-                minimal_human_action="Open provider UI.",
+                minimal_human_action=human_action(Reason.HUMAN_CREDENTIAL_UI),
                 automatic_resume_condition="Connection restored.",
             ),
         )
         self.assertEqual(decide(empty).action, Action.RUN_SELF_RESOLUTION_AUDIT)
+
+    def test_all_three_human_reason_families_require_matching_actions(self):
+        cases = (
+            ("account-level-repository-creation-ui-unavailable", Reason.HUMAN_REPOSITORY_UI),
+            ("credential-provider-ui-required", Reason.HUMAN_CREDENTIAL_UI),
+            ("disconnected-integration-no-callable-reconnect", Reason.HUMAN_DISCONNECTED_INTEGRATION),
+        )
+        for risk, reason in cases:
+            with self.subTest(reason=reason):
+                decision = decide(
+                    State(
+                        1,
+                        2,
+                        SHA,
+                        risk_flags=(risk,),
+                        self_resolution_audit=human_audit(reason),
+                    )
+                )
+                self.assertEqual(decision.action, Action.ESCALATE_HUMAN)
+                self.assertEqual(decision.reason, reason)
 
     def test_generic_authentication_or_ambiguity_is_not_human_only(self):
         for flag in ("authentication", "essential-ambiguity", "merge-conflict"):
