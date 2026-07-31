@@ -513,18 +513,17 @@ def _content_blob_sha(path: str, ref: str) -> str:
     return str(payload["sha"])
 
 
-def _workflow_definition_matches_default(filename: str, candidate_sha: str) -> bool:
+def _workflow_definition_matches_default(
+    filename: str, candidate_sha: str, stable_default_sha: str
+) -> bool:
     candidate_sha = _require_exact_sha(candidate_sha)
-    initial_default_sha = _require_exact_sha(current_default_sha())
+    stable_default_sha = _require_exact_sha(stable_default_sha)
     path = f".github/workflows/{filename}"
     try:
-        default_blob = _content_blob_sha(path, initial_default_sha)
+        default_blob = _content_blob_sha(path, stable_default_sha)
         candidate_blob = _content_blob_sha(path, candidate_sha)
     except Exception:
         return False
-    final_default_sha = _require_exact_sha(current_default_sha())
-    if final_default_sha != initial_default_sha:
-        raise RuntimeError("Default branch moved during native workflow definition validation")
     return candidate_blob == default_blob
 
 
@@ -572,10 +571,14 @@ def native_workflow_evidence(
 ) -> tuple[bool, list[dict[str, Any]]]:
     _require_exact_sha(sha)
     pr_number = _require_positive_number("pr_number", pr_number)
+    stable_default_sha = _require_exact_sha(current_default_sha())
+    required = required_native_workflows()
     evidence: list[dict[str, Any]] = []
     clean = True
-    for filename, display_name, workflow_id in required_native_workflows():
-        definition_match = _workflow_definition_matches_default(filename, sha)
+    for filename, display_name, workflow_id in required:
+        definition_match = _workflow_definition_matches_default(
+            filename, sha, stable_default_sha
+        )
         if not definition_match:
             clean = False
             evidence.append(
@@ -635,6 +638,9 @@ def native_workflow_evidence(
                 "updated_at": latest.get("updated_at"),
             }
         )
+    final_default_sha = _require_exact_sha(current_default_sha())
+    if final_default_sha != stable_default_sha:
+        raise RuntimeError("Default branch moved during complete native workflow evidence validation")
     return clean, evidence
 
 
@@ -726,7 +732,11 @@ def _audit_record_path(pr_number: int, sha: str, reason: str) -> str:
 
 
 def self_resolution_audit(
-    pr: dict[str, Any], issue_number: int | None, reason: str
+    pr: dict[str, Any],
+    issue_number: int | None,
+    reason: str,
+    *,
+    human_notice_context: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, str]:
     pr_number = _require_positive_number("pr_number", int(pr["number"]))
     sha = _require_exact_sha(str((pr.get("head") or {}).get("sha") or ""))
@@ -763,6 +773,32 @@ def self_resolution_audit(
                 f"protected_paths={protected_scope_is_authorized(changed, issue_body)}"
             )
         )
+
+    connected_notice_evidence = "not-applicable"
+    if reason in HUMAN_ONLY_REASONS:
+        if human_notice_context is None:
+            raise RuntimeError("human-only audit requires a connected notice context")
+        targets = tuple(human_notice_context.get("targets") or ())
+        expected_attempted = tuple(human_notice_context.get("attempted") or ())
+        expected_impossible = tuple(human_notice_context.get("impossible") or ())
+        connected_attempted, connected_impossible = _connected_human_notice_evidence(
+            reason, targets
+        )
+        if connected_attempted != expected_attempted:
+            raise RuntimeError("Final audit attempted-path evidence changed")
+        if connected_impossible != expected_impossible:
+            raise RuntimeError("Final audit impossibility evidence changed")
+        connected_notice_evidence = json.dumps(
+            {
+                "targets": targets,
+                "attempted_connected_paths": connected_attempted,
+                "impossibility_evidence": connected_impossible,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    elif human_notice_context is not None:
+        raise RuntimeError("internal-stop audit received an unexpected human-only context")
 
     final_pr = _live_pr(pr_number, sha)
     mergeable = final_pr.get("mergeable")
@@ -801,6 +837,7 @@ def self_resolution_audit(
             f"automation_owner_permission={permission or 'unknown'},secret_values_not_requested=true"
         ),
         "alternative_connected_paths": ";".join(workflow_states),
+        "human_only_connected_evidence": connected_notice_evidence,
         "idempotency": _audit_record_path(pr_number, sha, reason),
     }
 
@@ -1118,7 +1155,17 @@ def human_only_notice(
         targets=target_list,
     )
     live = _validated_notice_destination(pr_number, issue_number, exact_head_sha)
-    audit = self_resolution_audit(live, issue_number, reason)
+    notice_context = {
+        "targets": target_list,
+        "attempted": connected_attempted,
+        "impossible": connected_impossible,
+    }
+    audit = self_resolution_audit(
+        live,
+        issue_number,
+        reason,
+        human_notice_context=notice_context,
+    )
     record_path = human_notice_record_path(pr_number, exact_head_sha, reason)
     record = canonical_human_notice_record(
         reason=reason,
@@ -1141,6 +1188,12 @@ def human_only_notice(
     expected_suffix = f":{issue_number}:{pr_number} -->"
     if not marker.startswith(HUMAN_NOTICE_PREFIX) or not marker.endswith(expected_suffix):
         raise ValueError("validated notice marker is not bound to the destination")
+
+    final_attempted, final_impossible = _connected_human_notice_evidence(
+        reason, target_list
+    )
+    if final_attempted != connected_attempted or final_impossible != connected_impossible:
+        raise RuntimeError("Connected human-only condition changed after the final audit")
     comments = api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100")
     trusted_duplicate = any(
         (item.get("user") or {}).get("login") == ACTIONS_LOGIN
@@ -1153,6 +1206,11 @@ def human_only_notice(
             raise RuntimeError("trusted notice comment has no matching persisted exact audit record")
         return
     _validated_notice_destination(pr_number, issue_number, exact_head_sha)
+    final_attempted, final_impossible = _connected_human_notice_evidence(
+        reason, target_list
+    )
+    if final_attempted != connected_attempted or final_impossible != connected_impossible:
+        raise RuntimeError("Connected human-only condition changed before publication")
     if _existing_internal_record(record_path) != record:
         raise RuntimeError("human-only audit record changed before publication")
     comment(pr_number, body)
