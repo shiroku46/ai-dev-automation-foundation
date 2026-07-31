@@ -27,5 +27,8 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.12"
+      - name: Parse workflow YAML with runner-provided Ruby
+        run: |
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.{yml,yaml}"].sort.each { |path| YAML.safe_load(File.read(path), aliases: true); puts "parsed #{path}" }'
       - run: python scripts/public_export_guard.py .
       - run: python scripts/validate_repository.py
