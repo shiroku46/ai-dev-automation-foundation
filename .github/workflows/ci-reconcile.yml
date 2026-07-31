@@ -1,68 +1,69 @@
 name: Trusted CI Reconciliation
 
 on:
+  workflow_run:
+    workflows: ["CI", "Unit Tests"]
+    types: [completed]
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: trusted-ci-reconcile
+  cancel-in-progress: false
+
 permissions: {}
 
 jobs:
-  reconcile:
+  discover:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency:
-      group: trusted-ci-reconcile
-      cancel-in-progress: false
     permissions:
-      actions: write
+      actions: read
+      checks: read
       contents: read
       pull-requests: read
-      statuses: write
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
     steps:
-      - name: Dispatch missing exact-SHA checks
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Discover bounded exact-SHA candidates without valid or active attestations
+        id: discover
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
         run: |
-          python3 - <<'PY'
-          import json, os, subprocess
-          repo = os.environ["REPOSITORY"]
-          default = os.environ["DEFAULT_BRANCH"]
-          required = {"CI / validate": "ci.yml", "Unit Tests / test": "unit-tests.yml"}
-          allowed_prefixes = ("claude-issue-", "automation/", "fix/")
-          def gh(*args):
-              return subprocess.check_output(["gh", *args], text=True)
-          pulls = json.loads(gh("api", f"repos/{repo}/pulls?state=open&per_page=50"))
-          candidates = []
-          for pr in sorted(pulls, key=lambda p: int(p["number"])):
-              head = pr.get("head") or {}
-              if ((head.get("repo") or {}).get("full_name") != repo):
-                  continue
-              if not (head.get("ref") or "").startswith(allowed_prefixes):
-                  continue
-              if any(label.get("name") == "ai-no-merge" for label in pr.get("labels") or []):
-                  continue
-              candidates.append(pr)
-              if len(candidates) >= 10:
-                  break
-          for observed in candidates:
-              number = observed["number"]
-              snapshot = json.loads(gh("api", f"repos/{repo}/pulls/{number}"))
-              sha = snapshot["head"]["sha"]
-              if sha != observed["head"]["sha"] or snapshot["head"]["repo"]["full_name"] != repo:
-                  continue
-              statuses = json.loads(gh("api", f"repos/{repo}/commits/{sha}/status")).get("statuses", [])
-              current = {}
-              for status in statuses:
-                  current.setdefault(status.get("context"), status.get("state"))
-              for context, workflow in required.items():
-                  if current.get(context) in {"pending", "success", "failure", "error"}:
-                      continue
-                  gh("api", "--method", "POST", f"repos/{repo}/statuses/{sha}",
-                     "-f", "state=pending", "-f", f"context={context}",
-                     "-f", "description=Trusted reconciliation dispatched this check")
-                  gh("workflow", "run", workflow, "--repo", repo, "--ref", default,
-                     "-f", f"target_ref={sha}")
-          PY
+          matrix=$(python -m scripts.supervisor_runtime discover)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  dispatch:
+    needs: discover
+    if: needs.discover.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target_sha: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch only the fixed trusted workflow on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_SHA: ${{ matrix.target_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          gh workflow run trusted-checks.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f "target_sha=$TARGET_SHA"
