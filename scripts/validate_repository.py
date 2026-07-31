@@ -276,7 +276,7 @@ def validate_policy_and_runtime() -> None:
     stop = function_block(runtime, "stop_report", "format_human_only_notice")
     require_all(
         stop,
-        ("self_resolution_audit", "persist_internal_stop_record", "_live_pr"),
+        ("self_resolution_audit", "persist_internal_stop_record", "_revalidate_stop_reason"),
         "internal stop",
     )
     for forbidden in ("comment(", "ensure_label(", "--add-label", "/comments"):
