@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 import hashlib
 import json
+import re
 
 
 class Action(str, Enum):
@@ -183,19 +184,20 @@ AUTOMATABLE_OR_INTERNAL_RISKS = {
     "untrusted-evidence",
 }
 
-FORBIDDEN_HUMAN_ACTION_TERMS = (
-    "press merge",
-    "merge the pull request",
-    "approve the pull request",
-    "close the pull request",
-    "rerun the workflow",
-    "retry the job",
-    "resolve the review",
-    "change workflow permission",
-    "change repository setting",
-    "increase budget",
-    "deploy",
-)
+# Human-only actions are closed, canonical sentences. Exact equality prevents a
+# valid provider-UI operation from being combined with a routine request such as
+# Merge, Approve, Retry, Close, permission changes, billing, or deployment.
+HUMAN_ACTION_BY_REASON = {
+    Reason.HUMAN_REPOSITORY_UI: (
+        "create or reconnect the named repository or github app installation in the account-level provider ui."
+    ),
+    Reason.HUMAN_CREDENTIAL_UI: (
+        "complete the required credential, mfa, captcha, hardware-key, trusted-device, or provider verification in the provider ui."
+    ),
+    Reason.HUMAN_DISCONNECTED_INTEGRATION: (
+        "reconnect the disconnected integration in the provider ui."
+    ),
+}
 
 
 def _sorted_dict(value):
@@ -243,8 +245,10 @@ def _nonempty_entries(values: tuple[str, ...]) -> tuple[str, ...]:
 
 def _audit_is_bound(state: State, reason: Reason) -> bool:
     audit = state.self_resolution_audit
+    exact_sha = bool(re.fullmatch(r"[0-9a-f]{40}", state.head_sha or ""))
     return bool(
-        audit.completed
+        exact_sha
+        and audit.completed
         and audit.audited_sha == state.head_sha
         and audit.reason_family == reason.value
         and _nonempty_entries(audit.attempted_connected_paths)
@@ -253,36 +257,7 @@ def _audit_is_bound(state: State, reason: Reason) -> bool:
 
 def _human_action_matches_reason(reason: Reason, action: str) -> bool:
     normalized = " ".join(action.lower().split())
-    if not normalized or any(term in normalized for term in FORBIDDEN_HUMAN_ACTION_TERMS):
-        return False
-    if reason == Reason.HUMAN_REPOSITORY_UI:
-        has_object = "repository" in normalized or "github app" in normalized or "app installation" in normalized
-        has_operation = any(term in normalized for term in ("create", "connect", "reconnect"))
-        return has_object and has_operation and ("ui" in normalized or "interface" in normalized)
-    if reason == Reason.HUMAN_CREDENTIAL_UI:
-        has_object = any(
-            term in normalized
-            for term in (
-                "credential",
-                "mfa",
-                "captcha",
-                "hardware key",
-                "hardware-key",
-                "trusted device",
-                "provider verification",
-                "identity verification",
-            )
-        )
-        has_operation = any(
-            term in normalized
-            for term in ("complete", "acquire", "renew", "verify", "authenticate")
-        )
-        return has_object and has_operation and ("ui" in normalized or "interface" in normalized)
-    if reason == Reason.HUMAN_DISCONNECTED_INTEGRATION:
-        has_object = "integration" in normalized or "connection" in normalized
-        has_operation = "reconnect" in normalized or "connect" in normalized
-        return has_object and has_operation and ("ui" in normalized or "interface" in normalized)
-    return False
+    return normalized == HUMAN_ACTION_BY_REASON.get(reason, "")
 
 
 def _internal_stop_after_audit(
@@ -325,7 +300,7 @@ def _human_only_decision(
             Reason.AUDIT_REQUIRED,
             "Human-only notification is forbidden until a completed audit bound to "
             "the current exact SHA and selected reason family records concrete attempted "
-            "connected paths, concrete impossibility evidence, a compatible minimal "
+            "connected paths, concrete impossibility evidence, the canonical minimal "
             "account/provider UI action, and the automatic-resumption condition.",
         )
     attempted = "; ".join(_nonempty_entries(audit.attempted_connected_paths))
