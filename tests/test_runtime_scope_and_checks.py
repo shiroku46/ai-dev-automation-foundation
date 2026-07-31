@@ -626,7 +626,7 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
         clean = self._candidate()
         held = self._candidate(labels=[{"name": "ai-no-merge"}])
         gh = self._run_final_gate(
-            [clean, clean, clean, held],
+            [clean, clean, clean, clean, held],
             (9, {"number": 9}, ["docs/probe.md"], None),
         )
         self.assertFalse(
@@ -689,9 +689,9 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
     def test_late_exact_sha_codex_blocker_blocks_merge(self):
         clean = self._candidate()
         gh = self._run_final_gate(
-            [clean, clean, clean, clean],
+            [clean, clean, clean],
             (9, {"number": 9}, ["docs/probe.md"], None),
-            codex_clean_results=[True, False],
+            codex_clean_results=[False],
         )
         self.assertFalse(
             any(
