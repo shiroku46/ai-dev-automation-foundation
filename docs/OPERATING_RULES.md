@@ -18,6 +18,8 @@ The public Foundation repository and its public E2E repository are the implement
 
 A separate human merge click is not required.
 
+No `workflow_dispatch` or `repository_dispatch` event payload may authorize a candidate, source Issue, changed path, workflow, ref, repository, command, or merge.
+
 ## Ordinary allowlist and protected authorization
 
 Every changed and renamed path must match an ordinary allowlist declared under a trusted Issue scope heading. Only exact repository-relative paths and bounded suffix patterns such as `tests/**` are accepted. A protected authorization block does not implicitly add paths to the ordinary allowlist.
