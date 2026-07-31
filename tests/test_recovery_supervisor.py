@@ -302,15 +302,34 @@ class RecoverySupervisorTest(unittest.TestCase):
 
     def test_forbidden_human_action_cannot_request_merge(self):
         audit = human_audit(Reason.HUMAN_CREDENTIAL_UI)
-        forbidden = SelfResolutionAudit(
-            **{**audit.__dict__, "minimal_human_action": "Press Merge"}
-        )
+        for action in (
+            "Press Merge",
+            f"Approve this PR, then {human_action(Reason.HUMAN_CREDENTIAL_UI)}",
+            f"Retry CI, then {human_action(Reason.HUMAN_CREDENTIAL_UI)}",
+            f"Merge it, then {human_action(Reason.HUMAN_CREDENTIAL_UI)}",
+        ):
+            with self.subTest(action=action):
+                forbidden = SelfResolutionAudit(
+                    **{**audit.__dict__, "minimal_human_action": action}
+                )
+                state = State(
+                    1,
+                    2,
+                    SHA,
+                    risk_flags=("provider-ui",),
+                    self_resolution_audit=forbidden,
+                )
+                decision = decide(state)
+                self.assertEqual(decision.action, Action.RUN_SELF_RESOLUTION_AUDIT)
+                self.assertNotEqual(decision.action, Action.ESCALATE_HUMAN)
+
+    def test_empty_head_sha_cannot_accept_an_audit(self):
         state = State(
             1,
             2,
-            SHA,
+            "",
             risk_flags=("provider-ui",),
-            self_resolution_audit=forbidden,
+            self_resolution_audit=human_audit(Reason.HUMAN_CREDENTIAL_UI, ""),
         )
         decision = decide(state)
         self.assertEqual(decision.action, Action.RUN_SELF_RESOLUTION_AUDIT)
