@@ -22,11 +22,12 @@ jobs:
     permissions:
       checks: write
       contents: read
+      pull-requests: read
     outputs:
       ci_check_id: ${{ steps.create.outputs.ci_check_id }}
       test_check_id: ${{ steps.create.outputs.test_check_id }}
     steps:
-      - name: Authorize fixed default-branch workflow and create attestations
+      - name: Authorize fixed default-branch workflow and eligible exact candidate
         id: create
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,6 +62,62 @@ jobs:
           printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'
           resolved=$(gh api "repos/$REPOSITORY/commits/$TARGET_SHA" --jq .sha)
           test "$resolved" = "$TARGET_SHA"
+
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          repository = os.environ["REPOSITORY"]
+          default_branch = os.environ["DEFAULT_BRANCH"]
+          target_sha = os.environ["TARGET_SHA"]
+          owner = os.environ["OWNER"]
+          configured_owner = os.environ.get("CONFIGURED_OWNER", "")
+          allowed_authors = {owner, "github-actions[bot]"}
+          if configured_owner:
+              allowed_authors.add(configured_owner)
+          allowed_prefixes = ("claude-issue-", "automation/", "fix/")
+          pulls = json.loads(
+              subprocess.check_output(
+                  [
+                      "gh",
+                      "api",
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      f"repos/{repository}/commits/{target_sha}/pulls?per_page=100",
+                  ],
+                  text=True,
+              )
+          )
+          eligible = False
+          for pull in pulls:
+              head = pull.get("head") or {}
+              base = pull.get("base") or {}
+              author = (pull.get("user") or {}).get("login") or ""
+              labels = {label.get("name") for label in pull.get("labels") or []}
+              if pull.get("state") != "open":
+                  continue
+              if head.get("sha") != target_sha:
+                  continue
+              if ((head.get("repo") or {}).get("full_name") != repository):
+                  continue
+              if ((base.get("repo") or {}).get("full_name") != repository):
+                  continue
+              if base.get("ref") != default_branch:
+                  continue
+              if author not in allowed_authors:
+                  continue
+              if not (head.get("ref") or "").startswith(allowed_prefixes):
+                  continue
+              if "ai-no-merge" in labels:
+                  continue
+              eligible = True
+              break
+          if not eligible:
+              raise SystemExit(
+                  "target_sha is not the current head of an eligible same-repository Pull Request"
+              )
+          PY
 
           create_check() {
             name="$1"
