@@ -21,10 +21,10 @@ jobs:
       cancel-in-progress: false
     permissions:
       actions: write
+      checks: read
       contents: read
       issues: write
       pull-requests: write
-      statuses: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -35,4 +35,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
         run: python -m scripts.supervisor_runtime
