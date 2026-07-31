@@ -37,6 +37,16 @@ rollback: revert the merge commit
 
 The supervisor fails closed when this contract is absent or does not cover every protected path.
 
-## Stop boundary
+## Self-resolution and stop boundary
 
-Automation may escalate only after a self-resolution audit proves the missing action cannot be performed safely by existing GitHub permissions or default-branch workflows. Human action is limited to genuine account/provider UI, credential, MFA, CAPTCHA, or hardware-key requirements, or an unresolved substantive decision.
+Before recording a stop, automation must audit repository and Pull Request metadata, default-branch workflow identity, exact-SHA run/job evidence, changed and renamed paths, trusted Issue authorization, Codex evidence, review threads, available GitHub permissions, idempotency markers, and every bounded connected repair path.
+
+Routine technical failure is not a human-action request. Retry exhaustion, no progress, merge state, untrusted or stale evidence, ambiguity, ordinary permission/workflow/authentication declarations, protected-path denial, and unavailable bounded repair are recorded as one deduplicated **non-notifying internal stop**. The record must state `human_action_required: false` and must never ask a person to merge, approve, retry, close, resolve a review, change permissions or repository settings, increase a budget, or deploy.
+
+`ESCALATE_HUMAN` is fail-closed and limited to exactly three reason families after an exact-SHA/reason-bound self-resolution audit proves no callable connected path exists:
+
+- `HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE` — account-level repository creation or GitHub App connection/reconnection UI;
+- `HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED` — genuine credential acquisition or renewal, MFA, CAPTCHA, hardware key, trusted device, or provider identity-verification UI;
+- `HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED` — a disconnected integration for which no callable reconnect action exists.
+
+A valid human-only notice contains the exact Issue, Pull Request, nonempty 40-character head SHA, attempted connected paths, concrete impossibility evidence, one canonical reason-compatible provider-UI action, and the condition under which automation resumes automatically. No substantive decision, routine technical repair, merge click, approval, retry, close, or settings change qualifies.
