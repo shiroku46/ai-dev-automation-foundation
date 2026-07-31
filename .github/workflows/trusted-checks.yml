@@ -1,0 +1,166 @@
+name: Trusted Exact-SHA Checks
+
+on:
+  workflow_call:
+    inputs:
+      target_sha:
+        description: Immutable same-repository commit SHA to validate
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: write
+      contents: read
+    outputs:
+      ci_check_id: ${{ steps.create.outputs.ci_check_id }}
+      test_check_id: ${{ steps.create.outputs.test_check_id }}
+    steps:
+      - name: Authorize fixed default-branch caller and create attestations
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CALLER_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          expected_caller="$REPOSITORY/.github/workflows/ci-reconcile.yml@refs/heads/$DEFAULT_BRANCH"
+          expected_job="$REPOSITORY/.github/workflows/trusted-checks.yml@refs/heads/$DEFAULT_BRANCH"
+          test "$CALLER_WORKFLOW_REF" = "$expected_caller"
+          test "$JOB_WORKFLOW_REF" = "$expected_job"
+          test "$CALLER_WORKFLOW_SHA" = "$JOB_WORKFLOW_SHA"
+          test "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH"
+          case "$EVENT_NAME" in
+            workflow_run|schedule|workflow_dispatch) ;;
+            *) exit 1 ;;
+          esac
+          test "$ACTOR" = "$OWNER" || test "$ACTOR" = "github-actions[bot]"
+          printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          resolved=$(gh api "repos/$REPOSITORY/commits/$TARGET_SHA" --jq .sha)
+          test "$resolved" = "$TARGET_SHA"
+
+          create_check() {
+            name="$1"
+            external_id="foundation:$RUN_ID:$name:$TARGET_SHA"
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "repos/$REPOSITORY/check-runs" \
+              -f "name=$name" \
+              -f "head_sha=$TARGET_SHA" \
+              -f "status=in_progress" \
+              -f "details_url=$RUN_URL" \
+              -f "external_id=$external_id" \
+              --jq .id
+          }
+
+          ci_check_id=$(create_check "CI / validate")
+          test_check_id=$(create_check "Unit Tests / test")
+          echo "ci_check_id=$ci_check_id" >> "$GITHUB_OUTPUT"
+          echo "test_check_id=$test_check_id" >> "$GITHUB_OUTPUT"
+
+  validate_target:
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      TARGET_SHA: ${{ inputs.target_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+      - name: Verify immutable checked-out SHA
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Parse complete workflow YAML streams
+        run: |
+          ruby -e 'require "psych"; Dir[".github/workflows/*.{yml,yaml}"].sort.each { |path| documents = Psych.parse_stream(File.read(path)).children; raise "#{path}: expected exactly one YAML document" unless documents.length == 1 }'
+      - run: python scripts/public_export_guard.py .
+      - run: python scripts/validate_repository.py
+
+  test_target:
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      TARGET_SHA: ${{ inputs.target_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          persist-credentials: false
+      - name: Verify immutable checked-out SHA
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests
+
+  finalize:
+    needs: [authorize, validate_target, test_target]
+    if: always() && needs.authorize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      CI_CHECK_ID: ${{ needs.authorize.outputs.ci_check_id }}
+      TEST_CHECK_ID: ${{ needs.authorize.outputs.test_check_id }}
+      VALIDATE_RESULT: ${{ needs.validate_target.result }}
+      TEST_RESULT: ${{ needs.test_target.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Finalize immutable attestations without executing proposed code
+        run: |
+          set -euo pipefail
+          completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          ci_conclusion=failure
+          test_conclusion=failure
+          test "$VALIDATE_RESULT" = success && ci_conclusion=success
+          test "$TEST_RESULT" = success && test_conclusion=success
+
+          finish_check() {
+            id="$1"
+            conclusion="$2"
+            title="$3"
+            gh api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "repos/$REPOSITORY/check-runs/$id" \
+              -f "status=completed" \
+              -f "conclusion=$conclusion" \
+              -f "completed_at=$completed_at" \
+              -f "details_url=$RUN_URL" \
+              -f "output[title]=$title" \
+              -f "output[summary]=Trusted default-branch validation completed with conclusion: $conclusion" \
+              >/dev/null
+          }
+
+          finish_check "$CI_CHECK_ID" "$ci_conclusion" "Trusted CI validation"
+          finish_check "$TEST_CHECK_ID" "$test_conclusion" "Trusted unit tests"
+          test "$ci_conclusion" = success
+          test "$test_conclusion" = success
