@@ -61,13 +61,7 @@ class RunJobEvidenceTest(unittest.TestCase):
         )
         self.assertEqual(
             result,
-            {
-                "run_id": 7,
-                "active": False,
-                "success": True,
-                "complete": True,
-                "updated_at": None,
-            },
+            {"run_id": 7, "active": False, "success": True, "complete": True},
         )
 
     def test_missing_or_duplicate_job_fails_closed(self):
