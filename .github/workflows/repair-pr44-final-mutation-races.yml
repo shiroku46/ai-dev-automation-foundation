@@ -1,0 +1,196 @@
+name: Repair PR 44 Final Mutation Races
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "59 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-44-final-mutation-races
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      TARGET_PR: "44"
+      TARGET_BRANCH: fix/issue-36-human-notice-contract
+      EXPECTED_HEAD: 67db4b01dde795f4250d7a19a0a400865f1043fe
+      REPAIR_HELPER: .github/scripts/repair-pr44-final-mutation-races.py
+    steps:
+      - name: Load fixed helper from this default-branch commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/repair-pr44-final-mutation-races.py"
+          metadata=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/contents/$REPAIR_HELPER?ref=$GITHUB_SHA")
+          encoding=$(printf '%s' "$metadata" | jq -r .encoding)
+          if [ "$encoding" != "base64" ]; then
+            echo "Unexpected helper encoding: $encoding" >&2
+            exit 1
+          fi
+          printf '%s' "$metadata" \
+            | jq -r .content \
+            | tr -d '\n' \
+            | base64 --decode > "$helper"
+
+          python3 - "$helper" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+
+          def parse_authorized_paths(issue_body: str) -> set[str]:
+              marker = "<!-- foundation-protected-authorization"
+              if marker not in issue_body:
+                  return set()
+              remainder = issue_body.split(marker, 1)[1]
+              if "-->" not in remainder:
+                  return set()
+              block = remainder.split("-->", 1)[0]
+              paths = set()
+              in_paths = False
+              for raw in block.splitlines():
+                  line = raw.strip()
+                  if line == "paths:":
+                      in_paths = True
+                      continue
+                  if in_paths and line.startswith("- "):
+                      paths.add(line[2:].strip("` "))
+                  elif in_paths and line and not line.startswith("#"):
+                      in_paths = False
+              return paths
+
+          regression_body = '''
+          scripts/supervisor_runtime.py is mentioned outside authorization.
+          <!-- foundation-protected-authorization
+          category: regression
+          paths:
+          - tests/test_runtime_scope_and_checks.py
+          operation: regression only
+          -->
+          '''
+          if parse_authorized_paths(regression_body) != {
+              "tests/test_runtime_scope_and_checks.py"
+          }:
+              raise RuntimeError(
+                  "structured authorization regression accepted an outside mention"
+              )
+
+          old_guard = '''    if fresh_scope_reason is not None:
+                  raise RuntimeError(
+                      f"{reason} is no longer supported because source/scope evidence changed"
+                  )
+          '''
+          new_guard = '''    if fresh_issue_number != issue_number or fresh_scope_reason is not None:
+                  raise RuntimeError(
+                      f"{reason} is no longer supported because source/scope evidence changed"
+                  )
+          '''
+          test_anchor = '''    def test_retry_exhaustion_cleared_by_success_fails_closed(self):
+          '''
+          test_insert = '''    def test_non_scope_reason_rejects_changed_source_issue(self):
+                  changed_source = (10, {"number": 10}, ["docs/probe.md"], None)
+                  with (
+                      patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+                      patch.object(
+                          self.runtime,
+                          "source_and_scope",
+                          return_value=changed_source,
+                      ),
+                      self.assertRaisesRegex(RuntimeError, "source/scope evidence changed"),
+                  ):
+                      self.runtime._revalidate_stop_reason(
+                          PR_NUMBER,
+                          SHA,
+                          9,
+                          "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
+                      )
+
+              def test_retry_exhaustion_cleared_by_success_fails_closed(self):
+          '''
+          import_anchor = '''import os
+          import subprocess
+          '''
+          import_replacement = '''import os
+          import re
+          import subprocess
+          '''
+          target_anchor = '''    if (base.get("repo") or {}).get("full_name") != REPOSITORY:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if head.get("ref") != TARGET_BRANCH:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != EXPECTED_HEAD:
+                  print("Target head moved; exact repair is no longer applicable.")
+                  raise SystemExit(0)
+          '''
+          target_replacement = '''    if (base.get("repo") or {}).get("full_name") != REPOSITORY:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if base.get("ref") != "main":
+                  raise RuntimeError("Target Pull Request base branch changed")
+              if head.get("ref") != TARGET_BRANCH:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != EXPECTED_HEAD:
+                  print("Target head moved; exact repair is no longer applicable.")
+                  raise SystemExit(0)
+              source_link = re.compile(
+                  r"(?im)^\\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#36\\.?\\s*$"
+              )
+              if source_link.search(snapshot.get("body") or "") is None:
+                  raise RuntimeError("Target Pull Request source Issue linkage changed")
+              issue = api(f"repos/{REPOSITORY}/issues/36")
+              if issue.get("pull_request"):
+                  raise RuntimeError("Fixed source is not an Issue")
+              if (issue.get("user") or {}).get("login") != REPOSITORY.split("/", 1)[0]:
+                  raise RuntimeError("Fixed source Issue is not owner-authored")
+              issue_body = issue.get("body") or ""
+              marker = "<!-- foundation-protected-authorization"
+              if marker not in issue_body or "-->" not in issue_body.split(marker, 1)[1]:
+                  raise RuntimeError("Fixed source Issue lacks structured authorization")
+              block = issue_body.split(marker, 1)[1].split("-->", 1)[0]
+              authorized_paths = set()
+              in_paths = False
+              for raw in block.splitlines():
+                  line = raw.strip()
+                  if line == "paths:":
+                      in_paths = True
+                      continue
+                  if in_paths and line.startswith("- "):
+                      authorized_paths.add(line[2:].strip("` "))
+                  elif in_paths and line and not line.startswith("#"):
+                      in_paths = False
+              missing = set(TARGET_PATHS) - authorized_paths
+              if missing:
+                  raise RuntimeError(
+                      "Fixed source authorization no longer permits: "
+                      + ", ".join(sorted(missing))
+                  )
+          '''
+          for old, new, label in (
+              (old_guard, new_guard, "source Issue preservation guard"),
+              (test_anchor, test_insert, "source Issue regression test"),
+              (import_anchor, import_replacement, "source authorization import"),
+              (target_anchor, target_replacement, "live target authorization"),
+          ):
+              if text.count(old) != 1:
+                  raise RuntimeError(f"{label} anchor count is not exactly one")
+              text = text.replace(old, new, 1)
+          compile(text, str(path), "exec")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 -m py_compile "$helper"
+          python3 "$helper"
