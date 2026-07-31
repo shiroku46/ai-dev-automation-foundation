@@ -34,8 +34,9 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         }
 
     def valid_fields(self, **overrides):
+        reason = "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE"
         values = {
-            "reason": "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
+            "reason": reason,
             "issue_number": 58,
             "pr_number": 62,
             "exact_head_sha": self.sha,
@@ -47,9 +48,7 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                 "Both exact repositories are absent from the connected installation.",
                 "Repository creation is unavailable through connected GitHub actions.",
             ],
-            "provider_ui_action": self.runtime.HUMAN_ONLY_ACTIONS[
-                "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE"
-            ],
+            "provider_ui_action": self.runtime.HUMAN_ONLY_ACTIONS[reason],
             "automatic_resume_condition": (
                 "Both exact repositories exist and are visible to the connected GitHub App."
             ),
@@ -90,6 +89,7 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
             "NO_MEANINGFUL_PROGRESS",
             "MERGE_NOT_READY",
+            "UNAUTHORIZED_CHANGED_PATH",
             "UNAUTHORIZED_PROTECTED_PATH",
             "AMBIGUOUS_TECHNICAL_STATE",
         ):
@@ -127,7 +127,11 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             if path == "repos/example/foundation/collaborators/owner/permission":
                 return {"permission": "admin"}
             if path == "repos/example/foundation/issues/5":
-                return {"state": "open", "user": {"login": "owner"}, "body": ""}
+                return {
+                    "state": "open",
+                    "user": {"login": "owner"},
+                    "body": "## Allowed paths\n- probe.py",
+                }
             if "/actions/workflows/" in path:
                 return {"id": len(observed), "state": "active"}
             raise AssertionError(path)
@@ -141,11 +145,26 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                 "updated_at": "2026-07-31T12:00:00Z",
             }
         ]
+        native = [
+            {
+                "workflow": "ci.yml",
+                "run_id": 11,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
         with (
             patch.object(self.runtime, "api", side_effect=fake_api),
             patch.object(self.runtime, "changed_paths", return_value=["probe.py"]),
             patch.object(self.runtime, "attestation_attempts", return_value=attempts),
-            patch.object(self.runtime, "_sanitized_check_evidence", return_value='[{"name":"CI"}]'),
+            patch.object(
+                self.runtime, "native_workflow_evidence", return_value=(True, native)
+            ),
+            patch.object(
+                self.runtime,
+                "_sanitized_check_evidence",
+                return_value='[{"name":"CI"}]',
+            ),
             patch.object(
                 self.runtime,
                 "exact_codex_evidence",
@@ -167,37 +186,50 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         self.assertIn(
             "repos/example/foundation/collaborators/owner/permission", observed
         )
-        for workflow in self.runtime.AUDIT_WORKFLOWS:
-            self.assertIn(
-                f"repos/example/foundation/actions/workflows/{workflow}", observed
-            )
         self.assertIn("run_id", audit["workflow_run_and_job_evidence"])
+        self.assertIn("ci.yml", audit["native_pull_request_workflow_evidence"])
         self.assertIn("CI", audit["check_evidence"])
         self.assertIn("codex=blocking", audit["review_and_provenance"])
         self.assertIn("mergeable=True", audit["mergeability"])
+        self.assertIn("all_paths=True", audit["scope_and_authorization"])
         self.assertIn("initial_and_final_head_confirmed=true", audit["repository_metadata"])
 
     def test_failed_or_moved_audit_persists_nothing(self):
         moved = {**self.pr, "head": {"sha": "b" * 40}}
         with (
-            patch.object(self.runtime, "api", side_effect=[
-                {"visibility": "public", "default_branch": "main"},
-                self.pr,
-                {"permission": "admin"},
-                {"id": 1, "state": "active"},
-                {"id": 2, "state": "active"},
-                {"id": 3, "state": "active"},
-                {"id": 4, "state": "active"},
-                {"state": "open", "user": {"login": "owner"}, "body": ""},
-                moved,
-            ]),
+            patch.object(
+                self.runtime,
+                "api",
+                side_effect=[
+                    {"visibility": "public", "default_branch": "main"},
+                    self.pr,
+                    {"permission": "admin"},
+                    {"id": 1, "state": "active"},
+                    {"id": 2, "state": "active"},
+                    {"id": 3, "state": "active"},
+                    {"id": 4, "state": "active"},
+                    {
+                        "state": "open",
+                        "user": {"login": "owner"},
+                        "body": "## Allowed paths\n- probe.py",
+                    },
+                    moved,
+                ],
+            ),
             patch.object(self.runtime, "changed_paths", return_value=["probe.py"]),
             patch.object(self.runtime, "attestation_attempts", return_value=[]),
+            patch.object(
+                self.runtime, "native_workflow_evidence", return_value=(False, [])
+            ),
             patch.object(self.runtime, "_sanitized_check_evidence", return_value="[]"),
             patch.object(
                 self.runtime,
                 "exact_codex_evidence",
-                return_value={"state": "pending", "timestamp": None, "request_timestamp": None},
+                return_value={
+                    "state": "pending",
+                    "timestamp": None,
+                    "request_timestamp": None,
+                },
             ),
             patch.object(self.runtime, "unresolved_review_threads", return_value=False),
             patch.object(self.runtime, "persist_internal_stop_record") as persist,
@@ -208,7 +240,7 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                 )
         persist.assert_not_called()
 
-    def test_internal_record_path_and_canonical_content_are_deterministic(self):
+    def test_internal_record_paths_and_content_are_deterministic(self):
         path = self.runtime.internal_stop_record_path(
             7, self.sha, "NO_MEANINGFUL_PROGRESS"
         )
@@ -216,6 +248,12 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             path,
             f"automation-stops/pr-7/{self.sha}/NO_MEANINGFUL_PROGRESS.json",
         )
+        notice_path = self.runtime.human_notice_record_path(
+            7,
+            self.sha,
+            "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
+        )
+        self.assertTrue(notice_path.endswith(".notice.json"))
         first = self.runtime.canonical_internal_stop_record(
             pr_number=7,
             issue_number=5,
@@ -237,7 +275,7 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         self.assertFalse(payload["notification"])
         self.assertIsNone(payload["required_human_action"])
 
-    def test_persist_internal_record_creates_once_and_existing_path_dedupes(self):
+    def test_persist_exact_record_requires_content_equality(self):
         path = self.runtime.internal_stop_record_path(
             7, self.sha, "NO_MEANINGFUL_PROGRESS"
         )
@@ -265,77 +303,102 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
 
         with (
             patch.object(self.runtime, "ensure_internal_stop_branch"),
-            patch.object(self.runtime, "_existing_internal_record", return_value=content),
-            patch.object(self.runtime, "gh_result") as no_put,
+            patch.object(self.runtime, "_existing_internal_record", return_value="{}\n"),
         ):
-            self.assertFalse(
+            with self.assertRaises(RuntimeError):
                 self.runtime.persist_internal_stop_record(
                     path, content, "NO_MEANINGFUL_PROGRESS", 7
                 )
-            )
-        no_put.assert_not_called()
 
-    def test_stop_report_persists_without_commenting(self):
+    def test_stop_report_persists_without_comment_or_label_mutation(self):
         path = self.runtime.internal_stop_record_path(
             7, self.sha, "NO_MEANINGFUL_PROGRESS"
         )
         with (
             patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
             patch.object(self.runtime, "_live_pr", return_value=self.pr),
-            patch.object(self.runtime, "persist_internal_stop_record", return_value=True) as persist,
-            patch.object(self.runtime, "ensure_label"),
+            patch.object(
+                self.runtime, "persist_internal_stop_record", return_value=True
+            ) as persist,
+            patch.object(self.runtime, "ensure_label") as label,
             patch.object(self.runtime, "comment") as comment,
         ):
             self.runtime.stop_report(
                 self.pr, 5, "NO_MEANINGFUL_PROGRESS", "bounded stop"
             )
         comment.assert_not_called()
+        label.assert_not_called()
         self.assertEqual(persist.call_args.args[0], path)
         self.assertIn('"notification": false', persist.call_args.args[1])
 
-    def test_codex_pending_timestamp_comes_only_from_trusted_bot_request(self):
-        trusted = {
-            "id": 2,
-            "body": f"<!-- foundation-codex-request:{self.sha} -->\n{self.sha}",
-            "user": {"login": self.runtime.ACTIONS_LOGIN},
+    def test_codex_events_are_sorted_by_immutable_event_time(self):
+        older_review = {
+            "body": f"No major issues. {self.sha}",
+            "user": {"login": self.runtime.CODEX_LOGIN},
+            "submitted_at": "2026-07-31T11:00:00Z",
+        }
+        newer_blocker = {
+            "body": f"Blocking finding for {self.sha}",
+            "user": {"login": self.runtime.CODEX_LOGIN},
             "created_at": "2026-07-31T12:00:00Z",
             "updated_at": "2026-07-31T12:00:00Z",
         }
-        untrusted = {
-            **trusted,
-            "id": 1,
-            "user": {"login": "contributor"},
-            "created_at": "2026-07-31T11:00:00Z",
-            "updated_at": "2026-07-31T11:00:00Z",
-        }
         with (
-            patch.object(self.runtime, "_codex_items", return_value=[untrusted, trusted]),
-            patch.object(self.runtime, "api_list", return_value=[]),
+            patch.object(
+                self.runtime,
+                "api_list",
+                side_effect=[[newer_blocker], [older_review]],
+            ),
+            patch.object(self.runtime, "unresolved_review_threads", return_value=False),
         ):
             evidence = self.runtime.exact_codex_evidence(7, self.sha)
-        self.assertEqual(evidence["state"], "pending")
-        self.assertEqual(evidence["request_timestamp"], "2026-07-31T12:00:00Z")
+        self.assertEqual(evidence["state"], "blocking")
+        self.assertEqual(evidence["timestamp"], "2026-07-31T12:00:00Z")
 
-    def test_human_notice_revalidates_and_only_trusted_bot_marker_dedupes(self):
+    def test_human_notice_persists_exact_record_before_comment_and_dedupes(self):
         fields = self.valid_fields()
         marker = self.runtime.format_human_only_notice(**fields).splitlines()[0]
         live = self.notice_pr()
         audit = {"exact_head_sha": self.sha}
         posted = []
+        records = {}
         untrusted = {
             "body": marker,
             "user": {"login": "contributor"},
             "created_at": "2026-07-31T12:00:00Z",
             "updated_at": "2026-07-31T12:00:00Z",
         }
+
+        def persist(path, content, reason, number):
+            records[path] = content
+            return True
+
+        def existing(path):
+            return records.get(path)
+
         with (
             patch.object(self.runtime, "_validated_notice_destination", return_value=live),
             patch.object(self.runtime, "self_resolution_audit", return_value=audit),
             patch.object(self.runtime, "api_list", return_value=[untrusted]),
-            patch.object(self.runtime, "comment", side_effect=lambda number, body: posted.append((number, body))),
+            patch.object(
+                self.runtime, "persist_human_notice_record", side_effect=persist
+            ) as persisted,
+            patch.object(
+                self.runtime, "_existing_internal_record", side_effect=existing
+            ),
+            patch.object(
+                self.runtime,
+                "comment",
+                side_effect=lambda number, body: posted.append((number, body)),
+            ),
         ):
             self.runtime.human_only_notice(**fields)
         self.assertEqual(len(posted), 1)
+        persisted.assert_called_once()
+        record = json.loads(next(iter(records.values())))
+        self.assertEqual(record["attempted_connected_paths"], fields["attempted_connected_paths"])
+        self.assertEqual(record["impossibility_evidence"], fields["impossibility_evidence"])
+        self.assertEqual(record["targets"], fields["targets"])
 
         trusted = {
             "body": posted[0][1],
@@ -347,10 +410,38 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             patch.object(self.runtime, "_validated_notice_destination", return_value=live),
             patch.object(self.runtime, "self_resolution_audit", return_value=audit),
             patch.object(self.runtime, "api_list", return_value=[trusted]),
+            patch.object(self.runtime, "persist_human_notice_record", side_effect=persist),
+            patch.object(
+                self.runtime, "_existing_internal_record", side_effect=existing
+            ),
             patch.object(self.runtime, "comment") as no_comment,
         ):
             self.runtime.human_only_notice(**fields)
         no_comment.assert_not_called()
+
+    def test_trusted_notice_comment_without_matching_record_fails_closed(self):
+        fields = self.valid_fields()
+        live = self.notice_pr()
+        marker = self.runtime.format_human_only_notice(**fields).splitlines()[0]
+        trusted = {
+            "body": marker,
+            "user": {"login": self.runtime.ACTIONS_LOGIN},
+            "created_at": "2026-07-31T12:00:00Z",
+            "updated_at": "2026-07-31T12:00:00Z",
+        }
+        with (
+            patch.object(self.runtime, "_validated_notice_destination", return_value=live),
+            patch.object(
+                self.runtime,
+                "self_resolution_audit",
+                return_value={"exact_head_sha": self.sha},
+            ),
+            patch.object(self.runtime, "api_list", return_value=[trusted]),
+            patch.object(self.runtime, "persist_human_notice_record", return_value=False),
+            patch.object(self.runtime, "_existing_internal_record", return_value=None),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.runtime.human_only_notice(**fields)
 
     def test_human_notice_rejects_stale_head_and_cross_wired_issue(self):
         fields = self.valid_fields()
