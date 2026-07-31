@@ -100,7 +100,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             "referenced_workflows",
             "current_default_sha()",
             "expected_external_id",
-            "run.get(\"path\") != expected_caller",
+            "CALLER_WORKFLOW_PATH not in path",
             "reviewThreads(first:100,after:$cursor)",
             "hasNextPage",
             "expected_marker",
@@ -115,7 +115,8 @@ class WorkflowSecurityTest(unittest.TestCase):
 
     def test_source_issue_and_negative_e2e_close_are_owner_trusted(self):
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
-        self.assertIn('get("login") == AUTOMATION_OWNER', runtime)
+        self.assertIn("TRUSTED_ISSUE_AUTHORS = {AUTOMATION_OWNER, REPOSITORY_OWNER}", runtime)
+        self.assertIn("login in TRUSTED_ISSUE_AUTHORS", runtime)
         self.assertIn('not issue.get("pull_request")', runtime)
         self.assertIn('E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"', runtime)
         self.assertIn("E2E_AUTO_CLOSE_MARKER in issue_body", runtime)
