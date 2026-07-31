@@ -1,0 +1,216 @@
+name: Trusted Exact-SHA Checks
+run-name: Trusted checks ${{ inputs.target_sha }}
+
+on:
+  workflow_call:
+    inputs:
+      target_sha:
+        description: Immutable same-repository Pull Request head SHA
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: trusted-checks-${{ inputs.target_sha }}
+  cancel-in-progress: false
+
+jobs:
+  begin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
+    outputs:
+      ci_check_id: ${{ steps.begin.outputs.ci_check_id }}
+      test_check_id: ${{ steps.begin.outputs.test_check_id }}
+    steps:
+      - name: Verify immutable candidate and create attestations
+        id: begin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          repo = os.environ["REPOSITORY"]
+          default = os.environ["DEFAULT_BRANCH"]
+          owner = os.environ["AUTOMATION_OWNER"]
+          sha = os.environ["TARGET_SHA"]
+          run_url = os.environ["RUN_URL"]
+          allowed_authors = {owner, "github-actions[bot]"}
+          allowed_prefixes = ("claude-issue-", "automation/", "fix/")
+
+          if not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("target_sha must be one lowercase 40-character commit SHA")
+
+          def gh(*args: str) -> str:
+              return subprocess.check_output(["gh", *args], text=True)
+
+          pulls = json.loads(
+              gh(
+                  "api",
+                  "-H",
+                  "Accept: application/vnd.github+json",
+                  f"repos/{repo}/commits/{sha}/pulls?per_page=100",
+              )
+          )
+          candidates = []
+          for pr in pulls:
+              head = pr.get("head") or {}
+              base = pr.get("base") or {}
+              author = (pr.get("user") or {}).get("login") or ""
+              if pr.get("state") != "open":
+                  continue
+              if head.get("sha") != sha:
+                  continue
+              if ((head.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if ((base.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if base.get("ref") != default:
+                  continue
+              if author not in allowed_authors:
+                  continue
+              if not (head.get("ref") or "").startswith(allowed_prefixes):
+                  continue
+              if any(label.get("name") == "ai-no-merge" for label in pr.get("labels") or []):
+                  continue
+              candidates.append(pr)
+
+          if not candidates:
+              raise SystemExit("target_sha is not the current head of an eligible same-repository Pull Request")
+
+          def create(name: str, kind: str) -> int:
+              payload = json.loads(
+                  gh(
+                      "api",
+                      "--method",
+                      "POST",
+                      f"repos/{repo}/check-runs",
+                      "-f",
+                      f"name={name}",
+                      "-f",
+                      f"head_sha={sha}",
+                      "-f",
+                      "status=in_progress",
+                      "-f",
+                      f"details_url={run_url}",
+                      "-f",
+                      f"external_id=foundation:trusted-checks:{kind}:{sha}:{os.environ['GITHUB_RUN_ID']}",
+                  )
+              )
+              return int(payload["id"])
+
+          ci_id = create("CI / validate", "ci")
+          test_id = create("Unit Tests / test", "tests")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"ci_check_id={ci_id}\n")
+              output.write(f"test_check_id={test_id}\n")
+          PY
+
+  validate:
+    needs: begin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      conclusion: ${{ steps.execute.outputs.conclusion }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Execute repository validation without write permission
+        id: execute
+        run: |
+          set +e
+          ruby -e 'require "psych"; Dir[".github/workflows/*.{yml,yaml}"].sort.each { |path| documents = Psych.parse_stream(File.read(path)).children; raise "#{path}: expected exactly one YAML document" unless documents.length == 1; puts "parsed #{path}" }' && \
+            python scripts/public_export_guard.py . && \
+            python scripts/validate_repository.py
+          result=$?
+          if [ "$result" -eq 0 ]; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+  test:
+    needs: begin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      conclusion: ${{ steps.execute.outputs.conclusion }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.target_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Execute unit tests without write permission
+        id: execute
+        run: |
+          set +e
+          python -m unittest discover -s tests
+          result=$?
+          if [ "$result" -eq 0 ]; then
+            echo "conclusion=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+  finalize:
+    if: ${{ always() && needs.begin.result == 'success' }}
+    needs: [begin, validate, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      checks: write
+      contents: read
+    steps:
+      - name: Complete exact-SHA attestations without proposed-code execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CI_CHECK_ID: ${{ needs.begin.outputs.ci_check_id }}
+          TEST_CHECK_ID: ${{ needs.begin.outputs.test_check_id }}
+          CI_CONCLUSION: ${{ needs.validate.outputs.conclusion || 'failure' }}
+          TEST_CONCLUSION: ${{ needs.test.outputs.conclusion || 'failure' }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          complete() {
+            local check_id="$1"
+            local conclusion="$2"
+            local title="$3"
+            gh api --method PATCH \
+              "repos/$REPOSITORY/check-runs/$check_id" \
+              -f status=completed \
+              -f conclusion="$conclusion" \
+              -f completed_at="$completed_at" \
+              -f "output[title]=$title" \
+              -f "output[summary]=Trusted default-branch validation of immutable commit $TARGET_SHA concluded $conclusion."
+          }
+          complete "$CI_CHECK_ID" "$CI_CONCLUSION" "Trusted CI attestation"
+          complete "$TEST_CHECK_ID" "$TEST_CONCLUSION" "Trusted unit-test attestation"
