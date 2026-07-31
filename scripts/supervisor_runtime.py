@@ -91,8 +91,8 @@ def api_key_pages(path: str, key: str) -> list[dict[str, Any]]:
     return items
 
 
-@lru_cache(maxsize=1)
 def current_default_sha() -> str:
+    """Return a fresh default-branch SHA for every security decision."""
     return str(api(f"repos/{REPO}/commits/{DEFAULT_BRANCH}")["sha"])
 
 
