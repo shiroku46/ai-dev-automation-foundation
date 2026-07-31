@@ -18,6 +18,7 @@ ENVIRONMENT = {
     "AUTOMATION_OWNER": "owner",
 }
 SHA = "a" * 40
+PR_NUMBER = 7
 
 
 def load_runtime():
@@ -39,45 +40,50 @@ paths:
 operation: bounded
 -->
 """
-        self.assertEqual(
-            declared_paths(body),
-            {"scripts/probe.py", "tests/**", "scripts/supervisor_runtime.py"},
-        )
+        self.assertEqual(declared_paths(body), {"scripts/probe.py", "tests/**"})
         self.assertTrue(
             scope_is_authorized(
                 ["scripts/probe.py", "tests/unit/test_probe.py"], body
             )
         )
         self.assertFalse(
+            scope_is_authorized(["scripts/supervisor_runtime.py"], body)
+        )
+        self.assertFalse(
             scope_is_authorized(["scripts/probe.py", "README.md"], body)
         )
 
-    def test_protected_paths_require_the_protected_contract(self):
-        body = """
-## Allowed paths
-- scripts/supervisor_runtime.py
-"""
-        self.assertTrue(scope_is_authorized(["scripts/supervisor_runtime.py"], body))
-        self.assertFalse(
-            protected_scope_is_authorized(["scripts/supervisor_runtime.py"], body)
-        )
-        authorized = body + """
+    def test_protected_paths_require_independent_declarations(self):
+        protected_only = """
 <!-- foundation-protected-authorization
 paths:
 - scripts/supervisor_runtime.py
 operation: bounded
 -->
 """
+        self.assertFalse(
+            scope_is_authorized(["scripts/supervisor_runtime.py"], protected_only)
+        )
+        body = """
+## Allowed paths
+- scripts/supervisor_runtime.py
+
+<!-- foundation-protected-authorization
+paths:
+- scripts/supervisor_runtime.py
+operation: bounded
+-->
+"""
+        self.assertTrue(scope_is_authorized(["scripts/supervisor_runtime.py"], body))
         self.assertTrue(
-            protected_scope_is_authorized(
-                ["scripts/supervisor_runtime.py"], authorized
-            )
+            protected_scope_is_authorized(["scripts/supervisor_runtime.py"], body)
         )
 
     def test_invalid_or_unbounded_path_declarations_fail_closed(self):
-        body = "## Allowed paths\n- ../outside.py\n- prose description here\n"
-        self.assertEqual(declared_paths(body), set())
+        body = "## Allowed paths\n- ../outside.py\n- *.py\n- prose description here\n"
+        self.assertEqual(declared_paths(body), {"*.py"})
         self.assertFalse(scope_is_authorized(["README.md"], body))
+        self.assertFalse(scope_is_authorized(["probe.py"], body))
 
 
 class NativeWorkflowEvidenceTest(unittest.TestCase):
@@ -108,6 +114,9 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             "head_sha": sha,
             "repository": {"full_name": "example/foundation"},
             "head_repository": {"full_name": "example/foundation"},
+            "pull_requests": [
+                {"number": PR_NUMBER, "base": {"ref": "main"}}
+            ],
             "path": {
                 1: ".github/workflows/ci.yml",
                 2: ".github/workflows/unit-tests.yml",
@@ -120,109 +129,129 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             "updated_at": "2026-07-31T12:00:00Z",
         }
 
-    def test_complete_fixed_native_workflows_authorize_exact_sha(self):
-        metadata = [
-            self.metadata_result("ci.yml", 1),
-            self.metadata_result("unit-tests.yml", 2),
-            self.metadata_result("e2e.yml", 3),
-        ]
+    def evidence(self, metadata, runs, definitions=None):
+        definitions = definitions or [True] * len(runs)
         with (
             patch.object(self.runtime, "gh_result", side_effect=metadata),
             patch.object(
                 self.runtime,
-                "api_key_pages",
-                side_effect=[
-                    [self.make_run(1)],
-                    [self.make_run(2)],
-                    [self.make_run(3)],
-                ],
+                "_workflow_definition_matches_default",
+                side_effect=definitions,
             ),
+            patch.object(self.runtime, "api_key_pages", side_effect=runs),
         ):
-            clean, evidence = self.runtime.native_workflow_evidence(SHA)
+            return self.runtime.native_workflow_evidence(SHA, PR_NUMBER)
+
+    def test_complete_fixed_native_workflows_authorize_exact_sha(self):
+        clean, evidence = self.evidence(
+            [
+                self.metadata_result("ci.yml", 1),
+                self.metadata_result("unit-tests.yml", 2),
+                self.metadata_result("e2e.yml", 3),
+            ],
+            [[self.make_run(1)], [self.make_run(2)], [self.make_run(3)]],
+        )
         self.assertTrue(clean)
         self.assertEqual(
             [item["workflow"] for item in evidence],
             ["ci.yml", "unit-tests.yml", "e2e.yml"],
         )
 
-    def test_missing_pending_failed_and_stale_runs_fail_closed(self):
-        not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
-        cases = (
-            ([], [self.make_run(2)], False),
-            (
-                [self.make_run(1, status="in_progress", conclusion=None)],
-                [self.make_run(2)],
-                False,
-            ),
-            ([self.make_run(1, conclusion="failure")], [self.make_run(2)], False),
-            ([self.make_run(1, sha="b" * 40)], [self.make_run(2)], False),
+    def test_candidate_modified_workflow_definition_fails_closed(self):
+        clean, evidence = self.evidence(
+            [
+                self.metadata_result("ci.yml", 1),
+                self.metadata_result("unit-tests.yml", 2),
+                subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found"),
+            ],
+            [[self.make_run(2)]],
+            definitions=[False, True],
         )
-        for ci_runs, unit_runs, expected in cases:
+        self.assertFalse(clean)
+        self.assertEqual(evidence[0]["status"], "untrusted-definition")
+
+    def test_definition_binding_compares_candidate_and_stable_default_blobs(self):
+        with (
+            patch.object(
+                self.runtime,
+                "current_default_sha",
+                side_effect=["b" * 40, "b" * 40],
+            ),
+            patch.object(
+                self.runtime,
+                "_content_blob_sha",
+                side_effect=["blob-1", "blob-1"],
+            ) as blobs,
+        ):
+            self.assertTrue(
+                self.runtime._workflow_definition_matches_default("ci.yml", SHA)
+            )
+        self.assertEqual(blobs.call_count, 2)
+
+        with (
+            patch.object(
+                self.runtime,
+                "current_default_sha",
+                side_effect=["b" * 40, "b" * 40],
+            ),
+            patch.object(
+                self.runtime,
+                "_content_blob_sha",
+                side_effect=["default", "candidate"],
+            ),
+        ):
+            self.assertFalse(
+                self.runtime._workflow_definition_matches_default("ci.yml", SHA)
+            )
+
+    def test_missing_pending_failed_stale_and_cross_pr_runs_fail_closed(self):
+        not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
+        cross_pr = self.make_run(1)
+        cross_pr["pull_requests"] = [{"number": 99, "base": {"ref": "main"}}]
+        cases = (
+            ([], [self.make_run(2)]),
+            ([self.make_run(1, status="in_progress", conclusion=None)], [self.make_run(2)]),
+            ([self.make_run(1, conclusion="failure")], [self.make_run(2)]),
+            ([self.make_run(1, sha="b" * 40)], [self.make_run(2)]),
+            ([cross_pr], [self.make_run(2)]),
+        )
+        for ci_runs, unit_runs in cases:
             with self.subTest(ci_runs=ci_runs):
-                with (
-                    patch.object(
-                        self.runtime,
-                        "gh_result",
-                        side_effect=[
-                            self.metadata_result("ci.yml", 1),
-                            self.metadata_result("unit-tests.yml", 2),
-                            not_found,
-                        ],
-                    ),
-                    patch.object(
-                        self.runtime,
-                        "api_key_pages",
-                        side_effect=[ci_runs, unit_runs],
-                    ),
-                ):
-                    clean, _ = self.runtime.native_workflow_evidence(SHA)
-                self.assertEqual(clean, expected)
+                clean, _ = self.evidence(
+                    [
+                        self.metadata_result("ci.yml", 1),
+                        self.metadata_result("unit-tests.yml", 2),
+                        not_found,
+                    ],
+                    [ci_runs, unit_runs],
+                )
+                self.assertFalse(clean)
 
     def test_wrong_repository_or_workflow_identity_is_rejected(self):
         wrong_repo = self.make_run(1)
         wrong_repo["repository"] = {"full_name": "attacker/fork"}
         wrong_workflow = self.make_run(2)
         wrong_workflow["workflow_id"] = 99
-        not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
-        with (
-            patch.object(
-                self.runtime,
-                "gh_result",
-                side_effect=[
-                    self.metadata_result("ci.yml", 1),
-                    self.metadata_result("unit-tests.yml", 2),
-                    not_found,
-                ],
-            ),
-            patch.object(
-                self.runtime,
-                "api_key_pages",
-                side_effect=[[wrong_repo], [wrong_workflow]],
-            ),
-        ):
-            clean, evidence = self.runtime.native_workflow_evidence(SHA)
+        clean, evidence = self.evidence(
+            [
+                self.metadata_result("ci.yml", 1),
+                self.metadata_result("unit-tests.yml", 2),
+                subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found"),
+            ],
+            [[wrong_repo], [wrong_workflow]],
+        )
         self.assertFalse(clean)
         self.assertTrue(all(item["status"] == "missing" for item in evidence))
 
     def test_optional_e2e_is_not_required_when_absent(self):
-        not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
-        with (
-            patch.object(
-                self.runtime,
-                "gh_result",
-                side_effect=[
-                    self.metadata_result("ci.yml", 1),
-                    self.metadata_result("unit-tests.yml", 2),
-                    not_found,
-                ],
-            ),
-            patch.object(
-                self.runtime,
-                "api_key_pages",
-                side_effect=[[self.make_run(1)], [self.make_run(2)]],
-            ),
-        ):
-            clean, evidence = self.runtime.native_workflow_evidence(SHA)
+        clean, evidence = self.evidence(
+            [
+                self.metadata_result("ci.yml", 1),
+                self.metadata_result("unit-tests.yml", 2),
+                subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found"),
+            ],
+            [[self.make_run(1)], [self.make_run(2)]],
+        )
         self.assertTrue(clean)
         self.assertEqual(len(evidence), 2)
 
