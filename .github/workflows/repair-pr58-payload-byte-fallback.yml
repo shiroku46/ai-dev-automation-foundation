@@ -158,6 +158,9 @@ jobs:
           if repaired.replace(fixed_token, token, 1) != content:
               raise RuntimeError("Payload replacement changed unrelated content")
 
+          live_before_objects = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(live_before_objects)
+
           blob = api_json(
               "POST",
               f"repos/{repository}/git/blobs",
@@ -188,8 +191,8 @@ jobs:
               },
           )
 
-          live = api(f"repos/{repository}/pulls/{pr_number}")
-          require_target(live)
+          live_before_update = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(live_before_update)
           api_json(
               "PATCH",
               f"repos/{repository}/git/refs/heads/{target_branch}",
