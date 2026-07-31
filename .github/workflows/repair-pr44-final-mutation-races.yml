@@ -119,11 +119,27 @@ jobs:
               if (issue.get("user") or {}).get("login") != REPOSITORY.split("/", 1)[0]:
                   raise RuntimeError("Fixed source Issue is not owner-authored")
               issue_body = issue.get("body") or ""
-              for target_path in TARGET_PATHS:
-                  if target_path not in issue_body:
-                      raise RuntimeError(
-                          f"Fixed source Issue no longer authorizes {target_path}"
-                      )
+              marker = "<!-- foundation-protected-authorization"
+              if marker not in issue_body or "-->" not in issue_body.split(marker, 1)[1]:
+                  raise RuntimeError("Fixed source Issue lacks structured authorization")
+              block = issue_body.split(marker, 1)[1].split("-->", 1)[0]
+              authorized_paths = set()
+              in_paths = False
+              for raw in block.splitlines():
+                  line = raw.strip()
+                  if line == "paths:":
+                      in_paths = True
+                      continue
+                  if in_paths and line.startswith("- "):
+                      authorized_paths.add(line[2:].strip("` "))
+                  elif in_paths and line and not line.startswith("#"):
+                      in_paths = False
+              missing = set(TARGET_PATHS) - authorized_paths
+              if missing:
+                  raise RuntimeError(
+                      "Fixed source authorization no longer permits: "
+                      + ", ".join(sorted(missing))
+                  )
           '''
           for old, new, label in (
               (old_guard, new_guard, "source Issue preservation guard"),
