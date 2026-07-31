@@ -1,0 +1,48 @@
+name: Seed reviewed public snapshot
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: seed-public-snapshot
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    if: github.actor == 'shiroku46' && github.repository == 'shiroku46/ai-dev-automation-foundation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install the reviewed history-free snapshot once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARCHIVE_SHA256: 366c32d48f6c912ddd559be7558f5795d818a44f292d722777fa0b62ec9072fe
+        run: |
+          set -euo pipefail
+          gh repo clone "$GITHUB_REPOSITORY" repository -- --branch main --single-branch
+          cd repository
+          archive=.public-seed/foundation-snapshot.tar.gz.b64
+          if [ ! -f "$archive" ]; then
+            echo "Seed archive is not present yet; nothing to do."
+            exit 0
+          fi
+          base64 --decode "$archive" > "$RUNNER_TEMP/foundation-snapshot.tar.gz"
+          echo "$EXPECTED_ARCHIVE_SHA256  $RUNNER_TEMP/foundation-snapshot.tar.gz" | sha256sum --check --status
+          tar -xzf "$RUNNER_TEMP/foundation-snapshot.tar.gz"
+          rm -rf .public-seed .github/workflows/seed-public-snapshot.yml
+          python scripts/public_export_guard.py .
+          python scripts/validate_repository.py
+          python -m unittest discover -s tests
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Snapshot is already installed."
+            exit 0
+          fi
+          git commit -m "Seed sanitized public automation foundation"
+          git push origin HEAD:main
