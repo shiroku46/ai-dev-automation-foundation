@@ -37,7 +37,12 @@ NO_PROGRESS_MINUTES = 60
 ALLOWED_PREFIXES = ("claude-issue-", "automation/", "fix/")
 ALLOWED_AUTHORS = {*TRUSTED_ISSUE_AUTHORS, "github-actions[bot]"}
 TRUSTED_WORKFLOW_PATH = ".github/workflows/trusted-checks.yml"
-AUDIT_WORKFLOWS = ("trusted-checks.yml", "ci-reconcile.yml", "supervisor.yml", "claude-queue.yml")
+AUDIT_WORKFLOWS = (
+    "trusted-checks.yml",
+    "ci-reconcile.yml",
+    "supervisor.yml",
+    "claude-queue.yml",
+)
 CODEX_LOGIN = "chatgpt-codex-connector[bot]"
 ACTIONS_LOGIN = "github-actions[bot]"
 STOP_PREFIX = "<!-- foundation-stop:"
@@ -143,8 +148,16 @@ def comment(number: int, body: str) -> None:
 
 def ensure_label(number: int, label: str, color: str, description: str) -> None:
     gh(
-        "label", "create", label, "--repo", REPO, "--color", color,
-        "--description", description, "--force",
+        "label",
+        "create",
+        label,
+        "--repo",
+        REPO,
+        "--color",
+        color,
+        "--description",
+        description,
+        "--force",
     )
     gh("issue", "edit", str(number), "--repo", REPO, "--add-label", label)
 
@@ -177,6 +190,14 @@ def _normalized_evidence(values: Iterable[str], name: str) -> tuple[str, ...]:
     return normalized
 
 
+def _live_pr(pr_number: int, expected_sha: str) -> dict[str, Any]:
+    live = api(f"repos/{REPO}/pulls/{pr_number}")
+    live_sha = _require_exact_sha(str((live.get("head") or {}).get("sha") or ""))
+    if live_sha != expected_sha:
+        raise RuntimeError("Pull Request head moved during exact-SHA validation")
+    return live
+
+
 def self_resolution_audit(
     pr: dict[str, Any], issue_number: int | None, reason: str
 ) -> dict[str, str]:
@@ -185,11 +206,7 @@ def self_resolution_audit(
     sha = _require_exact_sha(str((pr.get("head") or {}).get("sha") or ""))
 
     repository = api(f"repos/{REPO}")
-    current_pr = api(f"repos/{REPO}/pulls/{pr_number}")
-    current_sha = _require_exact_sha(str((current_pr.get("head") or {}).get("sha") or ""))
-    if current_sha != sha:
-        raise RuntimeError("Pull Request head moved during the self-resolution audit")
-
+    current_pr = _live_pr(pr_number, sha)
     changed = changed_paths(current_pr)
     attempts = attestation_attempts(sha)
     codex_state = exact_codex_state(pr_number, sha)
@@ -217,6 +234,12 @@ def self_resolution_audit(
             else str(protected_scope_is_authorized(changed, issue.get("body") or ""))
         )
 
+    final_pr = _live_pr(pr_number, sha)
+    mergeable = final_pr.get("mergeable")
+    mergeable_state = str(final_pr.get("mergeable_state") or "unknown")
+    if reason == "MERGE_NOT_READY" and mergeable is not False:
+        raise RuntimeError("MERGE_NOT_READY is no longer supported by live mergeability")
+
     return {
         "issue": f"#{issue_number}" if issue_number else "unknown",
         "pull_request": f"#{pr_number}",
@@ -225,16 +248,26 @@ def self_resolution_audit(
         "repository_metadata": (
             f"visibility={repository.get('visibility', 'unknown')},"
             f"default_branch={repository.get('default_branch', 'unknown')},"
-            f"current_head_confirmed={current_sha == sha}"
+            "initial_and_final_head_confirmed=true"
         ),
-        "workflow_run_and_job_evidence": json.dumps(attempts, sort_keys=True, separators=(",", ":")),
+        "workflow_run_and_job_evidence": json.dumps(
+            attempts, sort_keys=True, separators=(",", ":")
+        ),
         "changed_and_renamed_paths": (
             "incomplete" if changed is None else json.dumps(changed, separators=(",", ":"))
         ),
-        "scope_and_authorization": f"issue={issue_state},protected_scope={authorization_state}",
-        "review_and_provenance": f"codex={codex_state},unresolved_threads={unresolved}",
+        "scope_and_authorization": (
+            f"issue={issue_state},protected_scope={authorization_state}"
+        ),
+        "review_and_provenance": (
+            f"codex={codex_state},unresolved_threads={unresolved}"
+        ),
+        "mergeability": (
+            f"mergeable={mergeable},mergeable_state={mergeable_state}"
+        ),
         "permissions_and_credentials": (
-            f"automation_owner_permission={permission or 'unknown'},secret_values_not_requested=true"
+            f"automation_owner_permission={permission or 'unknown'},"
+            "secret_values_not_requested=true"
         ),
         "alternative_connected_paths": ";".join(workflow_states),
         "idempotency": f"marker={STOP_PREFIX}{reason}:{sha}",
@@ -257,6 +290,9 @@ def stop_report(
         raise ValueError("human-only reasons must use the audited human-only formatter")
     sha = _require_exact_sha(str(pr["head"]["sha"]))
     audit = self_resolution_audit(pr, issue_number, reason)
+    live = _live_pr(int(pr["number"]), sha)
+    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
+        raise RuntimeError("terminal mergeability changed before stop publication")
     marker = f"{STOP_PREFIX}{reason}:{sha} -->"
     comments = api_list(f"repos/{REPO}/issues/{pr['number']}/comments?per_page=100")
     if not any(marker in (item.get("body") or "") for item in comments):
@@ -272,12 +308,16 @@ def stop_report(
             "- self_resolution_audit:\n"
             f"{_audit_markdown(audit)}\n"
         )
+        _live_pr(int(pr["number"]), sha)
         comment(int(pr["number"]), body)
     ensure_label(
-        int(pr["number"]), "ai-blocked", "B60205",
+        int(pr["number"]),
+        "ai-blocked",
+        "B60205",
         "Automation stopped after self-resolution",
     )
     if close:
+        _live_pr(int(pr["number"]), sha)
         gh("pr", "close", str(pr["number"]), "--repo", REPO)
 
 
@@ -299,7 +339,9 @@ def format_human_only_notice(
     issue_number = _require_positive_number("issue_number", issue_number)
     pr_number = _require_positive_number("pr_number", pr_number)
     exact_head_sha = _require_exact_sha(exact_head_sha)
-    attempted = _normalized_evidence(attempted_connected_paths, "attempted_connected_paths")
+    attempted = _normalized_evidence(
+        attempted_connected_paths, "attempted_connected_paths"
+    )
     evidence = _normalized_evidence(impossibility_evidence, "impossibility_evidence")
     target_list = _normalized_evidence(targets, "targets")
     expected_action = HUMAN_ONLY_ACTIONS[reason]
@@ -309,8 +351,13 @@ def format_human_only_notice(
         raise ValueError("automatic_resume_condition is required")
     if reason == "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE":
         if len(target_list) != 2 or any("/" not in item for item in target_list):
-            raise ValueError("repository-creation notice requires exactly two owner/name targets")
-    marker = f"{HUMAN_NOTICE_PREFIX}{reason}:{exact_head_sha}:{issue_number}:{pr_number} -->"
+            raise ValueError(
+                "repository-creation notice requires exactly two owner/name targets"
+            )
+    marker = (
+        f"{HUMAN_NOTICE_PREFIX}{reason}:{exact_head_sha}:"
+        f"{issue_number}:{pr_number} -->"
+    )
     attempted_text = "\n".join(f"  - `{item}`" for item in attempted)
     evidence_text = "\n".join(f"  - {item}" for item in evidence)
     targets_text = "\n".join(f"  - `{item}`" for item in target_list)
@@ -332,6 +379,22 @@ def format_human_only_notice(
     )
 
 
+def _validated_notice_destination(
+    pr_number: int, issue_number: int, exact_head_sha: str
+) -> dict[str, Any]:
+    live = _live_pr(pr_number, exact_head_sha)
+    if live.get("state") != "open":
+        raise RuntimeError("human-only notice destination is not an open Pull Request")
+    if parse_issue_number(live.get("body") or "") != issue_number:
+        raise RuntimeError("human-only notice Issue linkage does not match the live Pull Request")
+    issue = api(f"repos/{REPO}/issues/{issue_number}")
+    if not trusted_source_issue(issue):
+        raise RuntimeError("human-only notice source Issue is not trusted")
+    if not trusted_candidate(live):
+        raise RuntimeError("human-only notice destination is not a trusted same-repository candidate")
+    return live
+
+
 def human_only_notice(
     *,
     reason: str,
@@ -344,7 +407,7 @@ def human_only_notice(
     automatic_resume_condition: str,
     targets: Iterable[str],
 ) -> None:
-    """Validate structured fields at publication time and publish exactly once."""
+    """Validate live destination and structured fields at publication time."""
     body = format_human_only_notice(
         reason=reason,
         issue_number=issue_number,
@@ -356,12 +419,14 @@ def human_only_notice(
         automatic_resume_condition=automatic_resume_condition,
         targets=targets,
     )
+    _validated_notice_destination(pr_number, issue_number, exact_head_sha)
     marker = body.splitlines()[0]
     expected_suffix = f":{issue_number}:{pr_number} -->"
     if not marker.startswith(HUMAN_NOTICE_PREFIX) or not marker.endswith(expected_suffix):
         raise ValueError("validated notice marker is not bound to the destination")
     comments = api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100")
     if not any(marker in (item.get("body") or "") for item in comments):
+        _validated_notice_destination(pr_number, issue_number, exact_head_sha)
         comment(pr_number, body)
 
 
@@ -390,9 +455,16 @@ def unresolved_review_threads(pr_number: int) -> bool:
     cursor: str | None = None
     while True:
         args = [
-            "api", "graphql", "-f", f"query={query}",
-            "-F", f"owner={owner}", "-F", f"name={name}",
-            "-F", f"number={pr_number}",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            f"owner={owner}",
+            "-F",
+            f"name={name}",
+            "-F",
+            f"number={pr_number}",
         ]
         if cursor:
             args.extend(["-F", f"cursor={cursor}"])
@@ -562,7 +634,12 @@ def attestation_attempts(sha: str) -> list[dict[str, Any]]:
                 and complete
             )
         attempts.append(
-            {"run_id": run_id, "active": active, "success": success, "complete": complete}
+            {
+                "run_id": run_id,
+                "active": active,
+                "success": success,
+                "complete": complete,
+            }
         )
     return sorted(attempts, key=lambda item: int(item["run_id"]))
 
@@ -571,7 +648,9 @@ def changed_paths(pr: dict[str, Any]) -> list[str] | None:
     expected = int(pr.get("changed_files") or 0)
     if expected > MAX_CHANGED_FILES:
         return None
-    files = api_list(f"repos/{REPO}/pulls/{pr['number']}/files?per_page={MAX_CHANGED_FILES}")
+    files = api_list(
+        f"repos/{REPO}/pulls/{pr['number']}/files?per_page={MAX_CHANGED_FILES}"
+    )
     if len(files) != expected:
         return None
     paths: set[str] = set()
@@ -654,17 +733,26 @@ def supervise() -> None:
 
         issue_number, issue, _, scope_error = source_and_scope(pr)
         if scope_error == "MISSING_TRUSTED_SOURCE_ISSUE":
-            stop_report(pr, None, scope_error, "PR body identifies no trusted source Issue.")
+            stop_report(
+                pr,
+                None,
+                scope_error,
+                "PR body identifies no trusted source Issue.",
+            )
             continue
         if scope_error == "UNTRUSTED_SOURCE_ISSUE":
             stop_report(
-                pr, issue_number, scope_error,
+                pr,
+                issue_number,
+                scope_error,
                 "The referenced source is not a trusted owner-authored repository Issue.",
             )
             continue
         if scope_error == "INCOMPLETE_CHANGED_FILE_EVIDENCE":
             stop_report(
-                pr, issue_number, scope_error,
+                pr,
+                issue_number,
+                scope_error,
                 f"Changed/renamed path evidence exceeded or did not match the bounded {MAX_CHANGED_FILES}-file snapshot.",
             )
             continue
@@ -672,10 +760,15 @@ def supervise() -> None:
             issue_body = (issue or {}).get("body") or ""
             auto_close = bool(
                 E2E_AUTO_CLOSE_MARKER in issue_body
-                or any(label.get("name") == "e2e-auto-close" for label in pr.get("labels") or [])
+                or any(
+                    label.get("name") == "e2e-auto-close"
+                    for label in pr.get("labels") or []
+                )
             )
             stop_report(
-                pr, issue_number, scope_error,
+                pr,
+                issue_number,
+                scope_error,
                 "Protected changed or renamed paths lack exact Issue authorization.",
                 close=auto_close,
             )
@@ -685,19 +778,25 @@ def supervise() -> None:
         if not any(item["success"] for item in attempts):
             if (
                 not any(item["active"] for item in attempts)
-                and len({item["run_id"] for item in attempts}) >= MAX_ATTESTATION_ATTEMPTS
+                and len({item["run_id"] for item in attempts})
+                >= MAX_ATTESTATION_ATTEMPTS
             ):
                 stop_report(
-                    pr, issue_number, "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
+                    pr,
+                    issue_number,
+                    "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
                     "Three fixed candidate-bound workflow attempts completed without one complete successful immutable run/job evidence set.",
                 )
             elif (
                 not any(item["active"] for item in attempts)
                 and pr.get("updated_at")
-                and minutes_without_progress(str(pr["updated_at"])) >= NO_PROGRESS_MINUTES
+                and minutes_without_progress(str(pr["updated_at"]))
+                >= NO_PROGRESS_MINUTES
             ):
                 stop_report(
-                    pr, issue_number, "NO_MEANINGFUL_PROGRESS",
+                    pr,
+                    issue_number,
+                    "NO_MEANINGFUL_PROGRESS",
                     f"No meaningful candidate evidence changed for at least {NO_PROGRESS_MINUTES} minutes.",
                 )
             continue
@@ -708,7 +807,9 @@ def supervise() -> None:
             continue
         if codex_state == "blocking":
             stop_report(
-                pr, issue_number, "BLOCKING_CODEX_REVIEW",
+                pr,
+                issue_number,
+                "BLOCKING_CODEX_REVIEW",
                 "Exact-head Codex evidence contains a blocking finding or unresolved review thread.",
             )
             continue
@@ -724,15 +825,23 @@ def supervise() -> None:
                 continue
         if current.get("mergeable") is False:
             stop_report(
-                current, issue_number, "MERGE_NOT_READY",
+                current,
+                issue_number,
+                "MERGE_NOT_READY",
                 f"GitHub reports mergeable=false with state {current.get('mergeable_state', 'unknown')}.",
             )
             continue
         if current.get("mergeable") is not True:
             continue
         gh(
-            "api", "--method", "PUT", f"repos/{REPO}/pulls/{pr['number']}/merge",
-            "-f", "merge_method=squash", "-f", f"sha={sha}",
+            "api",
+            "--method",
+            "PUT",
+            f"repos/{REPO}/pulls/{pr['number']}/merge",
+            "-f",
+            "merge_method=squash",
+            "-f",
+            f"sha={sha}",
         )
 
 
