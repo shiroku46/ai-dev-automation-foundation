@@ -46,193 +46,22 @@ jobs:
               "tests/test_runtime_scope_and_checks.py",
           )
 
-          CONSTANT_ANCHOR = 'SAFE_REASON = re.compile(r"^[A-Z0-9_]+$")\n'
-          CONSTANT_REPLACEMENT = (
-              CONSTANT_ANCHOR
-              + 'REPOSITORY_TARGET = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")\n'
-              + 'SCOPE_STOP_REASONS = frozenset(\n'
-              + '    {\n'
-              + '        "MISSING_TRUSTED_SOURCE_ISSUE",\n'
-              + '        "UNTRUSTED_SOURCE_ISSUE",\n'
-              + '        "INCOMPLETE_CHANGED_FILE_EVIDENCE",\n'
-              + '        "UNAUTHORIZED_CHANGED_PATH",\n'
-              + '        "UNAUTHORIZED_PROTECTED_PATH",\n'
-              + '    }\n'
-              + ')\n'
-          )
-          FORMAT_OLD = '''        if len(target_list) != 2 or any("/" not in item for item in target_list):
-            raise ValueError("repository-creation notice requires exactly two owner/name targets")
-'''
-          FORMAT_NEW = '''        if len(target_list) != 2 or any(
-            REPOSITORY_TARGET.fullmatch(item) is None for item in target_list
-        ):
-            raise ValueError("repository-creation notice requires exactly two owner/name targets")
-'''
-          CONNECTED_OLD = '''    if len(targets) != 2 or any("/" not in target for target in targets):
-        raise ValueError("repository-creation audit requires exactly two owner/name targets")
-'''
-          CONNECTED_NEW = '''    if len(targets) != 2 or any(
-        REPOSITORY_TARGET.fullmatch(target) is None for target in targets
-    ):
-        raise ValueError("repository-creation audit requires exactly two owner/name targets")
-'''
-          STOP_OLD = '''    live = _live_pr(pr_number, sha)
-    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
-        raise RuntimeError("terminal mergeability changed before stop persistence")
-    path = internal_stop_record_path(pr_number, sha, reason)
-'''
-          STOP_NEW = '''    live = _live_pr(pr_number, sha)
-    if reason in SCOPE_STOP_REASONS:
-        live_issue_number, _, _, live_scope_error = source_and_scope(live)
-        if live_issue_number != issue_number or live_scope_error != reason:
-            raise RuntimeError("scope stop reason changed before stop persistence")
-    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
-        raise RuntimeError("terminal mergeability changed before stop persistence")
-    path = internal_stop_record_path(pr_number, sha, reason)
-'''
-          PERSIST_OLD = '''    _live_pr(pr_number, sha)
-    persist_internal_stop_record(path, content, reason, pr_number)
-    if close:
-        _live_pr(pr_number, sha)
-        gh("pr", "close", str(pr_number), "--repo", REPO)
-'''
-          PERSIST_NEW = '''    live = _live_pr(pr_number, sha)
-    if reason in SCOPE_STOP_REASONS:
-        live_issue_number, _, _, live_scope_error = source_and_scope(live)
-        if live_issue_number != issue_number or live_scope_error != reason:
-            raise RuntimeError("scope stop reason changed immediately before persistence")
-    persist_internal_stop_record(path, content, reason, pr_number)
-    if close:
-        live = _live_pr(pr_number, sha)
-        if reason in SCOPE_STOP_REASONS:
-            live_issue_number, _, _, live_scope_error = source_and_scope(live)
-            if live_issue_number != issue_number or live_scope_error != reason:
-                raise RuntimeError("scope stop reason changed immediately before close")
-        gh("pr", "close", str(pr_number), "--repo", REPO)
-'''
+          def decode(value):
+              return base64.b64decode(value).decode("utf-8")
 
-          HUMAN_TEST_INSERT = r'''
-
-class RepositoryTargetValidationTest(unittest.TestCase):
-    def setUp(self):
-        self.runtime = load_runtime()
-        self.sha = "a" * 40
-        self.reason = "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE"
-        self.valid_targets = ("owner/foundation", "owner/foundation-e2e")
-
-    def _fields(self, targets):
-        attempted = tuple(f"GitHub API GET repos/{target}" for target in targets)
-        impossible = tuple(
-            f"GitHub API returned HTTP 404 for {target}; the exact repository is absent or unavailable to the connected token."
-            for target in targets
-        )
-        return {
-            "reason": self.reason,
-            "issue_number": 58,
-            "pr_number": 62,
-            "exact_head_sha": self.sha,
-            "attempted_connected_paths": attempted,
-            "impossibility_evidence": impossible,
-            "provider_ui_action": self.runtime.HUMAN_ONLY_ACTIONS[self.reason],
-            "automatic_resume_condition": "Both exact repositories become visible.",
-            "targets": targets,
-        }
-
-    def test_formatter_rejects_subresources_and_empty_components(self):
-        invalid_sets = (
-            ("owner/existing-repo/branches/missing", "owner/other"),
-            ("owner/", "owner/other"),
-            ("/repo", "owner/other"),
-            ("owner/repo?ref=missing", "owner/other"),
-        )
-        for targets in invalid_sets:
-            with self.subTest(targets=targets), self.assertRaises(ValueError):
-                self.runtime.format_human_only_notice(**self._fields(targets))
-
-    def test_connected_query_rejects_malformed_target_before_api_call(self):
-        malformed = ("owner/existing-repo/branches/missing", "owner/other")
-        with patch.object(self.runtime, "gh_result") as connected:
-            with self.assertRaises(ValueError):
-                self.runtime._connected_repository_creation_evidence(malformed)
-        connected.assert_not_called()
-'''
-
-          SCOPE_TEST_INSERT = r'''
-
-class StopReasonRevalidationTest(unittest.TestCase):
-    def setUp(self):
-        self.runtime = load_runtime()
-        self.sha = SHA
-        self.pr = {
-            "number": PR_NUMBER,
-            "state": "open",
-            "head": {
-                "sha": self.sha,
-                "ref": "fix/probe",
-                "repo": {"full_name": "example/foundation"},
-            },
-            "base": {
-                "ref": "main",
-                "repo": {"full_name": "example/foundation"},
-            },
-            "user": {"login": "owner"},
-            "labels": [],
-            "body": "Closes #9",
-        }
-
-    def test_cleared_scope_denial_writes_nothing(self):
-        with (
-            patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
-            patch.object(self.runtime, "_live_pr", return_value=self.pr),
-            patch.object(
-                self.runtime,
-                "source_and_scope",
-                return_value=(9, {"number": 9}, ["docs/probe.md"], None),
-            ),
-            patch.object(self.runtime, "persist_internal_stop_record") as persist,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "scope stop reason changed"):
-                self.runtime.stop_report(
-                    self.pr,
-                    9,
-                    "UNAUTHORIZED_CHANGED_PATH",
-                    "stale denial",
-                    close=True,
-                )
-        persist.assert_not_called()
-
-    def test_live_scope_denial_is_rechecked_before_persistence_and_close(self):
-        with (
-            patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
-            patch.object(self.runtime, "_live_pr", return_value=self.pr) as live,
-            patch.object(
-                self.runtime,
-                "source_and_scope",
-                return_value=(
-                    9,
-                    {"number": 9},
-                    ["docs/probe.md"],
-                    "UNAUTHORIZED_CHANGED_PATH",
-                ),
-            ) as source,
-            patch.object(
-                self.runtime, "persist_internal_stop_record", return_value=True
-            ) as persist,
-            patch.object(self.runtime, "gh") as gh,
-        ):
-            self.runtime.stop_report(
-                self.pr,
-                9,
-                "UNAUTHORIZED_CHANGED_PATH",
-                "current denial",
-                close=True,
-            )
-        self.assertGreaterEqual(live.call_count, 3)
-        self.assertEqual(source.call_count, 3)
-        persist.assert_called_once()
-        gh.assert_called_once_with("pr", "close", str(PR_NUMBER), "--repo", "example/foundation")
-'''
-          TEST_MARKER = '\n\nif __name__ == "__main__":\n    unittest.main()\n'
+          CONSTANT_ANCHOR = decode("U0FGRV9SRUFTT04gPSByZS5jb21waWxlKHIiXltBLVowLTlfXSskIikK")
+          CONSTANT_REPLACEMENT = decode("U0FGRV9SRUFTT04gPSByZS5jb21waWxlKHIiXltBLVowLTlfXSskIikKUkVQT1NJVE9SWV9UQVJHRVQgPSByZS5jb21waWxlKHIiXltBLVphLXowLTlfLi1dKy9bQS1aYS16MC05Xy4tXSskIikKU0NPUEVfU1RPUF9SRUFTT05TID0gZnJvemVuc2V0KAogICAgewogICAgICAgICJNSVNTSU5HX1RSVVNURURfU09VUkNFX0lTU1VFIiwKICAgICAgICAiVU5UUlVTVEVEX1NPVVJDRV9JU1NVRSIsCiAgICAgICAgIklOQ09NUExFVEVfQ0hBTkdFRF9GSUxFX0VWSURFTkNFIiwKICAgICAgICAiVU5BVVRIT1JJWkVEX0NIQU5HRURfUEFUSCIsCiAgICAgICAgIlVOQVVUSE9SSVpFRF9QUk9URUNURURfUEFUSCIsCiAgICB9CikK")
+          FORMAT_OLD = decode("ICAgICAgICBpZiBsZW4odGFyZ2V0X2xpc3QpICE9IDIgb3IgYW55KCIvIiBub3QgaW4gaXRlbSBmb3IgaXRlbSBpbiB0YXJnZXRfbGlzdCk6CiAgICAgICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoInJlcG9zaXRvcnktY3JlYXRpb24gbm90aWNlIHJlcXVpcmVzIGV4YWN0bHkgdHdvIG93bmVyL25hbWUgdGFyZ2V0cyIpCg==")
+          FORMAT_NEW = decode("ICAgICAgICBpZiBsZW4odGFyZ2V0X2xpc3QpICE9IDIgb3IgYW55KAogICAgICAgICAgICBSRVBPU0lUT1JZX1RBUkdFVC5mdWxsbWF0Y2goaXRlbSkgaXMgTm9uZSBmb3IgaXRlbSBpbiB0YXJnZXRfbGlzdAogICAgICAgICk6CiAgICAgICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoInJlcG9zaXRvcnktY3JlYXRpb24gbm90aWNlIHJlcXVpcmVzIGV4YWN0bHkgdHdvIG93bmVyL25hbWUgdGFyZ2V0cyIpCg==")
+          CONNECTED_OLD = decode("ICAgIGlmIGxlbih0YXJnZXRzKSAhPSAyIG9yIGFueSgiLyIgbm90IGluIHRhcmdldCBmb3IgdGFyZ2V0IGluIHRhcmdldHMpOgogICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoInJlcG9zaXRvcnktY3JlYXRpb24gYXVkaXQgcmVxdWlyZXMgZXhhY3RseSB0d28gb3duZXIvbmFtZSB0YXJnZXRzIikK")
+          CONNECTED_NEW = decode("ICAgIGlmIGxlbih0YXJnZXRzKSAhPSAyIG9yIGFueSgKICAgICAgICBSRVBPU0lUT1JZX1RBUkdFVC5mdWxsbWF0Y2godGFyZ2V0KSBpcyBOb25lIGZvciB0YXJnZXQgaW4gdGFyZ2V0cwogICAgKToKICAgICAgICByYWlzZSBWYWx1ZUVycm9yKCJyZXBvc2l0b3J5LWNyZWF0aW9uIGF1ZGl0IHJlcXVpcmVzIGV4YWN0bHkgdHdvIG93bmVyL25hbWUgdGFyZ2V0cyIpCg==")
+          STOP_OLD = decode("ICAgIGxpdmUgPSBfbGl2ZV9wcihwcl9udW1iZXIsIHNoYSkKICAgIGlmIHJlYXNvbiA9PSAiTUVSR0VfTk9UX1JFQURZIiBhbmQgbGl2ZS5nZXQoIm1lcmdlYWJsZSIpIGlzIG5vdCBGYWxzZToKICAgICAgICByYWlzZSBSdW50aW1lRXJyb3IoInRlcm1pbmFsIG1lcmdlYWJpbGl0eSBjaGFuZ2VkIGJlZm9yZSBzdG9wIHBlcnNpc3RlbmNlIikKICAgIHBhdGggPSBpbnRlcm5hbF9zdG9wX3JlY29yZF9wYXRoKHByX251bWJlciwgc2hhLCByZWFzb24pCg==")
+          STOP_NEW = decode("ICAgIGxpdmUgPSBfbGl2ZV9wcihwcl9udW1iZXIsIHNoYSkKICAgIGlmIHJlYXNvbiBpbiBTQ09QRV9TVE9QX1JFQVNPTlM6CiAgICAgICAgbGl2ZV9pc3N1ZV9udW1iZXIsIF8sIF8sIGxpdmVfc2NvcGVfZXJyb3IgPSBzb3VyY2VfYW5kX3Njb3BlKGxpdmUpCiAgICAgICAgaWYgbGl2ZV9pc3N1ZV9udW1iZXIgIT0gaXNzdWVfbnVtYmVyIG9yIGxpdmVfc2NvcGVfZXJyb3IgIT0gcmVhc29uOgogICAgICAgICAgICByYWlzZSBSdW50aW1lRXJyb3IoInNjb3BlIHN0b3AgcmVhc29uIGNoYW5nZWQgYmVmb3JlIHN0b3AgcGVyc2lzdGVuY2UiKQogICAgaWYgcmVhc29uID09ICJNRVJHRV9OT1RfUkVBRFkiIGFuZCBsaXZlLmdldCgibWVyZ2VhYmxlIikgaXMgbm90IEZhbHNlOgogICAgICAgIHJhaXNlIFJ1bnRpbWVFcnJvcigidGVybWluYWwgbWVyZ2VhYmlsaXR5IGNoYW5nZWQgYmVmb3JlIHN0b3AgcGVyc2lzdGVuY2UiKQogICAgcGF0aCA9IGludGVybmFsX3N0b3BfcmVjb3JkX3BhdGgocHJfbnVtYmVyLCBzaGEsIHJlYXNvbikK")
+          PERSIST_OLD = decode("ICAgIF9saXZlX3ByKHByX251bWJlciwgc2hhKQogICAgcGVyc2lzdF9pbnRlcm5hbF9zdG9wX3JlY29yZChwYXRoLCBjb250ZW50LCByZWFzb24sIHByX251bWJlcikKICAgIGlmIGNsb3NlOgogICAgICAgIF9saXZlX3ByKHByX251bWJlciwgc2hhKQogICAgICAgIGdoKCJwciIsICJjbG9zZSIsIHN0cihwcl9udW1iZXIpLCAiLS1yZXBvIiwgUkVQTykK")
+          PERSIST_NEW = decode("ICAgIGxpdmUgPSBfbGl2ZV9wcihwcl9udW1iZXIsIHNoYSkKICAgIGlmIHJlYXNvbiBpbiBTQ09QRV9TVE9QX1JFQVNPTlM6CiAgICAgICAgbGl2ZV9pc3N1ZV9udW1iZXIsIF8sIF8sIGxpdmVfc2NvcGVfZXJyb3IgPSBzb3VyY2VfYW5kX3Njb3BlKGxpdmUpCiAgICAgICAgaWYgbGl2ZV9pc3N1ZV9udW1iZXIgIT0gaXNzdWVfbnVtYmVyIG9yIGxpdmVfc2NvcGVfZXJyb3IgIT0gcmVhc29uOgogICAgICAgICAgICByYWlzZSBSdW50aW1lRXJyb3IoInNjb3BlIHN0b3AgcmVhc29uIGNoYW5nZWQgaW1tZWRpYXRlbHkgYmVmb3JlIHBlcnNpc3RlbmNlIikKICAgIHBlcnNpc3RfaW50ZXJuYWxfc3RvcF9yZWNvcmQocGF0aCwgY29udGVudCwgcmVhc29uLCBwcl9udW1iZXIpCiAgICBpZiBjbG9zZToKICAgICAgICBsaXZlID0gX2xpdmVfcHIocHJfbnVtYmVyLCBzaGEpCiAgICAgICAgaWYgcmVhc29uIGluIFNDT1BFX1NUT1BfUkVBU09OUzoKICAgICAgICAgICAgbGl2ZV9pc3N1ZV9udW1iZXIsIF8sIF8sIGxpdmVfc2NvcGVfZXJyb3IgPSBzb3VyY2VfYW5kX3Njb3BlKGxpdmUpCiAgICAgICAgICAgIGlmIGxpdmVfaXNzdWVfbnVtYmVyICE9IGlzc3VlX251bWJlciBvciBsaXZlX3Njb3BlX2Vycm9yICE9IHJlYXNvbjoKICAgICAgICAgICAgICAgIHJhaXNlIFJ1bnRpbWVFcnJvcigic2NvcGUgc3RvcCByZWFzb24gY2hhbmdlZCBpbW1lZGlhdGVseSBiZWZvcmUgY2xvc2UiKQogICAgICAgIGdoKCJwciIsICJjbG9zZSIsIHN0cihwcl9udW1iZXIpLCAiLS1yZXBvIiwgUkVQTykK")
+          HUMAN_TEST_INSERT = decode("CgpjbGFzcyBSZXBvc2l0b3J5VGFyZ2V0VmFsaWRhdGlvblRlc3QodW5pdHRlc3QuVGVzdENhc2UpOgogICAgZGVmIHNldFVwKHNlbGYpOgogICAgICAgIHNlbGYucnVudGltZSA9IGxvYWRfcnVudGltZSgpCiAgICAgICAgc2VsZi5zaGEgPSAiYSIgKiA0MAogICAgICAgIHNlbGYucmVhc29uID0gIkhVTUFOX09OTFlfQUNDT1VOVF9MRVZFTF9SRVBPU0lUT1JZX0NSRUFUSU9OX1VJX1VOQVZBSUxBQkxFIgogICAgICAgIHNlbGYudmFsaWRfdGFyZ2V0cyA9ICgib3duZXIvZm91bmRhdGlvbiIsICJvd25lci9mb3VuZGF0aW9uLWUyZSIpCgogICAgZGVmIF9maWVsZHMoc2VsZiwgdGFyZ2V0cyk6CiAgICAgICAgYXR0ZW1wdGVkID0gdHVwbGUoZiJHaXRIdWIgQVBJIEdFVCByZXBvcy97dGFyZ2V0fSIgZm9yIHRhcmdldCBpbiB0YXJnZXRzKQogICAgICAgIGltcG9zc2libGUgPSB0dXBsZSgKICAgICAgICAgICAgZiJHaXRIdWIgQVBJIHJldHVybmVkIEhUVFAgNDA0IGZvciB7dGFyZ2V0fTsgdGhlIGV4YWN0IHJlcG9zaXRvcnkgaXMgYWJzZW50IG9yIHVuYXZhaWxhYmxlIHRvIHRoZSBjb25uZWN0ZWQgdG9rZW4uIgogICAgICAgICAgICBmb3IgdGFyZ2V0IGluIHRhcmdldHMKICAgICAgICApCiAgICAgICAgcmV0dXJuIHsKICAgICAgICAgICAgInJlYXNvbiI6IHNlbGYucmVhc29uLAogICAgICAgICAgICAiaXNzdWVfbnVtYmVyIjogNTgsCiAgICAgICAgICAgICJwcl9udW1iZXIiOiA2MiwKICAgICAgICAgICAgImV4YWN0X2hlYWRfc2hhIjogc2VsZi5zaGEsCiAgICAgICAgICAgICJhdHRlbXB0ZWRfY29ubmVjdGVkX3BhdGhzIjogYXR0ZW1wdGVkLAogICAgICAgICAgICAiaW1wb3NzaWJpbGl0eV9ldmlkZW5jZSI6IGltcG9zc2libGUsCiAgICAgICAgICAgICJwcm92aWRlcl91aV9hY3Rpb24iOiBzZWxmLnJ1bnRpbWUuSFVNQU5fT05MWV9BQ1RJT05TW3NlbGYucmVhc29uXSwKICAgICAgICAgICAgImF1dG9tYXRpY19yZXN1bWVfY29uZGl0aW9uIjogIkJvdGggZXhhY3QgcmVwb3NpdG9yaWVzIGJlY29tZSB2aXNpYmxlLiIsCiAgICAgICAgICAgICJ0YXJnZXRzIjogdGFyZ2V0cywKICAgICAgICB9CgogICAgZGVmIHRlc3RfZm9ybWF0dGVyX3JlamVjdHNfc3VicmVzb3VyY2VzX2FuZF9lbXB0eV9jb21wb25lbnRzKHNlbGYpOgogICAgICAgIGludmFsaWRfc2V0cyA9ICgKICAgICAgICAgICAgKCJvd25lci9leGlzdGluZy1yZXBvL2JyYW5jaGVzL21pc3NpbmciLCAib3duZXIvb3RoZXIiKSwKICAgICAgICAgICAgKCJvd25lci8iLCAib3duZXIvb3RoZXIiKSwKICAgICAgICAgICAgKCIvcmVwbyIsICJvd25lci9vdGhlciIpLAogICAgICAgICAgICAoIm93bmVyL3JlcG8/cmVmPW1pc3NpbmciLCAib3duZXIvb3RoZXIiKSwKICAgICAgICApCiAgICAgICAgZm9yIHRhcmdldHMgaW4gaW52YWxpZF9zZXRzOgogICAgICAgICAgICB3aXRoIHNlbGYuc3ViVGVzdCh0YXJnZXRzPXRhcmdldHMpLCBzZWxmLmFzc2VydFJhaXNlcyhWYWx1ZUVycm9yKToKICAgICAgICAgICAgICAgIHNlbGYucnVudGltZS5mb3JtYXRfaHVtYW5fb25seV9ub3RpY2UoKipzZWxmLl9maWVsZHModGFyZ2V0cykpCgogICAgZGVmIHRlc3RfY29ubmVjdGVkX3F1ZXJ5X3JlamVjdHNfbWFsZm9ybWVkX3RhcmdldF9iZWZvcmVfYXBpX2NhbGwoc2VsZik6CiAgICAgICAgbWFsZm9ybWVkID0gKCJvd25lci9leGlzdGluZy1yZXBvL2JyYW5jaGVzL21pc3NpbmciLCAib3duZXIvb3RoZXIiKQogICAgICAgIHdpdGggcGF0Y2gub2JqZWN0KHNlbGYucnVudGltZSwgImdoX3Jlc3VsdCIpIGFzIGNvbm5lY3RlZDoKICAgICAgICAgICAgd2l0aCBzZWxmLmFzc2VydFJhaXNlcyhWYWx1ZUVycm9yKToKICAgICAgICAgICAgICAgIHNlbGYucnVudGltZS5fY29ubmVjdGVkX3JlcG9zaXRvcnlfY3JlYXRpb25fZXZpZGVuY2UobWFsZm9ybWVkKQogICAgICAgIGNvbm5lY3RlZC5hc3NlcnRfbm90X2NhbGxlZCgpCg==")
+          SCOPE_TEST_INSERT = decode("CgpjbGFzcyBTdG9wUmVhc29uUmV2YWxpZGF0aW9uVGVzdCh1bml0dGVzdC5UZXN0Q2FzZSk6CiAgICBkZWYgc2V0VXAoc2VsZik6CiAgICAgICAgc2VsZi5ydW50aW1lID0gbG9hZF9ydW50aW1lKCkKICAgICAgICBzZWxmLnNoYSA9IFNIQQogICAgICAgIHNlbGYucHIgPSB7CiAgICAgICAgICAgICJudW1iZXIiOiBQUl9OVU1CRVIsCiAgICAgICAgICAgICJzdGF0ZSI6ICJvcGVuIiwKICAgICAgICAgICAgImhlYWQiOiB7CiAgICAgICAgICAgICAgICAic2hhIjogc2VsZi5zaGEsCiAgICAgICAgICAgICAgICAicmVmIjogImZpeC9wcm9iZSIsCiAgICAgICAgICAgICAgICAicmVwbyI6IHsiZnVsbF9uYW1lIjogImV4YW1wbGUvZm91bmRhdGlvbiJ9LAogICAgICAgICAgICB9LAogICAgICAgICAgICAiYmFzZSI6IHsKICAgICAgICAgICAgICAgICJyZWYiOiAibWFpbiIsCiAgICAgICAgICAgICAgICAicmVwbyI6IHsiZnVsbF9uYW1lIjogImV4YW1wbGUvZm91bmRhdGlvbiJ9LAogICAgICAgICAgICB9LAogICAgICAgICAgICAidXNlciI6IHsibG9naW4iOiAib3duZXIifSwKICAgICAgICAgICAgImxhYmVscyI6IFtdLAogICAgICAgICAgICAiYm9keSI6ICJDbG9zZXMgIzkiLAogICAgICAgIH0KCiAgICBkZWYgdGVzdF9jbGVhcmVkX3Njb3BlX2RlbmlhbF93cml0ZXNfbm90aGluZyhzZWxmKToKICAgICAgICB3aXRoICgKICAgICAgICAgICAgcGF0Y2gub2JqZWN0KHNlbGYucnVudGltZSwgInNlbGZfcmVzb2x1dGlvbl9hdWRpdCIsIHJldHVybl92YWx1ZT17ImEiOiAiMSJ9KSwKICAgICAgICAgICAgcGF0Y2gub2JqZWN0KHNlbGYucnVudGltZSwgIl9saXZlX3ByIiwgcmV0dXJuX3ZhbHVlPXNlbGYucHIpLAogICAgICAgICAgICBwYXRjaC5vYmplY3QoCiAgICAgICAgICAgICAgICBzZWxmLnJ1bnRpbWUsCiAgICAgICAgICAgICAgICAic291cmNlX2FuZF9zY29wZSIsCiAgICAgICAgICAgICAgICByZXR1cm5fdmFsdWU9KDksIHsibnVtYmVyIjogOX0sIFsiZG9jcy9wcm9iZS5tZCJdLCBOb25lKSwKICAgICAgICAgICAgKSwKICAgICAgICAgICAgcGF0Y2gub2JqZWN0KHNlbGYucnVudGltZSwgInBlcnNpc3RfaW50ZXJuYWxfc3RvcF9yZWNvcmQiKSBhcyBwZXJzaXN0LAogICAgICAgICk6CiAgICAgICAgICAgIHdpdGggc2VsZi5hc3NlcnRSYWlzZXNSZWdleChSdW50aW1lRXJyb3IsICJzY29wZSBzdG9wIHJlYXNvbiBjaGFuZ2VkIik6CiAgICAgICAgICAgICAgICBzZWxmLnJ1bnRpbWUuc3RvcF9yZXBvcnQoCiAgICAgICAgICAgICAgICAgICAgc2VsZi5wciwKICAgICAgICAgICAgICAgICAgICA5LAogICAgICAgICAgICAgICAgICAgICJVTkFVVEhPUklaRURfQ0hBTkdFRF9QQVRIIiwKICAgICAgICAgICAgICAgICAgICAic3RhbGUgZGVuaWFsIiwKICAgICAgICAgICAgICAgICAgICBjbG9zZT1UcnVlLAogICAgICAgICAgICAgICAgKQogICAgICAgIHBlcnNpc3QuYXNzZXJ0X25vdF9jYWxsZWQoKQoKICAgIGRlZiB0ZXN0X2xpdmVfc2NvcGVfZGVuaWFsX2lzX3JlY2hlY2tlZF9iZWZvcmVfcGVyc2lzdGVuY2VfYW5kX2Nsb3NlKHNlbGYpOgogICAgICAgIHdpdGggKAogICAgICAgICAgICBwYXRjaC5vYmplY3Qoc2VsZi5ydW50aW1lLCAic2VsZl9yZXNvbHV0aW9uX2F1ZGl0IiwgcmV0dXJuX3ZhbHVlPXsiYSI6ICIxIn0pLAogICAgICAgICAgICBwYXRjaC5vYmplY3Qoc2VsZi5ydW50aW1lLCAiX2xpdmVfcHIiLCByZXR1cm5fdmFsdWU9c2VsZi5wcikgYXMgbGl2ZSwKICAgICAgICAgICAgcGF0Y2gub2JqZWN0KAogICAgICAgICAgICAgICAgc2VsZi5ydW50aW1lLAogICAgICAgICAgICAgICAgInNvdXJjZV9hbmRfc2NvcGUiLAogICAgICAgICAgICAgICAgcmV0dXJuX3ZhbHVlPSgKICAgICAgICAgICAgICAgICAgICA5LAogICAgICAgICAgICAgICAgICAgIHsibnVtYmVyIjogOX0sCiAgICAgICAgICAgICAgICAgICAgWyJkb2NzL3Byb2JlLm1kIl0sCiAgICAgICAgICAgICAgICAgICAgIlVOQVVUSE9SSVpFRF9DSEFOR0VEX1BBVEgiLAogICAgICAgICAgICAgICAgKSwKICAgICAgICAgICAgKSBhcyBzb3VyY2UsCiAgICAgICAgICAgIHBhdGNoLm9iamVjdCgKICAgICAgICAgICAgICAgIHNlbGYucnVudGltZSwgInBlcnNpc3RfaW50ZXJuYWxfc3RvcF9yZWNvcmQiLCByZXR1cm5fdmFsdWU9VHJ1ZQogICAgICAgICAgICApIGFzIHBlcnNpc3QsCiAgICAgICAgICAgIHBhdGNoLm9iamVjdChzZWxmLnJ1bnRpbWUsICJnaCIpIGFzIGdoLAogICAgICAgICk6CiAgICAgICAgICAgIHNlbGYucnVudGltZS5zdG9wX3JlcG9ydCgKICAgICAgICAgICAgICAgIHNlbGYucHIsCiAgICAgICAgICAgICAgICA5LAogICAgICAgICAgICAgICAgIlVOQVVUSE9SSVpFRF9DSEFOR0VEX1BBVEgiLAogICAgICAgICAgICAgICAgImN1cnJlbnQgZGVuaWFsIiwKICAgICAgICAgICAgICAgIGNsb3NlPVRydWUsCiAgICAgICAgICAgICkKICAgICAgICBzZWxmLmFzc2VydEdyZWF0ZXJFcXVhbChsaXZlLmNhbGxfY291bnQsIDMpCiAgICAgICAgc2VsZi5hc3NlcnRFcXVhbChzb3VyY2UuY2FsbF9jb3VudCwgMykKICAgICAgICBwZXJzaXN0LmFzc2VydF9jYWxsZWRfb25jZSgpCiAgICAgICAgZ2guYXNzZXJ0X2NhbGxlZF9vbmNlX3dpdGgoInByIiwgImNsb3NlIiwgc3RyKFBSX05VTUJFUiksICItLXJlcG8iLCAiZXhhbXBsZS9mb3VuZGF0aW9uIikK")
+          TEST_MARKER = decode("CgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgdW5pdHRlc3QubWFpbigpCg==")
 
           def gh(*args, input_value=None):
               result = subprocess.run(
@@ -309,14 +138,13 @@ class StopReasonRevalidationTest(unittest.TestCase):
               ).decode("utf-8")
 
           runtime = texts["scripts/supervisor_runtime.py"]
-          replacements = (
+          for old, new in (
               (CONSTANT_ANCHOR, CONSTANT_REPLACEMENT),
               (FORMAT_OLD, FORMAT_NEW),
               (CONNECTED_OLD, CONNECTED_NEW),
               (STOP_OLD, STOP_NEW),
               (PERSIST_OLD, PERSIST_NEW),
-          )
-          for old, new in replacements:
+          ):
               if runtime.count(old) != 1:
                   raise RuntimeError("Runtime replacement anchor count is not exactly one")
               runtime = runtime.replace(old, new, 1)
@@ -329,7 +157,8 @@ class StopReasonRevalidationTest(unittest.TestCase):
           ):
               if text.count(TEST_MARKER) != 1:
                   raise RuntimeError(f"{name} insertion marker count is not exactly one")
-              if insertion.splitlines()[2] in text:
+              class_name = insertion.splitlines()[2]
+              if class_name in text:
                   raise RuntimeError(f"{name} already contain the focused repair tests")
           human_tests = human_tests.replace(TEST_MARKER, HUMAN_TEST_INSERT + TEST_MARKER, 1)
           scope_tests = scope_tests.replace(TEST_MARKER, SCOPE_TEST_INSERT + TEST_MARKER, 1)
