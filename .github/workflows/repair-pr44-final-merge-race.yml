@@ -38,7 +38,6 @@ jobs:
           import json
           import os
           import subprocess
-          import sys
 
           repo = os.environ["REPOSITORY"]
           pr_number = int(os.environ["TARGET_PR"])
@@ -84,13 +83,12 @@ jobs:
               raise SystemExit("PR #44 provenance no longer matches the fixed repair contract")
           current_head = str(head.get("sha") or "")
           if current_head != expected_head:
-              print(f"Exact head moved from {expected_head} to {current_head}; fixed repair is no longer applicable.")
+              print(f"Exact head moved from {expected_head} to {current_head}; repair is no longer applicable.")
               raise SystemExit(0)
-          body = str(pull.get("body") or "")
-          if f"Closes #{source_issue}" not in body:
+          if f"Closes #{source_issue}" not in str(pull.get("body") or ""):
               raise SystemExit("PR #44 no longer identifies the fixed trusted source Issue")
 
-          def fetch_text(path: str):
+          def fetch_text(path: str) -> str:
               value = gh_json("GET", f"repos/{repo}/contents/{path}?ref={expected_head}")
               if value.get("type") != "file" or value.get("encoding") != "base64":
                   raise SystemExit(f"{path}: expected one base64 file")
@@ -98,28 +96,27 @@ jobs:
 
           runtime = fetch_text(runtime_path)
           tests = fetch_text(test_path)
-
-          runtime_old = '''        merge_candidate = _live_pr(pr_number, sha)
-          if merge_candidate.get("mergeable") is not True or not trusted_candidate(
-              merge_candidate
-          ):
-              continue
-          gh(
-'''
-          runtime_new = '''        merge_candidate = _live_pr(pr_number, sha)
-          if merge_candidate.get("mergeable") is not True or not trusted_candidate(
-              merge_candidate
-          ):
-              continue
-          if parse_issue_number(merge_candidate.get("body") or "") != issue_number:
-              continue
-          if not exact_codex_clean(pr_number, sha):
-              continue
-          gh(
-'''
-          runtime = exact_replace(
-              runtime, runtime_old, runtime_new, "final live merge gate"
+          runtime_old = (
+              "        merge_candidate = _live_pr(pr_number, sha)\n"
+              "        if merge_candidate.get(\"mergeable\") is not True or not trusted_candidate(\n"
+              "            merge_candidate\n"
+              "        ):\n"
+              "            continue\n"
+              "        gh(\n"
           )
+          runtime_new = (
+              "        merge_candidate = _live_pr(pr_number, sha)\n"
+              "        if merge_candidate.get(\"mergeable\") is not True or not trusted_candidate(\n"
+              "            merge_candidate\n"
+              "        ):\n"
+              "            continue\n"
+              "        if parse_issue_number(merge_candidate.get(\"body\") or \"\") != issue_number:\n"
+              "            continue\n"
+              "        if not exact_codex_clean(pr_number, sha):\n"
+              "            continue\n"
+              "        gh(\n"
+          )
+          runtime = exact_replace(runtime, runtime_old, runtime_new, "final live merge gate")
 
           tests = exact_replace(
               tests,
@@ -129,53 +126,45 @@ jobs:
           )
           tests = exact_replace(
               tests,
-              '            patch.object(self.runtime, "exact_codex_clean", return_value=True),\n',
-              '            patch.object(\n                self.runtime, "exact_codex_clean", side_effect=codex_clean\n            ),\n',
+              "            patch.object(self.runtime, \"exact_codex_clean\", return_value=True),\n",
+              "            patch.object(\n                self.runtime, \"exact_codex_clean\", side_effect=codex_clean\n            ),\n",
               "test helper Codex sequence",
           )
-          insertion_point = '''    def test_clean_revalidated_scope_reaches_expected_sha_merge(self):
-'''
-          added_tests = '''    def test_late_source_link_edit_blocks_final_merge(self):
-        clean = self._candidate()
-        edited = self._candidate()
-        edited["body"] = "Closes #10"
-        gh = self._run_final_gate(
-            [clean, clean, clean, clean, edited],
-            (9, {"number": 9}, ["docs/probe.md"], None),
-        )
-        self.assertFalse(
-            any(
-                len(call.args) >= 4
-                and call.args[0:3] == ("api", "--method", "PUT")
-                and call.args[3].endswith("/merge")
-                for call in gh.call_args_list
-            )
-        )
-
-    def test_late_codex_blocker_blocks_final_merge(self):
-        clean = self._candidate()
-        gh = self._run_final_gate(
-            [clean, clean, clean, clean, clean],
-            (9, {"number": 9}, ["docs/probe.md"], None),
-            codex_clean=(True, False),
-        )
-        self.assertFalse(
-            any(
-                len(call.args) >= 4
-                and call.args[0:3] == ("api", "--method", "PUT")
-                and call.args[3].endswith("/merge")
-                for call in gh.call_args_list
-            )
-        )
-
-'''
-          tests = exact_replace(
-              tests,
-              insertion_point,
-              added_tests + insertion_point,
-              "focused final-race tests",
+          insertion_point = "    def test_clean_revalidated_scope_reaches_expected_sha_merge(self):\n"
+          added_tests = (
+              "    def test_late_source_link_edit_blocks_final_merge(self):\n"
+              "        clean = self._candidate()\n"
+              "        edited = self._candidate()\n"
+              "        edited[\"body\"] = \"Closes #10\"\n"
+              "        gh = self._run_final_gate(\n"
+              "            [clean, clean, clean, clean, edited],\n"
+              "            (9, {\"number\": 9}, [\"docs/probe.md\"], None),\n"
+              "        )\n"
+              "        self.assertFalse(\n"
+              "            any(\n"
+              "                len(call.args) >= 4\n"
+              "                and call.args[0:3] == (\"api\", \"--method\", \"PUT\")\n"
+              "                and call.args[3].endswith(\"/merge\")\n"
+              "                for call in gh.call_args_list\n"
+              "            )\n"
+              "        )\n\n"
+              "    def test_late_codex_blocker_blocks_final_merge(self):\n"
+              "        clean = self._candidate()\n"
+              "        gh = self._run_final_gate(\n"
+              "            [clean, clean, clean, clean, clean],\n"
+              "            (9, {\"number\": 9}, [\"docs/probe.md\"], None),\n"
+              "            codex_clean=(True, False),\n"
+              "        )\n"
+              "        self.assertFalse(\n"
+              "            any(\n"
+              "                len(call.args) >= 4\n"
+              "                and call.args[0:3] == (\"api\", \"--method\", \"PUT\")\n"
+              "                and call.args[3].endswith(\"/merge\")\n"
+              "                for call in gh.call_args_list\n"
+              "            )\n"
+              "        )\n\n"
           )
-
+          tests = exact_replace(tests, insertion_point, added_tests + insertion_point, "focused tests")
           compile(runtime, runtime_path, "exec")
           compile(tests, test_path, "exec")
 
