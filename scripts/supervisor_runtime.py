@@ -37,6 +37,7 @@ NO_PROGRESS_MINUTES = 60
 ALLOWED_PREFIXES = ("claude-issue-", "automation/", "fix/")
 ALLOWED_AUTHORS = {*TRUSTED_ISSUE_AUTHORS, "github-actions[bot]"}
 TRUSTED_WORKFLOW_PATH = ".github/workflows/trusted-checks.yml"
+AUDIT_WORKFLOWS = ("trusted-checks.yml", "ci-reconcile.yml", "supervisor.yml", "claude-queue.yml")
 CODEX_LOGIN = "chatgpt-codex-connector[bot]"
 ACTIONS_LOGIN = "github-actions[bot]"
 STOP_PREFIX = "<!-- foundation-stop:"
@@ -66,6 +67,7 @@ INTERNAL_STOP_REASONS_THAT_MUST_NOT_NOTIFY = frozenset(
         "INCOMPLETE_CHANGED_FILE_EVIDENCE",
         "UNAUTHORIZED_PROTECTED_PATH",
         "UNTRUSTED_EVIDENCE",
+        "BLOCKING_CODEX_REVIEW",
         "MERGE_NOT_READY",
         "AMBIGUOUS_TECHNICAL_STATE",
     }
@@ -141,16 +143,8 @@ def comment(number: int, body: str) -> None:
 
 def ensure_label(number: int, label: str, color: str, description: str) -> None:
     gh(
-        "label",
-        "create",
-        label,
-        "--repo",
-        REPO,
-        "--color",
-        color,
-        "--description",
-        description,
-        "--force",
+        "label", "create", label, "--repo", REPO, "--color", color,
+        "--description", description, "--force",
     )
     gh("issue", "edit", str(number), "--repo", REPO, "--add-label", label)
 
@@ -186,21 +180,64 @@ def _normalized_evidence(values: Iterable[str], name: str) -> tuple[str, ...]:
 def self_resolution_audit(
     pr: dict[str, Any], issue_number: int | None, reason: str
 ) -> dict[str, str]:
-    """Return the mandatory exact-reason/SHA audit recorded before an internal stop."""
+    """Perform and return the mandatory exact-reason/SHA audit before a stop."""
+    pr_number = _require_positive_number("pr_number", int(pr["number"]))
     sha = _require_exact_sha(str((pr.get("head") or {}).get("sha") or ""))
+
+    repository = api(f"repos/{REPO}")
+    current_pr = api(f"repos/{REPO}/pulls/{pr_number}")
+    current_sha = _require_exact_sha(str((current_pr.get("head") or {}).get("sha") or ""))
+    if current_sha != sha:
+        raise RuntimeError("Pull Request head moved during the self-resolution audit")
+
+    changed = changed_paths(current_pr)
+    attempts = attestation_attempts(sha)
+    codex_state = exact_codex_state(pr_number, sha)
+    unresolved = unresolved_review_threads(pr_number)
+    permission = api(
+        f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission"
+    ).get("permission")
+    workflow_states: list[str] = []
+    for workflow_name in AUDIT_WORKFLOWS:
+        metadata = api(f"repos/{REPO}/actions/workflows/{workflow_name}")
+        workflow_states.append(
+            f"{workflow_name}:{metadata.get('state', 'unknown')}:{metadata.get('id', 'unknown')}"
+        )
+
+    issue_state = "not-applicable"
+    authorization_state = "not-applicable"
+    if issue_number:
+        issue = api(f"repos/{REPO}/issues/{issue_number}")
+        issue_state = (
+            f"state={issue.get('state', 'unknown')},trusted_author={trusted_source_issue(issue)}"
+        )
+        authorization_state = (
+            "incomplete-path-evidence"
+            if changed is None
+            else str(protected_scope_is_authorized(changed, issue.get("body") or ""))
+        )
+
     return {
         "issue": f"#{issue_number}" if issue_number else "unknown",
-        "pull_request": f"#{int(pr['number'])}",
+        "pull_request": f"#{pr_number}",
         "exact_head_sha": sha,
         "reason_code": reason,
-        "repository_metadata": "rechecked",
-        "workflow_run_and_job_evidence": "rechecked",
-        "changed_and_renamed_paths": "rechecked",
-        "scope_and_authorization": "rechecked",
-        "review_and_provenance": "rechecked",
-        "permissions_and_credentials": "rechecked without requesting values",
-        "alternative_connected_paths": "rechecked",
-        "idempotency": "reason-and-SHA bound",
+        "repository_metadata": (
+            f"visibility={repository.get('visibility', 'unknown')},"
+            f"default_branch={repository.get('default_branch', 'unknown')},"
+            f"current_head_confirmed={current_sha == sha}"
+        ),
+        "workflow_run_and_job_evidence": json.dumps(attempts, sort_keys=True, separators=(",", ":")),
+        "changed_and_renamed_paths": (
+            "incomplete" if changed is None else json.dumps(changed, separators=(",", ":"))
+        ),
+        "scope_and_authorization": f"issue={issue_state},protected_scope={authorization_state}",
+        "review_and_provenance": f"codex={codex_state},unresolved_threads={unresolved}",
+        "permissions_and_credentials": (
+            f"automation_owner_permission={permission or 'unknown'},secret_values_not_requested=true"
+        ),
+        "alternative_connected_paths": ";".join(workflow_states),
+        "idempotency": f"marker={STOP_PREFIX}{reason}:{sha}",
     }
 
 
@@ -237,9 +274,7 @@ def stop_report(
         )
         comment(int(pr["number"]), body)
     ensure_label(
-        int(pr["number"]),
-        "ai-blocked",
-        "B60205",
+        int(pr["number"]), "ai-blocked", "B60205",
         "Automation stopped after self-resolution",
     )
     if close:
@@ -297,11 +332,34 @@ def format_human_only_notice(
     )
 
 
-def human_only_notice(pr_number: int, body: str) -> None:
-    """Publish an already validated human-only notice exactly once."""
-    if HUMAN_NOTICE_PREFIX not in body:
-        raise ValueError("body was not produced by the human-only formatter")
+def human_only_notice(
+    *,
+    reason: str,
+    issue_number: int,
+    pr_number: int,
+    exact_head_sha: str,
+    attempted_connected_paths: Iterable[str],
+    impossibility_evidence: Iterable[str],
+    provider_ui_action: str,
+    automatic_resume_condition: str,
+    targets: Iterable[str],
+) -> None:
+    """Validate structured fields at publication time and publish exactly once."""
+    body = format_human_only_notice(
+        reason=reason,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        exact_head_sha=exact_head_sha,
+        attempted_connected_paths=attempted_connected_paths,
+        impossibility_evidence=impossibility_evidence,
+        provider_ui_action=provider_ui_action,
+        automatic_resume_condition=automatic_resume_condition,
+        targets=targets,
+    )
     marker = body.splitlines()[0]
+    expected_suffix = f":{issue_number}:{pr_number} -->"
+    if not marker.startswith(HUMAN_NOTICE_PREFIX) or not marker.endswith(expected_suffix):
+        raise ValueError("validated notice marker is not bound to the destination")
     comments = api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100")
     if not any(marker in (item.get("body") or "") for item in comments):
         comment(pr_number, body)
@@ -357,7 +415,7 @@ def _codex_items(pr_number: int) -> list[dict[str, Any]]:
     ]
 
 
-def exact_codex_clean(pr_number: int, sha: str) -> bool:
+def exact_codex_state(pr_number: int, sha: str) -> str:
     short = sha[:10]
     marker = f"<!-- foundation-codex-request:{sha} -->"
     trusted_requests: list[dict[str, Any]] = []
@@ -367,7 +425,9 @@ def exact_codex_clean(pr_number: int, sha: str) -> bool:
         if login == CODEX_LOGIN and (sha in body or short in body):
             lower = body.lower()
             clean = "didn't find any major issues" in lower or "no major issues" in lower
-            return clean and not unresolved_review_threads(pr_number)
+            if clean and not unresolved_review_threads(pr_number):
+                return "clean"
+            return "blocking"
         if (
             login == ACTIONS_LOGIN
             and marker in body
@@ -384,8 +444,12 @@ def exact_codex_clean(pr_number: int, sha: str) -> bool:
             and reaction.get("content") == "+1"
             for reaction in reactions
         ):
-            return not unresolved_review_threads(pr_number)
-    return False
+            return "blocking" if unresolved_review_threads(pr_number) else "clean"
+    return "pending"
+
+
+def exact_codex_clean(pr_number: int, sha: str) -> bool:
+    return exact_codex_state(pr_number, sha) == "clean"
 
 
 def trusted_candidate(pr: dict[str, Any]) -> bool:
@@ -456,7 +520,6 @@ def trusted_run_jobs(run_id: int) -> list[dict[str, Any]]:
 def _complete_successful_job_set(
     jobs: list[dict[str, Any]], run_id: int, trusted_workflow_sha: str
 ) -> bool:
-    """Require one successful required job bound to the recognized run/ref SHA."""
     by_name: dict[str, list[dict[str, Any]]] = {
         name: [] for name in ATTESTATION_JOB_NAMES
     }
@@ -479,7 +542,6 @@ def _complete_successful_job_set(
 
 
 def attestation_attempts(sha: str) -> list[dict[str, Any]]:
-    """Classify each recognized run using GitHub-owned run/job evidence."""
     attempts: list[dict[str, Any]] = []
     for run in trusted_runs_for_sha(sha):
         run_id = int(run["id"])
@@ -640,8 +702,15 @@ def supervise() -> None:
                 )
             continue
 
-        if not exact_codex_clean(int(pr["number"]), sha):
+        codex_state = exact_codex_state(int(pr["number"]), sha)
+        if codex_state == "pending":
             request_codex(int(pr["number"]), sha)
+            continue
+        if codex_state == "blocking":
+            stop_report(
+                pr, issue_number, "BLOCKING_CODEX_REVIEW",
+                "Exact-head Codex evidence contains a blocking finding or unresolved review thread.",
+            )
             continue
 
         current = api(f"repos/{REPO}/pulls/{pr['number']}")
@@ -653,6 +722,12 @@ def supervise() -> None:
             current = api(f"repos/{REPO}/pulls/{pr['number']}")
             if current["head"]["sha"] != sha or not trusted_candidate(current):
                 continue
+        if current.get("mergeable") is False:
+            stop_report(
+                current, issue_number, "MERGE_NOT_READY",
+                f"GitHub reports mergeable=false with state {current.get('mergeable_state', 'unknown')}.",
+            )
+            continue
         if current.get("mergeable") is not True:
             continue
         gh(
