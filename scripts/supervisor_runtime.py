@@ -164,7 +164,7 @@ def comment(number: int, body: str) -> None:
 
 
 def ensure_label(number: int, label: str, color: str, description: str) -> None:
-    """Legacy helper retained for compatibility; routine stops never call it."""
+    """Legacy compatibility helper; routine stops never invoke it."""
     gh(
         "label",
         "create",
@@ -230,7 +230,7 @@ def minutes_since(value: str | None, now: datetime | None = None) -> int | None:
 
 
 def minutes_without_progress(updated_at: str, now: datetime | None = None) -> int:
-    """Compatibility helper; runtime decisions use immutable evidence timestamps."""
+    """Compatibility helper; decisions use immutable evidence timestamps."""
     value = minutes_since(updated_at, now)
     return value if value is not None else 0
 
@@ -348,11 +348,7 @@ def exact_codex_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
         (item.get("created_at") for item in trusted_requests if item.get("created_at")),
         default=None,
     )
-    return {
-        "state": "pending",
-        "timestamp": None,
-        "request_timestamp": request_timestamp,
-    }
+    return {"state": "pending", "timestamp": None, "request_timestamp": request_timestamp}
 
 
 def exact_codex_state(pr_number: int, sha: str) -> str:
@@ -373,9 +369,7 @@ def trusted_candidate(pr: dict[str, Any]) -> bool:
         and base.get("ref") == DEFAULT_BRANCH
         and author in ALLOWED_AUTHORS
         and (head.get("ref") or "").startswith(ALLOWED_PREFIXES)
-        and not any(
-            label.get("name") == "ai-no-merge" for label in pr.get("labels") or []
-        )
+        and not any(label.get("name") == "ai-no-merge" for label in pr.get("labels") or [])
     )
 
 
@@ -384,9 +378,7 @@ def trusted_source_issue(issue: dict[str, Any]) -> bool:
     return not issue.get("pull_request") and login in TRUSTED_ISSUE_AUTHORS
 
 
-def trusted_attestation_run(
-    run: dict[str, Any], sha: str, *, allow_active: bool
-) -> bool:
+def trusted_attestation_run(run: dict[str, Any], sha: str, *, allow_active: bool) -> bool:
     repository = run.get("repository") or {}
     actor = (run.get("actor") or {}).get("login") or ""
     path = str(run.get("path") or "")
@@ -431,9 +423,7 @@ def trusted_run_jobs(run_id: int) -> list[dict[str, Any]]:
 def _complete_successful_job_set(
     jobs: list[dict[str, Any]], run_id: int, trusted_workflow_sha: str
 ) -> bool:
-    by_name: dict[str, list[dict[str, Any]]] = {
-        name: [] for name in ATTESTATION_JOB_NAMES
-    }
+    by_name: dict[str, list[dict[str, Any]]] = {name: [] for name in ATTESTATION_JOB_NAMES}
     for job in jobs:
         name = str(job.get("name") or "")
         if name not in by_name:
@@ -467,11 +457,7 @@ def attestation_attempts(sha: str) -> list[dict[str, Any]]:
                 trusted_workflow_sha
                 and _complete_successful_job_set(jobs, run_id, trusted_workflow_sha)
             )
-            success = bool(
-                status == "completed"
-                and run.get("conclusion") == "success"
-                and complete
-            )
+            success = bool(status == "completed" and run.get("conclusion") == "success" and complete)
         attempt: dict[str, Any] = {
             "run_id": run_id,
             "active": active,
@@ -484,9 +470,7 @@ def attestation_attempts(sha: str) -> list[dict[str, Any]]:
     return sorted(attempts, key=lambda item: int(item["run_id"]))
 
 
-def latest_successful_attestation_timestamp(
-    attempts: list[dict[str, Any]],
-) -> str | None:
+def latest_successful_attestation_timestamp(attempts: list[dict[str, Any]]) -> str | None:
     return max(
         (
             str(item["updated_at"])
@@ -495,6 +479,11 @@ def latest_successful_attestation_timestamp(
         ),
         default=None,
     )
+
+
+def _not_found(result: subprocess.CompletedProcess[str]) -> bool:
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    return result.returncode != 0 and ("http 404" in combined or "not found" in combined)
 
 
 def _workflow_metadata(filename: str, *, optional: bool) -> dict[str, Any] | None:
@@ -517,6 +506,28 @@ def _workflow_metadata(filename: str, *, optional: bool) -> dict[str, Any] | Non
     return metadata
 
 
+def _content_blob_sha(path: str, ref: str) -> str:
+    payload = api(f"repos/{REPO}/contents/{path}?ref={ref}")
+    if payload.get("type") != "file" or not payload.get("sha"):
+        raise RuntimeError(f"Could not resolve immutable file blob for {path}@{ref}")
+    return str(payload["sha"])
+
+
+def _workflow_definition_matches_default(filename: str, candidate_sha: str) -> bool:
+    candidate_sha = _require_exact_sha(candidate_sha)
+    initial_default_sha = _require_exact_sha(current_default_sha())
+    path = f".github/workflows/{filename}"
+    try:
+        default_blob = _content_blob_sha(path, initial_default_sha)
+        candidate_blob = _content_blob_sha(path, candidate_sha)
+    except Exception:
+        return False
+    final_default_sha = _require_exact_sha(current_default_sha())
+    if final_default_sha != initial_default_sha:
+        raise RuntimeError("Default branch moved during native workflow definition validation")
+    return candidate_blob == default_blob
+
+
 def required_native_workflows() -> list[tuple[str, str, int]]:
     required: list[tuple[str, str, int]] = []
     for filename, display_name in NATIVE_WORKFLOW_SPECS:
@@ -530,8 +541,17 @@ def required_native_workflows() -> list[tuple[str, str, int]]:
     return required
 
 
+def _run_belongs_to_pr(run: dict[str, Any], pr_number: int) -> bool:
+    pulls = run.get("pull_requests") or []
+    return any(
+        int(item.get("number") or 0) == pr_number
+        and str(((item.get("base") or {}).get("ref") or DEFAULT_BRANCH)) == DEFAULT_BRANCH
+        for item in pulls
+    )
+
+
 def _native_run_matches(
-    run: dict[str, Any], sha: str, filename: str, workflow_id: int
+    run: dict[str, Any], sha: str, filename: str, workflow_id: int, pr_number: int
 ) -> bool:
     repository = run.get("repository") or {}
     head_repository = run.get("head_repository") or {}
@@ -543,14 +563,32 @@ def _native_run_matches(
         and repository.get("full_name") == REPO
         and (not head_repository or head_repository.get("full_name") == REPO)
         and (not path or path.endswith(f"/{filename}") or path == f".github/workflows/{filename}")
+        and _run_belongs_to_pr(run, pr_number)
     )
 
 
-def native_workflow_evidence(sha: str) -> tuple[bool, list[dict[str, Any]]]:
+def native_workflow_evidence(
+    sha: str, pr_number: int | None = None
+) -> tuple[bool, list[dict[str, Any]]]:
     _require_exact_sha(sha)
+    pr_number = _require_positive_number("pr_number", pr_number)
     evidence: list[dict[str, Any]] = []
     clean = True
     for filename, display_name, workflow_id in required_native_workflows():
+        definition_match = _workflow_definition_matches_default(filename, sha)
+        if not definition_match:
+            clean = False
+            evidence.append(
+                {
+                    "workflow": filename,
+                    "display_name": display_name,
+                    "workflow_id": workflow_id,
+                    "run_id": None,
+                    "status": "untrusted-definition",
+                    "conclusion": None,
+                }
+            )
+            continue
         runs = api_key_pages(
             f"repos/{REPO}/actions/workflows/{workflow_id}/runs"
             f"?event=pull_request&head_sha={sha}&per_page=100",
@@ -559,7 +597,7 @@ def native_workflow_evidence(sha: str) -> tuple[bool, list[dict[str, Any]]]:
         candidates = [
             run
             for run in runs
-            if _native_run_matches(run, sha, filename, workflow_id)
+            if _native_run_matches(run, sha, filename, workflow_id, pr_number)
         ]
         if not candidates:
             clean = False
@@ -604,9 +642,7 @@ def changed_paths(pr: dict[str, Any]) -> list[str] | None:
     expected = int(pr.get("changed_files") or 0)
     if expected > MAX_CHANGED_FILES:
         return None
-    files = api_list(
-        f"repos/{REPO}/pulls/{pr['number']}/files?per_page={MAX_CHANGED_FILES}"
-    )
+    files = api_list(f"repos/{REPO}/pulls/{pr['number']}/files?per_page={MAX_CHANGED_FILES}")
     if len(files) != expected:
         return None
     paths: set[str] = set()
@@ -651,16 +687,15 @@ def candidate_pulls() -> list[dict[str, Any]]:
 
 def _sanitized_check_evidence(sha: str) -> str:
     payload = api(f"repos/{REPO}/commits/{sha}/check-runs?per_page=100")
-    checks = []
-    for item in payload.get("check_runs") or []:
-        checks.append(
-            {
-                "name": str(item.get("name") or ""),
-                "status": str(item.get("status") or ""),
-                "conclusion": str(item.get("conclusion") or ""),
-                "app": str(((item.get("app") or {}).get("slug") or "")),
-            }
-        )
+    checks = [
+        {
+            "name": str(item.get("name") or ""),
+            "status": str(item.get("status") or ""),
+            "conclusion": str(item.get("conclusion") or ""),
+            "app": str(((item.get("app") or {}).get("slug") or "")),
+        }
+        for item in payload.get("check_runs") or []
+    ]
     return json.dumps(
         sorted(checks, key=lambda item: (item["name"], item["app"])),
         sort_keys=True,
@@ -693,7 +728,6 @@ def _audit_record_path(pr_number: int, sha: str, reason: str) -> str:
 def self_resolution_audit(
     pr: dict[str, Any], issue_number: int | None, reason: str
 ) -> dict[str, str]:
-    """Collect real exact-SHA evidence; any failed query prevents record creation."""
     pr_number = _require_positive_number("pr_number", int(pr["number"]))
     sha = _require_exact_sha(str((pr.get("head") or {}).get("sha") or ""))
     if not SAFE_REASON.fullmatch(reason):
@@ -703,13 +737,11 @@ def self_resolution_audit(
     current_pr = _live_pr(pr_number, sha)
     changed = changed_paths(current_pr)
     attempts = attestation_attempts(sha)
-    native_clean, native_evidence = native_workflow_evidence(sha)
+    native_clean, native_evidence = native_workflow_evidence(sha, pr_number)
     checks = _sanitized_check_evidence(sha)
     codex = exact_codex_evidence(pr_number, sha)
     unresolved = unresolved_review_threads(pr_number)
-    permission = api(
-        f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission"
-    ).get("permission")
+    permission = api(f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission").get("permission")
     workflow_states: list[str] = []
     for workflow_name in AUDIT_WORKFLOWS:
         metadata = api(f"repos/{REPO}/actions/workflows/{workflow_name}")
@@ -722,9 +754,7 @@ def self_resolution_audit(
     if issue_number:
         issue = api(f"repos/{REPO}/issues/{issue_number}")
         issue_body = issue.get("body") or ""
-        issue_state = (
-            f"state={issue.get('state', 'unknown')},trusted_author={trusted_source_issue(issue)}"
-        )
+        issue_state = f"state={issue.get('state', 'unknown')},trusted_author={trusted_source_issue(issue)}"
         authorization_state = (
             "incomplete-path-evidence"
             if changed is None
@@ -750,9 +780,7 @@ def self_resolution_audit(
             f"default_branch={repository.get('default_branch', 'unknown')},"
             "initial_and_final_head_confirmed=true"
         ),
-        "workflow_run_and_job_evidence": json.dumps(
-            attempts, sort_keys=True, separators=(",", ":")
-        ),
+        "workflow_run_and_job_evidence": json.dumps(attempts, sort_keys=True, separators=(",", ":")),
         "native_pull_request_workflow_evidence": json.dumps(
             {"clean": native_clean, "runs": native_evidence},
             sort_keys=True,
@@ -762,9 +790,7 @@ def self_resolution_audit(
         "changed_and_renamed_paths": (
             "incomplete" if changed is None else json.dumps(changed, separators=(",", ":"))
         ),
-        "scope_and_authorization": (
-            f"issue={issue_state},authorization={authorization_state}"
-        ),
+        "scope_and_authorization": f"issue={issue_state},authorization={authorization_state}",
         "review_and_provenance": (
             f"codex={codex['state']},codex_timestamp={codex['timestamp']},"
             f"trusted_request_timestamp={codex['request_timestamp']},"
@@ -772,8 +798,7 @@ def self_resolution_audit(
         ),
         "mergeability": f"mergeable={mergeable},mergeable_state={mergeable_state}",
         "permissions_and_credentials": (
-            f"automation_owner_permission={permission or 'unknown'},"
-            "secret_values_not_requested=true"
+            f"automation_owner_permission={permission or 'unknown'},secret_values_not_requested=true"
         ),
         "alternative_connected_paths": ";".join(workflow_states),
         "idempotency": _audit_record_path(pr_number, sha, reason),
@@ -789,18 +814,22 @@ def canonical_internal_stop_record(
     detail: str,
     audit: dict[str, str],
 ) -> str:
-    record = {
-        "schema_version": 1,
-        "notification": False,
-        "required_human_action": None,
-        "reason_code": reason,
-        "issue_number": issue_number,
-        "pull_request_number": pr_number,
-        "exact_head_sha": sha,
-        "detail": detail,
-        "audit": audit,
-    }
-    return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "notification": False,
+            "required_human_action": None,
+            "reason_code": reason,
+            "issue_number": issue_number,
+            "pull_request_number": pr_number,
+            "exact_head_sha": sha,
+            "detail": detail,
+            "audit": audit,
+        },
+        sort_keys=True,
+        indent=2,
+        ensure_ascii=True,
+    ) + "\n"
 
 
 def canonical_human_notice_record(
@@ -816,26 +845,25 @@ def canonical_human_notice_record(
     targets: tuple[str, ...],
     audit: dict[str, str],
 ) -> str:
-    record = {
-        "schema_version": 1,
-        "notification": True,
-        "reason_code": reason,
-        "issue_number": issue_number,
-        "pull_request_number": pr_number,
-        "exact_head_sha": exact_head_sha,
-        "attempted_connected_paths": list(attempted_connected_paths),
-        "impossibility_evidence": list(impossibility_evidence),
-        "provider_ui_action": provider_ui_action,
-        "automatic_resume_condition": automatic_resume_condition,
-        "targets": list(targets),
-        "audit": audit,
-    }
-    return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
-
-
-def _not_found(result: subprocess.CompletedProcess[str]) -> bool:
-    combined = f"{result.stdout}\n{result.stderr}".lower()
-    return result.returncode != 0 and ("http 404" in combined or "not found" in combined)
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "notification": True,
+            "reason_code": reason,
+            "issue_number": issue_number,
+            "pull_request_number": pr_number,
+            "exact_head_sha": exact_head_sha,
+            "attempted_connected_paths": list(attempted_connected_paths),
+            "impossibility_evidence": list(impossibility_evidence),
+            "provider_ui_action": provider_ui_action,
+            "automatic_resume_condition": automatic_resume_condition,
+            "targets": list(targets),
+            "audit": audit,
+        },
+        sort_keys=True,
+        indent=2,
+        ensure_ascii=True,
+    ) + "\n"
 
 
 def ensure_internal_stop_branch() -> None:
@@ -879,9 +907,7 @@ def _existing_internal_record(path: str) -> str | None:
     raise RuntimeError(f"Could not inspect audit record: {result.stderr.strip()}")
 
 
-def _persist_exact_record(
-    path: str, content: str, reason: str, pr_number: int
-) -> bool:
+def _persist_exact_record(path: str, content: str, reason: str, pr_number: int) -> bool:
     ensure_internal_stop_branch()
     existing = _existing_internal_record(path)
     if existing is not None:
@@ -909,15 +935,11 @@ def _persist_exact_record(
     raise RuntimeError(f"Could not persist deterministic audit record: {created.stderr.strip()}")
 
 
-def persist_internal_stop_record(
-    path: str, content: str, reason: str, pr_number: int
-) -> bool:
+def persist_internal_stop_record(path: str, content: str, reason: str, pr_number: int) -> bool:
     return _persist_exact_record(path, content, reason, pr_number)
 
 
-def persist_human_notice_record(
-    path: str, content: str, reason: str, pr_number: int
-) -> bool:
+def persist_human_notice_record(path: str, content: str, reason: str, pr_number: int) -> bool:
     if reason not in HUMAN_ONLY_REASONS:
         raise ValueError("reason is not an allowed human-only notice family")
     return _persist_exact_record(path, content, reason, pr_number)
@@ -930,7 +952,6 @@ def stop_report(
     detail: str,
     close: bool = False,
 ) -> None:
-    """Persist one non-comment, non-label internal record on the fixed branch."""
     if reason in HUMAN_ONLY_REASONS:
         raise ValueError("human-only reasons must use the audited human-only formatter")
     sha = _require_exact_sha(str(pr["head"]["sha"]))
@@ -972,9 +993,7 @@ def format_human_only_notice(
     issue_number = _require_positive_number("issue_number", issue_number)
     pr_number = _require_positive_number("pr_number", pr_number)
     exact_head_sha = _require_exact_sha(exact_head_sha)
-    attempted = _normalized_evidence(
-        attempted_connected_paths, "attempted_connected_paths"
-    )
+    attempted = _normalized_evidence(attempted_connected_paths, "attempted_connected_paths")
     evidence = _normalized_evidence(impossibility_evidence, "impossibility_evidence")
     target_list = _normalized_evidence(targets, "targets")
     expected_action = HUMAN_ONLY_ACTIONS[reason]
@@ -984,13 +1003,8 @@ def format_human_only_notice(
         raise ValueError("automatic_resume_condition is required")
     if reason == "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE":
         if len(target_list) != 2 or any("/" not in item for item in target_list):
-            raise ValueError(
-                "repository-creation notice requires exactly two owner/name targets"
-            )
-    marker = (
-        f"{HUMAN_NOTICE_PREFIX}{reason}:{exact_head_sha}:"
-        f"{issue_number}:{pr_number} -->"
-    )
+            raise ValueError("repository-creation notice requires exactly two owner/name targets")
+    marker = f"{HUMAN_NOTICE_PREFIX}{reason}:{exact_head_sha}:{issue_number}:{pr_number} -->"
     attempted_text = "\n".join(f"  - `{item}`" for item in attempted)
     evidence_text = "\n".join(f"  - {item}" for item in evidence)
     targets_text = "\n".join(f"  - `{item}`" for item in target_list)
@@ -1028,6 +1042,43 @@ def _validated_notice_destination(
     return live
 
 
+def _connected_repository_creation_evidence(
+    targets: tuple[str, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if len(targets) != 2 or any("/" not in target for target in targets):
+        raise ValueError("repository-creation audit requires exactly two owner/name targets")
+    attempted: list[str] = []
+    impossible: list[str] = []
+    for target in targets:
+        path = f"repos/{target}"
+        attempted.append(f"GitHub API GET {path}")
+        result = gh_result("api", "-H", "Accept: application/vnd.github+json", path)
+        if result.returncode == 0:
+            payload = json.loads(result.stdout)
+            if str(payload.get("full_name") or "") != target:
+                raise RuntimeError(f"GitHub returned a mismatched repository for {target}")
+            continue
+        if _not_found(result):
+            impossible.append(
+                f"GitHub API returned HTTP 404 for {target}; the exact repository is absent or unavailable to the connected token."
+            )
+            continue
+        raise RuntimeError(f"Connected GitHub repository query failed for {target}: {result.stderr.strip()}")
+    if not impossible:
+        raise RuntimeError("The account-level repository creation condition is not currently true")
+    return tuple(attempted), tuple(impossible)
+
+
+def _connected_human_notice_evidence(
+    reason: str, targets: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if reason == "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE":
+        return _connected_repository_creation_evidence(targets)
+    raise RuntimeError(
+        "No reason-specific connected provider evidence adapter is available; human-only publication fails closed"
+    )
+
+
 def human_only_notice(
     *,
     reason: str,
@@ -1040,19 +1091,28 @@ def human_only_notice(
     automatic_resume_condition: str,
     targets: Iterable[str],
 ) -> None:
-    """Persist exact connected evidence, then post one immutable bot notice."""
-    attempted = _normalized_evidence(
+    attempted_assertion = _normalized_evidence(
         attempted_connected_paths, "attempted_connected_paths"
     )
-    evidence = _normalized_evidence(impossibility_evidence, "impossibility_evidence")
+    impossibility_assertion = _normalized_evidence(
+        impossibility_evidence, "impossibility_evidence"
+    )
     target_list = _normalized_evidence(targets, "targets")
+    connected_attempted, connected_impossible = _connected_human_notice_evidence(
+        reason, target_list
+    )
+    if attempted_assertion != connected_attempted:
+        raise RuntimeError("Caller attempted-path assertions do not match connected audit evidence")
+    if impossibility_assertion != connected_impossible:
+        raise RuntimeError("Caller impossibility assertions do not match connected audit evidence")
+
     body = format_human_only_notice(
         reason=reason,
         issue_number=issue_number,
         pr_number=pr_number,
         exact_head_sha=exact_head_sha,
-        attempted_connected_paths=attempted,
-        impossibility_evidence=evidence,
+        attempted_connected_paths=connected_attempted,
+        impossibility_evidence=connected_impossible,
         provider_ui_action=provider_ui_action,
         automatic_resume_condition=automatic_resume_condition,
         targets=target_list,
@@ -1065,8 +1125,8 @@ def human_only_notice(
         issue_number=issue_number,
         pr_number=pr_number,
         exact_head_sha=exact_head_sha,
-        attempted_connected_paths=attempted,
-        impossibility_evidence=evidence,
+        attempted_connected_paths=connected_attempted,
+        impossibility_evidence=connected_impossible,
         provider_ui_action=provider_ui_action.strip(),
         automatic_resume_condition=automatic_resume_condition.strip(),
         targets=target_list,
@@ -1082,12 +1142,13 @@ def human_only_notice(
     if not marker.startswith(HUMAN_NOTICE_PREFIX) or not marker.endswith(expected_suffix):
         raise ValueError("validated notice marker is not bound to the destination")
     comments = api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100")
-    if any(
+    trusted_duplicate = any(
         (item.get("user") or {}).get("login") == ACTIONS_LOGIN
         and item.get("created_at") == item.get("updated_at")
         and marker in (item.get("body") or "")
         for item in comments
-    ):
+    )
+    if trusted_duplicate:
         if _existing_internal_record(record_path) != record:
             raise RuntimeError("trusted notice comment has no matching persisted exact audit record")
         return
@@ -1143,6 +1204,7 @@ def supervise() -> None:
     for observed in candidate_pulls():
         pr = api(f"repos/{REPO}/pulls/{observed['number']}")
         sha = str(pr["head"]["sha"])
+        pr_number = int(pr["number"])
         if sha != observed["head"]["sha"] or not trusted_candidate(pr):
             continue
 
@@ -1151,12 +1213,7 @@ def supervise() -> None:
             stop_report(pr, None, scope_error, "PR body identifies no trusted source Issue.")
             continue
         if scope_error == "UNTRUSTED_SOURCE_ISSUE":
-            stop_report(
-                pr,
-                issue_number,
-                scope_error,
-                "The referenced source is not a trusted owner-authored repository Issue.",
-            )
+            stop_report(pr, issue_number, scope_error, "The referenced source is not a trusted owner-authored repository Issue.")
             continue
         if scope_error == "INCOMPLETE_CHANGED_FILE_EVIDENCE":
             stop_report(
@@ -1170,31 +1227,21 @@ def supervise() -> None:
             issue_body = (issue or {}).get("body") or ""
             auto_close = bool(
                 E2E_AUTO_CLOSE_MARKER in issue_body
-                or any(
-                    label.get("name") == "e2e-auto-close"
-                    for label in pr.get("labels") or []
-                )
+                or any(label.get("name") == "e2e-auto-close" for label in pr.get("labels") or [])
             )
             detail = (
                 "Changed or renamed paths exceed the trusted Issue allowlist."
                 if scope_error == "UNAUTHORIZED_CHANGED_PATH"
                 else "Protected changed or renamed paths lack exact protected authorization."
             )
-            stop_report(
-                pr,
-                issue_number,
-                scope_error,
-                detail,
-                close=auto_close,
-            )
+            stop_report(pr, issue_number, scope_error, detail, close=auto_close)
             continue
 
         attempts = attestation_attempts(sha)
         if not any(item["success"] for item in attempts):
             if (
                 not any(item["active"] for item in attempts)
-                and len({item["run_id"] for item in attempts})
-                >= MAX_ATTESTATION_ATTEMPTS
+                and len({item["run_id"] for item in attempts}) >= MAX_ATTESTATION_ATTEMPTS
             ):
                 stop_report(
                     pr,
@@ -1204,14 +1251,10 @@ def supervise() -> None:
                 )
             continue
 
-        native_clean, native_evidence = native_workflow_evidence(sha)
+        native_clean, native_evidence = native_workflow_evidence(sha, pr_number)
         if not native_clean:
             anchor = max(
-                (
-                    str(item.get("updated_at") or "")
-                    for item in native_evidence
-                    if item.get("updated_at")
-                ),
+                (str(item.get("updated_at") or "") for item in native_evidence if item.get("updated_at")),
                 default=None,
             )
             elapsed = minutes_since(anchor)
@@ -1224,9 +1267,9 @@ def supervise() -> None:
                 )
             continue
 
-        codex = exact_codex_evidence(int(pr["number"]), sha)
+        codex = exact_codex_evidence(pr_number, sha)
         if codex["state"] == "pending":
-            request_codex(int(pr["number"]), sha)
+            request_codex(pr_number, sha)
             elapsed = minutes_since(codex.get("request_timestamp"))
             if elapsed is not None and elapsed >= NO_PROGRESS_MINUTES:
                 stop_report(
@@ -1245,13 +1288,12 @@ def supervise() -> None:
             )
             continue
 
-        current = api(f"repos/{REPO}/pulls/{pr['number']}")
+        current = api(f"repos/{REPO}/pulls/{pr_number}")
         if current["head"]["sha"] != sha or not trusted_candidate(current):
             continue
-        remove_label(int(pr["number"]), "ai-blocked")
         if current.get("draft"):
-            gh("pr", "ready", str(pr["number"]), "--repo", REPO)
-            current = api(f"repos/{REPO}/pulls/{pr['number']}")
+            gh("pr", "ready", str(pr_number), "--repo", REPO)
+            current = api(f"repos/{REPO}/pulls/{pr_number}")
             if current["head"]["sha"] != sha or not trusted_candidate(current):
                 continue
         if current.get("mergeable") is False:
@@ -1266,10 +1308,7 @@ def supervise() -> None:
             anchor = _evidence_anchor(
                 latest_successful_attestation_timestamp(attempts),
                 str(codex.get("timestamp") or "") or None,
-                *(
-                    str(item.get("updated_at") or "") or None
-                    for item in native_evidence
-                ),
+                *(str(item.get("updated_at") or "") or None for item in native_evidence),
             )
             elapsed = minutes_since(anchor)
             if elapsed is not None and elapsed >= NO_PROGRESS_MINUTES:
@@ -1281,17 +1320,17 @@ def supervise() -> None:
                 )
             continue
 
-        final = _live_pr(int(pr["number"]), sha)
+        final = _live_pr(pr_number, sha)
         if final.get("mergeable") is not True or not trusted_candidate(final):
             continue
-        final_native_clean, _ = native_workflow_evidence(sha)
-        if not final_native_clean or not exact_codex_clean(int(pr["number"]), sha):
+        final_native_clean, _ = native_workflow_evidence(sha, pr_number)
+        if not final_native_clean or not exact_codex_clean(pr_number, sha):
             continue
         gh(
             "api",
             "--method",
             "PUT",
-            f"repos/{REPO}/pulls/{pr['number']}/merge",
+            f"repos/{REPO}/pulls/{pr_number}/merge",
             "-f",
             "merge_method=squash",
             "-f",
