@@ -16,10 +16,12 @@ class WorkflowSecurityTest(unittest.TestCase):
             self.assertNotIn("\t", text, path)
             self.assertNotIn("pull_request_target", text, path)
 
-    def test_ci_performs_runner_provided_yaml_syntax_check(self):
+    def test_ci_parses_complete_single_document_yaml_streams(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn('require "yaml"', text)
-        self.assertIn("YAML.safe_load", text)
+        self.assertIn('require "psych"', text)
+        self.assertIn("Psych.parse_stream", text)
+        self.assertIn("documents.length == 1", text)
+        self.assertNotIn("YAML.safe_load", text)
         self.assertNotIn("pip install", text)
 
     def test_fork_jobs_are_read_only(self):
