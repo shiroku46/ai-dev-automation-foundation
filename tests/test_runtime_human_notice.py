@@ -479,5 +479,112 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         )
 
 
+    def test_repository_targets_are_canonical_before_connected_query(self):
+        invalid_targets = (
+            ("owner/existing-repo/branches/missing", "other/repo"),
+            ("/owner/repo", "other/repo"),
+            ("owner/repo/", "other/repo"),
+            ("owner//repo", "other/repo"),
+            ("owner/re po", "other/repo"),
+            ("owner/.", "other/repo"),
+            ("owner/..", "other/repo"),
+            (" owner/repo", "other/repo"),
+            ("owner/repo", "owner/repo"),
+            ("Owner/Repo", "owner/repo"),
+        )
+        for targets in invalid_targets:
+            with (
+                self.subTest(targets=targets),
+                patch.object(self.runtime, "gh_result") as connected,
+                self.assertRaises(ValueError),
+            ):
+                self.runtime._connected_repository_creation_evidence(targets)
+            connected.assert_not_called()
+
+    def test_cleared_ordinary_scope_stop_persists_nothing_and_does_not_close(self):
+        patches = self.audit_dependencies()
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+            patches[5],
+            patches[6],
+            patch.object(self.runtime, "persist_internal_stop_record") as persist,
+            patch.object(self.runtime, "gh") as gh,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no longer supported"):
+                self.runtime.stop_report(
+                    self.pr,
+                    5,
+                    "UNAUTHORIZED_CHANGED_PATH",
+                    "stale ordinary denial",
+                    close=True,
+                )
+        persist.assert_not_called()
+        gh.assert_not_called()
+
+    def test_cleared_protected_scope_stop_persists_nothing_and_does_not_close(self):
+        protected_path = ".github/workflows/probe.yml"
+        protected_issue = {
+            "state": "open",
+            "user": {"login": "owner"},
+            "body": (
+                "## Allowed paths\n"
+                f"- `{protected_path}`\n\n"
+                "<!-- foundation-protected-authorization\n"
+                "paths:\n"
+                f"- {protected_path}\n"
+                "-->\n"
+            ),
+        }
+
+        def protected_api(path):
+            if path == "repos/example/foundation":
+                return {"visibility": "public", "default_branch": "main"}
+            if path == "repos/example/foundation/pulls/7":
+                return self.pr
+            if path == "repos/example/foundation/collaborators/owner/permission":
+                return {"permission": "admin"}
+            if path == "repos/example/foundation/issues/5":
+                return protected_issue
+            if "/actions/workflows/" in path:
+                return {"id": 1, "state": "active"}
+            raise AssertionError(path)
+
+        with (
+            patch.object(self.runtime, "api", side_effect=protected_api),
+            patch.object(self.runtime, "changed_paths", return_value=[protected_path]),
+            patch.object(self.runtime, "attestation_attempts", return_value=[]),
+            patch.object(
+                self.runtime, "native_workflow_evidence", return_value=(True, [])
+            ),
+            patch.object(self.runtime, "_sanitized_check_evidence", return_value="[]"),
+            patch.object(
+                self.runtime,
+                "exact_codex_evidence",
+                return_value={
+                    "state": "pending",
+                    "timestamp": None,
+                    "request_timestamp": None,
+                },
+            ),
+            patch.object(self.runtime, "unresolved_review_threads", return_value=False),
+            patch.object(self.runtime, "persist_internal_stop_record") as persist,
+            patch.object(self.runtime, "gh") as gh,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no longer supported"):
+                self.runtime.stop_report(
+                    self.pr,
+                    5,
+                    "UNAUTHORIZED_PROTECTED_PATH",
+                    "stale protected denial",
+                    close=True,
+                )
+        persist.assert_not_called()
+        gh.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

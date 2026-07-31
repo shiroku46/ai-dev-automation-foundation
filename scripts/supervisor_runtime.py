@@ -761,18 +761,25 @@ def self_resolution_audit(
 
     issue_state = "not-applicable"
     authorization_state = "not-applicable"
+    issue_trusted: bool | None = None
+    all_paths_authorized: bool | None = None
+    protected_paths_authorized: bool | None = None
     if issue_number:
         issue = api(f"repos/{REPO}/issues/{issue_number}")
         issue_body = issue.get("body") or ""
-        issue_state = f"state={issue.get('state', 'unknown')},trusted_author={trusted_source_issue(issue)}"
-        authorization_state = (
-            "incomplete-path-evidence"
-            if changed is None
-            else (
-                f"all_paths={scope_is_authorized(changed, issue_body)},"
-                f"protected_paths={protected_scope_is_authorized(changed, issue_body)}"
+        issue_trusted = trusted_source_issue(issue)
+        issue_state = f"state={issue.get('state', 'unknown')},trusted_author={issue_trusted}"
+        if changed is None:
+            authorization_state = "incomplete-path-evidence"
+        else:
+            all_paths_authorized = scope_is_authorized(changed, issue_body)
+            protected_paths_authorized = protected_scope_is_authorized(
+                changed, issue_body
             )
-        )
+            authorization_state = (
+                f"all_paths={all_paths_authorized},"
+                f"protected_paths={protected_paths_authorized}"
+            )
 
     connected_notice_evidence = "not-applicable"
     if reason in HUMAN_ONLY_REASONS:
@@ -805,6 +812,24 @@ def self_resolution_audit(
     mergeable_state = str(final_pr.get("mergeable_state") or "unknown")
     if reason == "MERGE_NOT_READY" and mergeable is not False:
         raise RuntimeError("MERGE_NOT_READY is no longer supported by live mergeability")
+    if reason == "UNAUTHORIZED_CHANGED_PATH" and not (
+        issue_trusted is True
+        and changed is not None
+        and all_paths_authorized is False
+    ):
+        raise RuntimeError(
+            "UNAUTHORIZED_CHANGED_PATH is no longer supported by fresh Issue authorization"
+        )
+    if reason == "UNAUTHORIZED_PROTECTED_PATH" and not (
+        issue_trusted is True
+        and changed is not None
+        and any(is_protected(path) for path in changed)
+        and all_paths_authorized is True
+        and protected_paths_authorized is False
+    ):
+        raise RuntimeError(
+            "UNAUTHORIZED_PROTECTED_PATH is no longer supported by fresh Issue authorization"
+        )
 
     return {
         "issue": f"#{issue_number}" if issue_number else "unknown",
@@ -1039,8 +1064,9 @@ def format_human_only_notice(
     if not automatic_resume_condition.strip():
         raise ValueError("automatic_resume_condition is required")
     if reason == "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE":
-        if len(target_list) != 2 or any("/" not in item for item in target_list):
-            raise ValueError("repository-creation notice requires exactly two owner/name targets")
+        canonical_targets = _canonical_repository_targets(target_list)
+        if canonical_targets != target_list:
+            raise ValueError("repository-creation notice targets must be canonical owner/name pairs")
     marker = f"{HUMAN_NOTICE_PREFIX}{reason}:{exact_head_sha}:{issue_number}:{pr_number} -->"
     attempted_text = "\n".join(f"  - `{item}`" for item in attempted)
     evidence_text = "\n".join(f"  - {item}" for item in evidence)
@@ -1079,14 +1105,35 @@ def _validated_notice_destination(
     return live
 
 
+def _canonical_repository_target(target: str) -> str:
+    if target != target.strip():
+        raise ValueError("repository target must not contain surrounding whitespace")
+    parts = target.split("/")
+    if len(parts) != 2 or any(not part for part in parts):
+        raise ValueError("repository target must be exactly one owner/name pair")
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError("repository target contains an unsafe path component")
+    if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", part) for part in parts):
+        raise ValueError("repository target contains unsupported characters")
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _canonical_repository_targets(targets: tuple[str, ...]) -> tuple[str, str]:
+    if len(targets) != 2:
+        raise ValueError("repository-creation audit requires exactly two owner/name targets")
+    canonical = tuple(_canonical_repository_target(target) for target in targets)
+    if len({target.casefold() for target in canonical}) != 2:
+        raise ValueError("repository-creation audit requires two distinct repositories")
+    return canonical
+
+
 def _connected_repository_creation_evidence(
     targets: tuple[str, ...],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    if len(targets) != 2 or any("/" not in target for target in targets):
-        raise ValueError("repository-creation audit requires exactly two owner/name targets")
+    canonical_targets = _canonical_repository_targets(targets)
     attempted: list[str] = []
     impossible: list[str] = []
-    for target in targets:
+    for target in canonical_targets:
         path = f"repos/{target}"
         attempted.append(f"GitHub API GET {path}")
         result = gh_result("api", "-H", "Accept: application/vnd.github+json", path)
