@@ -213,7 +213,7 @@ def main() -> int:
             "scope_is_authorized",
             "protected_scope_is_authorized",
             'authorized.endswith("/**")',
-            "fnmatchcase",
+            'any(character in authorized for character in "*?[")',
         ),
         "source scope policy",
     )
