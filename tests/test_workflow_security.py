@@ -105,7 +105,10 @@ class WorkflowSecurityTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
-        self.assertIn('workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation"]', workflow)
+        self.assertIn(
+            'workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation", "Trusted Exact-SHA Checks"]',
+            workflow,
+        )
         self.assertNotIn("pull_request:\n", workflow)
         for required in (
             "trusted_workflow_id()",
