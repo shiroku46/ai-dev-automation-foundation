@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Trusted default-branch supervisor and immutable run/job attestation runtime.
+"""Trusted default-branch supervisor and immutable evidence runtime.
 
 Write-capable jobs execute this module only from the repository default branch.
-Candidate code is executed only by read-only jobs in the fixed trusted workflow.
-GitHub-owned workflow-run and workflow-job records are the attestation source; this
-module never relies on candidate-authored statuses or custom check runs.
+Candidate code is executed only by read-only jobs in fixed public workflows.
 """
 from __future__ import annotations
 
@@ -22,6 +20,7 @@ from scripts.supervisor_policy import (
     is_protected,
     parse_issue_number,
     protected_scope_is_authorized,
+    scope_is_authorized,
 )
 
 REPO = os.environ["REPOSITORY"]
@@ -38,6 +37,11 @@ NO_PROGRESS_MINUTES = 60
 ALLOWED_PREFIXES = ("claude-issue-", "automation/", "fix/")
 ALLOWED_AUTHORS = {*TRUSTED_ISSUE_AUTHORS, "github-actions[bot]"}
 TRUSTED_WORKFLOW_PATH = ".github/workflows/trusted-checks.yml"
+NATIVE_WORKFLOW_SPECS = (
+    ("ci.yml", "CI"),
+    ("unit-tests.yml", "Unit Tests"),
+)
+OPTIONAL_NATIVE_WORKFLOW_SPECS = (("e2e.yml", "E2E Acceptance"),)
 AUDIT_WORKFLOWS = (
     "trusted-checks.yml",
     "ci-reconcile.yml",
@@ -73,6 +77,7 @@ INTERNAL_STOP_REASONS_THAT_MUST_NOT_NOTIFY = frozenset(
         "MISSING_TRUSTED_SOURCE_ISSUE",
         "UNTRUSTED_SOURCE_ISSUE",
         "INCOMPLETE_CHANGED_FILE_EVIDENCE",
+        "UNAUTHORIZED_CHANGED_PATH",
         "UNAUTHORIZED_PROTECTED_PATH",
         "UNTRUSTED_EVIDENCE",
         "BLOCKING_CODEX_REVIEW",
@@ -159,6 +164,7 @@ def comment(number: int, body: str) -> None:
 
 
 def ensure_label(number: int, label: str, color: str, description: str) -> None:
+    """Legacy helper retained for compatibility; routine stops never call it."""
     gh(
         "label",
         "create",
@@ -209,6 +215,10 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _timestamp_key(value: str | None) -> datetime:
+    return _parse_timestamp(value) or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def minutes_since(value: str | None, now: datetime | None = None) -> int | None:
@@ -275,11 +285,16 @@ def unresolved_review_threads(pr_number: int) -> bool:
             raise RuntimeError("Review-thread pagination returned no end cursor")
 
 
+def _codex_event_timestamp(item: dict[str, Any]) -> str | None:
+    return str(item.get("submitted_at") or item.get("created_at") or "") or None
+
+
 def _codex_items(pr_number: int) -> list[dict[str, Any]]:
-    return [
+    items = [
         *api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100"),
         *api_list(f"repos/{REPO}/pulls/{pr_number}/reviews?per_page=100"),
     ]
+    return sorted(items, key=lambda item: _timestamp_key(_codex_event_timestamp(item)))
 
 
 def exact_codex_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
@@ -295,7 +310,7 @@ def exact_codex_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
             state = "clean" if clean and not unresolved_review_threads(pr_number) else "blocking"
             return {
                 "state": state,
-                "timestamp": item.get("submitted_at") or item.get("created_at"),
+                "timestamp": _codex_event_timestamp(item),
                 "request_timestamp": None,
             }
         if (
@@ -317,7 +332,10 @@ def exact_codex_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
         ]
         if clean_reactions:
             latest = max(
-                (reaction.get("created_at") or request.get("created_at") for reaction in clean_reactions),
+                (
+                    reaction.get("created_at") or request.get("created_at")
+                    for reaction in clean_reactions
+                ),
                 default=request.get("created_at"),
             )
             state = "blocking" if unresolved_review_threads(pr_number) else "clean"
@@ -479,6 +497,109 @@ def latest_successful_attestation_timestamp(
     )
 
 
+def _workflow_metadata(filename: str, *, optional: bool) -> dict[str, Any] | None:
+    result = gh_result(
+        "api",
+        "-H",
+        "Accept: application/vnd.github+json",
+        f"repos/{REPO}/actions/workflows/{filename}",
+    )
+    if result.returncode != 0:
+        if optional and _not_found(result):
+            return None
+        raise RuntimeError(f"Could not inspect fixed workflow {filename}: {result.stderr.strip()}")
+    metadata = json.loads(result.stdout)
+    if metadata.get("state") != "active":
+        raise RuntimeError(f"Fixed workflow {filename} is not active")
+    expected_path = f".github/workflows/{filename}"
+    if str(metadata.get("path") or "") != expected_path:
+        raise RuntimeError(f"Fixed workflow {filename} has unexpected path")
+    return metadata
+
+
+def required_native_workflows() -> list[tuple[str, str, int]]:
+    required: list[tuple[str, str, int]] = []
+    for filename, display_name in NATIVE_WORKFLOW_SPECS:
+        metadata = _workflow_metadata(filename, optional=False)
+        assert metadata is not None
+        required.append((filename, display_name, int(metadata["id"])))
+    for filename, display_name in OPTIONAL_NATIVE_WORKFLOW_SPECS:
+        metadata = _workflow_metadata(filename, optional=True)
+        if metadata is not None:
+            required.append((filename, display_name, int(metadata["id"])))
+    return required
+
+
+def _native_run_matches(
+    run: dict[str, Any], sha: str, filename: str, workflow_id: int
+) -> bool:
+    repository = run.get("repository") or {}
+    head_repository = run.get("head_repository") or {}
+    path = str(run.get("path") or "")
+    return bool(
+        int(run.get("workflow_id") or 0) == workflow_id
+        and run.get("event") == "pull_request"
+        and run.get("head_sha") == sha
+        and repository.get("full_name") == REPO
+        and (not head_repository or head_repository.get("full_name") == REPO)
+        and (not path or path.endswith(f"/{filename}") or path == f".github/workflows/{filename}")
+    )
+
+
+def native_workflow_evidence(sha: str) -> tuple[bool, list[dict[str, Any]]]:
+    _require_exact_sha(sha)
+    evidence: list[dict[str, Any]] = []
+    clean = True
+    for filename, display_name, workflow_id in required_native_workflows():
+        runs = api_key_pages(
+            f"repos/{REPO}/actions/workflows/{workflow_id}/runs"
+            f"?event=pull_request&head_sha={sha}&per_page=100",
+            "workflow_runs",
+        )
+        candidates = [
+            run
+            for run in runs
+            if _native_run_matches(run, sha, filename, workflow_id)
+        ]
+        if not candidates:
+            clean = False
+            evidence.append(
+                {
+                    "workflow": filename,
+                    "display_name": display_name,
+                    "workflow_id": workflow_id,
+                    "run_id": None,
+                    "status": "missing",
+                    "conclusion": None,
+                }
+            )
+            continue
+        latest = max(
+            candidates,
+            key=lambda run: (
+                int(run.get("run_number") or 0),
+                int(run.get("run_attempt") or 0),
+                int(run.get("id") or 0),
+            ),
+        )
+        status = str(latest.get("status") or "")
+        conclusion = latest.get("conclusion")
+        success = status == "completed" and conclusion == "success"
+        clean = clean and success
+        evidence.append(
+            {
+                "workflow": filename,
+                "display_name": display_name,
+                "workflow_id": workflow_id,
+                "run_id": int(latest.get("id") or 0),
+                "status": status,
+                "conclusion": conclusion,
+                "updated_at": latest.get("updated_at"),
+            }
+        )
+    return clean, evidence
+
+
 def changed_paths(pr: dict[str, Any]) -> list[str] | None:
     expected = int(pr.get("changed_files") or 0)
     if expected > MAX_CHANGED_FILES:
@@ -509,8 +630,11 @@ def source_and_scope(
     changed = changed_paths(pr)
     if changed is None:
         return issue_number, issue, [], "INCOMPLETE_CHANGED_FILE_EVIDENCE"
+    issue_body = issue.get("body") or ""
+    if not scope_is_authorized(changed, issue_body):
+        return issue_number, issue, changed, "UNAUTHORIZED_CHANGED_PATH"
     if any(is_protected(path) for path in changed) and not protected_scope_is_authorized(
-        changed, issue.get("body") or ""
+        changed, issue_body
     ):
         return issue_number, issue, changed, "UNAUTHORIZED_PROTECTED_PATH"
     return issue_number, issue, changed, None
@@ -544,6 +668,28 @@ def _sanitized_check_evidence(sha: str) -> str:
     )
 
 
+def internal_stop_record_path(pr_number: int, sha: str, reason: str) -> str:
+    pr_number = _require_positive_number("pr_number", pr_number)
+    sha = _require_exact_sha(sha)
+    if not SAFE_REASON.fullmatch(reason):
+        raise ValueError("internal stop reason is not path-safe")
+    return f"{INTERNAL_STOP_ROOT}/pr-{pr_number}/{sha}/{reason}.json"
+
+
+def human_notice_record_path(pr_number: int, sha: str, reason: str) -> str:
+    pr_number = _require_positive_number("pr_number", pr_number)
+    sha = _require_exact_sha(sha)
+    if reason not in HUMAN_ONLY_REASONS:
+        raise ValueError("reason is not an allowed human-only notice family")
+    return f"{INTERNAL_STOP_ROOT}/pr-{pr_number}/{sha}/{reason}.notice.json"
+
+
+def _audit_record_path(pr_number: int, sha: str, reason: str) -> str:
+    if reason in HUMAN_ONLY_REASONS:
+        return human_notice_record_path(pr_number, sha, reason)
+    return internal_stop_record_path(pr_number, sha, reason)
+
+
 def self_resolution_audit(
     pr: dict[str, Any], issue_number: int | None, reason: str
 ) -> dict[str, str]:
@@ -551,12 +697,13 @@ def self_resolution_audit(
     pr_number = _require_positive_number("pr_number", int(pr["number"]))
     sha = _require_exact_sha(str((pr.get("head") or {}).get("sha") or ""))
     if not SAFE_REASON.fullmatch(reason):
-        raise ValueError("internal stop reason is not path-safe")
+        raise ValueError("audit reason is not path-safe")
 
     repository = api(f"repos/{REPO}")
     current_pr = _live_pr(pr_number, sha)
     changed = changed_paths(current_pr)
     attempts = attestation_attempts(sha)
+    native_clean, native_evidence = native_workflow_evidence(sha)
     checks = _sanitized_check_evidence(sha)
     codex = exact_codex_evidence(pr_number, sha)
     unresolved = unresolved_review_threads(pr_number)
@@ -574,13 +721,17 @@ def self_resolution_audit(
     authorization_state = "not-applicable"
     if issue_number:
         issue = api(f"repos/{REPO}/issues/{issue_number}")
+        issue_body = issue.get("body") or ""
         issue_state = (
             f"state={issue.get('state', 'unknown')},trusted_author={trusted_source_issue(issue)}"
         )
         authorization_state = (
             "incomplete-path-evidence"
             if changed is None
-            else str(protected_scope_is_authorized(changed, issue.get("body") or ""))
+            else (
+                f"all_paths={scope_is_authorized(changed, issue_body)},"
+                f"protected_paths={protected_scope_is_authorized(changed, issue_body)}"
+            )
         )
 
     final_pr = _live_pr(pr_number, sha)
@@ -602,12 +753,17 @@ def self_resolution_audit(
         "workflow_run_and_job_evidence": json.dumps(
             attempts, sort_keys=True, separators=(",", ":")
         ),
+        "native_pull_request_workflow_evidence": json.dumps(
+            {"clean": native_clean, "runs": native_evidence},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         "check_evidence": checks,
         "changed_and_renamed_paths": (
             "incomplete" if changed is None else json.dumps(changed, separators=(",", ":"))
         ),
         "scope_and_authorization": (
-            f"issue={issue_state},protected_scope={authorization_state}"
+            f"issue={issue_state},authorization={authorization_state}"
         ),
         "review_and_provenance": (
             f"codex={codex['state']},codex_timestamp={codex['timestamp']},"
@@ -620,16 +776,8 @@ def self_resolution_audit(
             "secret_values_not_requested=true"
         ),
         "alternative_connected_paths": ";".join(workflow_states),
-        "idempotency": internal_stop_record_path(pr_number, sha, reason),
+        "idempotency": _audit_record_path(pr_number, sha, reason),
     }
-
-
-def internal_stop_record_path(pr_number: int, sha: str, reason: str) -> str:
-    pr_number = _require_positive_number("pr_number", pr_number)
-    sha = _require_exact_sha(sha)
-    if not SAFE_REASON.fullmatch(reason):
-        raise ValueError("internal stop reason is not path-safe")
-    return f"{INTERNAL_STOP_ROOT}/pr-{pr_number}/{sha}/{reason}.json"
 
 
 def canonical_internal_stop_record(
@@ -650,6 +798,36 @@ def canonical_internal_stop_record(
         "pull_request_number": pr_number,
         "exact_head_sha": sha,
         "detail": detail,
+        "audit": audit,
+    }
+    return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
+
+
+def canonical_human_notice_record(
+    *,
+    reason: str,
+    issue_number: int,
+    pr_number: int,
+    exact_head_sha: str,
+    attempted_connected_paths: tuple[str, ...],
+    impossibility_evidence: tuple[str, ...],
+    provider_ui_action: str,
+    automatic_resume_condition: str,
+    targets: tuple[str, ...],
+    audit: dict[str, str],
+) -> str:
+    record = {
+        "schema_version": 1,
+        "notification": True,
+        "reason_code": reason,
+        "issue_number": issue_number,
+        "pull_request_number": pr_number,
+        "exact_head_sha": exact_head_sha,
+        "attempted_connected_paths": list(attempted_connected_paths),
+        "impossibility_evidence": list(impossibility_evidence),
+        "provider_ui_action": provider_ui_action,
+        "automatic_resume_condition": automatic_resume_condition,
+        "targets": list(targets),
         "audit": audit,
     }
     return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
@@ -698,20 +876,17 @@ def _existing_internal_record(path: str) -> str | None:
         return base64.b64decode(encoded).decode("utf-8")
     if _not_found(result):
         return None
-    raise RuntimeError(f"Could not inspect internal stop record: {result.stderr.strip()}")
+    raise RuntimeError(f"Could not inspect audit record: {result.stderr.strip()}")
 
 
-def persist_internal_stop_record(path: str, content: str, reason: str, pr_number: int) -> bool:
-    """Create one deterministic record commit; an existing path is the idempotency key."""
+def _persist_exact_record(
+    path: str, content: str, reason: str, pr_number: int
+) -> bool:
     ensure_internal_stop_branch()
     existing = _existing_internal_record(path)
     if existing is not None:
-        payload = json.loads(existing)
-        if (
-            payload.get("reason_code") != reason
-            or int(payload.get("pull_request_number") or 0) != pr_number
-        ):
-            raise RuntimeError("Existing internal stop record does not match its deterministic path")
+        if existing != content:
+            raise RuntimeError("Existing deterministic audit record content does not match")
         return False
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     created = gh_result(
@@ -729,9 +904,23 @@ def persist_internal_stop_record(path: str, content: str, reason: str, pr_number
     if created.returncode == 0:
         return True
     raced = _existing_internal_record(path)
-    if raced is not None:
+    if raced == content:
         return False
-    raise RuntimeError(f"Could not persist internal stop record: {created.stderr.strip()}")
+    raise RuntimeError(f"Could not persist deterministic audit record: {created.stderr.strip()}")
+
+
+def persist_internal_stop_record(
+    path: str, content: str, reason: str, pr_number: int
+) -> bool:
+    return _persist_exact_record(path, content, reason, pr_number)
+
+
+def persist_human_notice_record(
+    path: str, content: str, reason: str, pr_number: int
+) -> bool:
+    if reason not in HUMAN_ONLY_REASONS:
+        raise ValueError("reason is not an allowed human-only notice family")
+    return _persist_exact_record(path, content, reason, pr_number)
 
 
 def stop_report(
@@ -741,7 +930,7 @@ def stop_report(
     detail: str,
     close: bool = False,
 ) -> None:
-    """Persist one non-comment internal record on the fixed branch."""
+    """Persist one non-comment, non-label internal record on the fixed branch."""
     if reason in HUMAN_ONLY_REASONS:
         raise ValueError("human-only reasons must use the audited human-only formatter")
     sha = _require_exact_sha(str(pr["head"]["sha"]))
@@ -761,12 +950,6 @@ def stop_report(
     )
     _live_pr(pr_number, sha)
     persist_internal_stop_record(path, content, reason, pr_number)
-    ensure_label(
-        pr_number,
-        "ai-blocked",
-        "B60205",
-        "Automation stopped after self-resolution",
-    )
     if close:
         _live_pr(pr_number, sha)
         gh("pr", "close", str(pr_number), "--repo", REPO)
@@ -857,20 +1040,40 @@ def human_only_notice(
     automatic_resume_condition: str,
     targets: Iterable[str],
 ) -> None:
-    """Perform the mandatory audit, validate live state, and post one immutable bot comment."""
+    """Persist exact connected evidence, then post one immutable bot notice."""
+    attempted = _normalized_evidence(
+        attempted_connected_paths, "attempted_connected_paths"
+    )
+    evidence = _normalized_evidence(impossibility_evidence, "impossibility_evidence")
+    target_list = _normalized_evidence(targets, "targets")
     body = format_human_only_notice(
         reason=reason,
         issue_number=issue_number,
         pr_number=pr_number,
         exact_head_sha=exact_head_sha,
-        attempted_connected_paths=attempted_connected_paths,
-        impossibility_evidence=impossibility_evidence,
+        attempted_connected_paths=attempted,
+        impossibility_evidence=evidence,
         provider_ui_action=provider_ui_action,
         automatic_resume_condition=automatic_resume_condition,
-        targets=targets,
+        targets=target_list,
     )
     live = _validated_notice_destination(pr_number, issue_number, exact_head_sha)
     audit = self_resolution_audit(live, issue_number, reason)
+    record_path = human_notice_record_path(pr_number, exact_head_sha, reason)
+    record = canonical_human_notice_record(
+        reason=reason,
+        issue_number=issue_number,
+        pr_number=pr_number,
+        exact_head_sha=exact_head_sha,
+        attempted_connected_paths=attempted,
+        impossibility_evidence=evidence,
+        provider_ui_action=provider_ui_action.strip(),
+        automatic_resume_condition=automatic_resume_condition.strip(),
+        targets=target_list,
+        audit=audit,
+    )
+    _validated_notice_destination(pr_number, issue_number, exact_head_sha)
+    persist_human_notice_record(record_path, record, reason, pr_number)
     body += "- self_resolution_audit:\n" + "\n".join(
         f"  - {key}: `{value}`" for key, value in audit.items()
     ) + "\n"
@@ -885,8 +1088,12 @@ def human_only_notice(
         and marker in (item.get("body") or "")
         for item in comments
     ):
+        if _existing_internal_record(record_path) != record:
+            raise RuntimeError("trusted notice comment has no matching persisted exact audit record")
         return
     _validated_notice_destination(pr_number, issue_number, exact_head_sha)
+    if _existing_internal_record(record_path) != record:
+        raise RuntimeError("human-only audit record changed before publication")
     comment(pr_number, body)
 
 
@@ -959,7 +1166,7 @@ def supervise() -> None:
                 f"Changed/renamed path evidence exceeded or did not match the bounded {MAX_CHANGED_FILES}-file snapshot.",
             )
             continue
-        if scope_error == "UNAUTHORIZED_PROTECTED_PATH":
+        if scope_error in {"UNAUTHORIZED_CHANGED_PATH", "UNAUTHORIZED_PROTECTED_PATH"}:
             issue_body = (issue or {}).get("body") or ""
             auto_close = bool(
                 E2E_AUTO_CLOSE_MARKER in issue_body
@@ -968,11 +1175,16 @@ def supervise() -> None:
                     for label in pr.get("labels") or []
                 )
             )
+            detail = (
+                "Changed or renamed paths exceed the trusted Issue allowlist."
+                if scope_error == "UNAUTHORIZED_CHANGED_PATH"
+                else "Protected changed or renamed paths lack exact protected authorization."
+            )
             stop_report(
                 pr,
                 issue_number,
                 scope_error,
-                "Protected changed or renamed paths lack exact Issue authorization.",
+                detail,
                 close=auto_close,
             )
             continue
@@ -989,6 +1201,26 @@ def supervise() -> None:
                     issue_number,
                     "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
                     "Three fixed candidate-bound workflow attempts completed without one complete successful immutable run/job evidence set.",
+                )
+            continue
+
+        native_clean, native_evidence = native_workflow_evidence(sha)
+        if not native_clean:
+            anchor = max(
+                (
+                    str(item.get("updated_at") or "")
+                    for item in native_evidence
+                    if item.get("updated_at")
+                ),
+                default=None,
+            )
+            elapsed = minutes_since(anchor)
+            if elapsed is not None and elapsed >= NO_PROGRESS_MINUTES:
+                stop_report(
+                    pr,
+                    issue_number,
+                    "NO_MEANINGFUL_PROGRESS",
+                    "Fixed native pull-request workflow evidence remained incomplete or unsuccessful for the bounded interval.",
                 )
             continue
 
@@ -1034,6 +1266,10 @@ def supervise() -> None:
             anchor = _evidence_anchor(
                 latest_successful_attestation_timestamp(attempts),
                 str(codex.get("timestamp") or "") or None,
+                *(
+                    str(item.get("updated_at") or "") or None
+                    for item in native_evidence
+                ),
             )
             elapsed = minutes_since(anchor)
             if elapsed is not None and elapsed >= NO_PROGRESS_MINUTES:
@@ -1043,6 +1279,13 @@ def supervise() -> None:
                     "NO_MEANINGFUL_PROGRESS",
                     "Mergeability remained indeterminate for the bounded interval measured from the latest immutable clean evidence.",
                 )
+            continue
+
+        final = _live_pr(int(pr["number"]), sha)
+        if final.get("mergeable") is not True or not trusted_candidate(final):
+            continue
+        final_native_clean, _ = native_workflow_evidence(sha)
+        if not final_native_clean or not exact_codex_clean(int(pr["number"]), sha):
             continue
         gh(
             "api",
