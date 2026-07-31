@@ -18,6 +18,7 @@ ENVIRONMENT = {
     "AUTOMATION_OWNER": "owner",
 }
 SHA = "a" * 40
+DEFAULT_SHA = "b" * 40
 PR_NUMBER = 7
 
 
@@ -114,9 +115,7 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             "head_sha": sha,
             "repository": {"full_name": "example/foundation"},
             "head_repository": {"full_name": "example/foundation"},
-            "pull_requests": [
-                {"number": PR_NUMBER, "base": {"ref": "main"}}
-            ],
+            "pull_requests": [{"number": PR_NUMBER, "base": {"ref": "main"}}],
             "path": {
                 1: ".github/workflows/ci.yml",
                 2: ".github/workflows/unit-tests.yml",
@@ -129,8 +128,14 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             "updated_at": "2026-07-31T12:00:00Z",
         }
 
-    def evidence(self, metadata, runs, definitions=None):
-        definitions = definitions or [True] * len(runs)
+    def evidence(
+        self,
+        metadata,
+        runs,
+        definitions=None,
+        default_shas=(DEFAULT_SHA, DEFAULT_SHA),
+    ):
+        definitions = definitions or [True] * len(metadata)
         with (
             patch.object(self.runtime, "gh_result", side_effect=metadata),
             patch.object(
@@ -139,6 +144,9 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
                 side_effect=definitions,
             ),
             patch.object(self.runtime, "api_key_pages", side_effect=runs),
+            patch.object(
+                self.runtime, "current_default_sha", side_effect=default_shas
+            ),
         ):
             return self.runtime.native_workflow_evidence(SHA, PR_NUMBER)
 
@@ -170,39 +178,82 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
         self.assertFalse(clean)
         self.assertEqual(evidence[0]["status"], "untrusted-definition")
 
-    def test_definition_binding_compares_candidate_and_stable_default_blobs(self):
-        with (
-            patch.object(
-                self.runtime,
-                "current_default_sha",
-                side_effect=["b" * 40, "b" * 40],
-            ),
-            patch.object(
-                self.runtime,
-                "_content_blob_sha",
-                side_effect=["blob-1", "blob-1"],
-            ) as blobs,
-        ):
+    def test_definition_binding_compares_candidate_to_one_stable_default_blob(self):
+        with patch.object(
+            self.runtime,
+            "_content_blob_sha",
+            side_effect=["blob-1", "blob-1"],
+        ) as blobs:
             self.assertTrue(
-                self.runtime._workflow_definition_matches_default("ci.yml", SHA)
+                self.runtime._workflow_definition_matches_default(
+                    "ci.yml", SHA, DEFAULT_SHA
+                )
             )
+        self.assertEqual(blobs.call_args_list[0].args[1], DEFAULT_SHA)
         self.assertEqual(blobs.call_count, 2)
 
+        with patch.object(
+            self.runtime,
+            "_content_blob_sha",
+            side_effect=["default", "candidate"],
+        ):
+            self.assertFalse(
+                self.runtime._workflow_definition_matches_default(
+                    "ci.yml", SHA, DEFAULT_SHA
+                )
+            )
+
+    def test_default_branch_move_during_complete_gate_fails_closed(self):
+        with self.assertRaisesRegex(RuntimeError, "Default branch moved"):
+            self.evidence(
+                [
+                    self.metadata_result("ci.yml", 1),
+                    self.metadata_result("unit-tests.yml", 2),
+                    subprocess.CompletedProcess(
+                        ["gh"], 1, "", "HTTP 404 Not Found"
+                    ),
+                ],
+                [[self.make_run(1)], [self.make_run(2)]],
+                default_shas=(DEFAULT_SHA, "c" * 40),
+            )
+
+    def test_every_definition_uses_the_same_stable_default_sha(self):
         with (
             patch.object(
                 self.runtime,
-                "current_default_sha",
-                side_effect=["b" * 40, "b" * 40],
+                "gh_result",
+                side_effect=[
+                    self.metadata_result("ci.yml", 1),
+                    self.metadata_result("unit-tests.yml", 2),
+                    self.metadata_result("e2e.yml", 3),
+                ],
             ),
             patch.object(
                 self.runtime,
-                "_content_blob_sha",
-                side_effect=["default", "candidate"],
+                "_workflow_definition_matches_default",
+                return_value=True,
+            ) as definitions,
+            patch.object(
+                self.runtime,
+                "api_key_pages",
+                side_effect=[
+                    [self.make_run(1)],
+                    [self.make_run(2)],
+                    [self.make_run(3)],
+                ],
+            ),
+            patch.object(
+                self.runtime,
+                "current_default_sha",
+                side_effect=[DEFAULT_SHA, DEFAULT_SHA],
             ),
         ):
-            self.assertFalse(
-                self.runtime._workflow_definition_matches_default("ci.yml", SHA)
-            )
+            clean, _ = self.runtime.native_workflow_evidence(SHA, PR_NUMBER)
+        self.assertTrue(clean)
+        self.assertEqual(
+            [call.args[2] for call in definitions.call_args_list],
+            [DEFAULT_SHA, DEFAULT_SHA, DEFAULT_SHA],
+        )
 
     def test_missing_pending_failed_stale_and_cross_pr_runs_fail_closed(self):
         not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
@@ -210,7 +261,10 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
         cross_pr["pull_requests"] = [{"number": 99, "base": {"ref": "main"}}]
         cases = (
             ([], [self.make_run(2)]),
-            ([self.make_run(1, status="in_progress", conclusion=None)], [self.make_run(2)]),
+            (
+                [self.make_run(1, status="in_progress", conclusion=None)],
+                [self.make_run(2)],
+            ),
             ([self.make_run(1, conclusion="failure")], [self.make_run(2)]),
             ([self.make_run(1, sha="b" * 40)], [self.make_run(2)]),
             ([cross_pr], [self.make_run(2)]),
