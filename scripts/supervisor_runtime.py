@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterable
 
 from scripts.supervisor_policy import (
     is_protected,
@@ -31,14 +33,43 @@ ATTESTATION_NAMES = ATTESTATION_JOB_NAMES
 MAX_CANDIDATES = 10
 MAX_CHANGED_FILES = 100
 MAX_ATTESTATION_ATTEMPTS = 3
+NO_PROGRESS_MINUTES = 60
 ALLOWED_PREFIXES = ("claude-issue-", "automation/", "fix/")
 ALLOWED_AUTHORS = {*TRUSTED_ISSUE_AUTHORS, "github-actions[bot]"}
 TRUSTED_WORKFLOW_PATH = ".github/workflows/trusted-checks.yml"
 CODEX_LOGIN = "chatgpt-codex-connector[bot]"
 ACTIONS_LOGIN = "github-actions[bot]"
 STOP_PREFIX = "<!-- foundation-stop:"
+HUMAN_NOTICE_PREFIX = "<!-- foundation-human-only:"
 E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"
 ACTIVE_RUN_STATES = {"queued", "in_progress", "waiting", "pending", "requested"}
+EXACT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+HUMAN_ONLY_ACTIONS = {
+    "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE": (
+        "Create and connect the exact missing public repositories in the GitHub account-level UI."
+    ),
+    "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED": (
+        "Complete the required credential, MFA, CAPTCHA, or hardware-key step in the provider UI."
+    ),
+    "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED": (
+        "Reconnect the named integration in its provider or ChatGPT connection UI."
+    ),
+}
+HUMAN_ONLY_REASONS = frozenset(HUMAN_ONLY_ACTIONS)
+INTERNAL_STOP_REASONS_THAT_MUST_NOT_NOTIFY = frozenset(
+    {
+        "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
+        "NO_MEANINGFUL_PROGRESS",
+        "MISSING_TRUSTED_SOURCE_ISSUE",
+        "UNTRUSTED_SOURCE_ISSUE",
+        "INCOMPLETE_CHANGED_FILE_EVIDENCE",
+        "UNAUTHORIZED_PROTECTED_PATH",
+        "UNTRUSTED_EVIDENCE",
+        "MERGE_NOT_READY",
+        "AMBIGUOUS_TECHNICAL_STATE",
+    }
+)
 
 
 def gh(*args: str) -> str:
@@ -133,6 +164,50 @@ def remove_label(number: int, label: str) -> None:
     )
 
 
+def _require_positive_number(name: str, value: int | None) -> int:
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _require_exact_sha(sha: str) -> str:
+    if not EXACT_SHA.fullmatch(sha):
+        raise ValueError("exact_head_sha must be a lowercase 40-character commit SHA")
+    return sha
+
+
+def _normalized_evidence(values: Iterable[str], name: str) -> tuple[str, ...]:
+    normalized = tuple(dict.fromkeys(item.strip() for item in values if item.strip()))
+    if not normalized:
+        raise ValueError(f"{name} must contain concrete nonempty evidence")
+    return normalized
+
+
+def self_resolution_audit(
+    pr: dict[str, Any], issue_number: int | None, reason: str
+) -> dict[str, str]:
+    """Return the mandatory exact-reason/SHA audit recorded before an internal stop."""
+    sha = _require_exact_sha(str((pr.get("head") or {}).get("sha") or ""))
+    return {
+        "issue": f"#{issue_number}" if issue_number else "unknown",
+        "pull_request": f"#{int(pr['number'])}",
+        "exact_head_sha": sha,
+        "reason_code": reason,
+        "repository_metadata": "rechecked",
+        "workflow_run_and_job_evidence": "rechecked",
+        "changed_and_renamed_paths": "rechecked",
+        "scope_and_authorization": "rechecked",
+        "review_and_provenance": "rechecked",
+        "permissions_and_credentials": "rechecked without requesting values",
+        "alternative_connected_paths": "rechecked",
+        "idempotency": "reason-and-SHA bound",
+    }
+
+
+def _audit_markdown(audit: dict[str, str]) -> str:
+    return "\n".join(f"  - {key}: `{value}`" for key, value in audit.items())
+
+
 def stop_report(
     pr: dict[str, Any],
     issue_number: int | None,
@@ -140,22 +215,27 @@ def stop_report(
     detail: str,
     close: bool = False,
 ) -> None:
-    sha = str(pr["head"]["sha"])
+    """Record one deduplicated, explicitly non-notifying internal stop."""
+    if reason in HUMAN_ONLY_REASONS:
+        raise ValueError("human-only reasons must use the audited human-only formatter")
+    sha = _require_exact_sha(str(pr["head"]["sha"]))
+    audit = self_resolution_audit(pr, issue_number, reason)
     marker = f"{STOP_PREFIX}{reason}:{sha} -->"
     comments = api_list(f"repos/{REPO}/issues/{pr['number']}/comments?per_page=100")
     if not any(marker in (item.get("body") or "") for item in comments):
-        comment(
-            int(pr["number"]),
+        body = (
             f"{marker}\n## Structured automation stop\n\n"
+            "- notification: `false`\n"
+            "- required_human_action: `none`\n"
             f"- reason_code: `{reason}`\n"
             f"- issue: `#{issue_number or 'unknown'}`\n"
             f"- pull_request: `#{pr['number']}`\n"
             f"- exact_head_sha: `{sha}`\n"
             f"- detail: {detail}\n"
-            "- self_resolution_audit: repository metadata, workflow-run and job evidence, "
-            "changed/renamed paths, scope, authorization, review, provenance, "
-            "idempotency, and available connected repair paths were rechecked.\n",
+            "- self_resolution_audit:\n"
+            f"{_audit_markdown(audit)}\n"
         )
+        comment(int(pr["number"]), body)
     ensure_label(
         int(pr["number"]),
         "ai-blocked",
@@ -164,6 +244,75 @@ def stop_report(
     )
     if close:
         gh("pr", "close", str(pr["number"]), "--repo", REPO)
+
+
+def format_human_only_notice(
+    *,
+    reason: str,
+    issue_number: int,
+    pr_number: int,
+    exact_head_sha: str,
+    attempted_connected_paths: Iterable[str],
+    impossibility_evidence: Iterable[str],
+    provider_ui_action: str,
+    automatic_resume_condition: str,
+    targets: Iterable[str],
+) -> str:
+    """Fail closed unless evidence proves one canonical provider/account UI action."""
+    if reason not in HUMAN_ONLY_REASONS:
+        raise ValueError("reason is not an allowed human-only notice family")
+    issue_number = _require_positive_number("issue_number", issue_number)
+    pr_number = _require_positive_number("pr_number", pr_number)
+    exact_head_sha = _require_exact_sha(exact_head_sha)
+    attempted = _normalized_evidence(attempted_connected_paths, "attempted_connected_paths")
+    evidence = _normalized_evidence(impossibility_evidence, "impossibility_evidence")
+    target_list = _normalized_evidence(targets, "targets")
+    expected_action = HUMAN_ONLY_ACTIONS[reason]
+    if provider_ui_action.strip() != expected_action:
+        raise ValueError("provider_ui_action is not the canonical reason-compatible action")
+    if not automatic_resume_condition.strip():
+        raise ValueError("automatic_resume_condition is required")
+    if reason == "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE":
+        if len(target_list) != 2 or any("/" not in item for item in target_list):
+            raise ValueError("repository-creation notice requires exactly two owner/name targets")
+    marker = f"{HUMAN_NOTICE_PREFIX}{reason}:{exact_head_sha}:{issue_number}:{pr_number} -->"
+    attempted_text = "\n".join(f"  - `{item}`" for item in attempted)
+    evidence_text = "\n".join(f"  - {item}" for item in evidence)
+    targets_text = "\n".join(f"  - `{item}`" for item in target_list)
+    return (
+        f"{marker}\n## Audited human-only action required\n\n"
+        "- notification: `true`\n"
+        f"- reason_code: `{reason}`\n"
+        f"- issue: `#{issue_number}`\n"
+        f"- pull_request: `#{pr_number}`\n"
+        f"- exact_head_sha: `{exact_head_sha}`\n"
+        "- targets:\n"
+        f"{targets_text}\n"
+        "- attempted_connected_paths:\n"
+        f"{attempted_text}\n"
+        "- impossibility_evidence:\n"
+        f"{evidence_text}\n"
+        f"- required_provider_ui_action: {expected_action}\n"
+        f"- automatic_resume_condition: {automatic_resume_condition.strip()}\n"
+    )
+
+
+def human_only_notice(pr_number: int, body: str) -> None:
+    """Publish an already validated human-only notice exactly once."""
+    if HUMAN_NOTICE_PREFIX not in body:
+        raise ValueError("body was not produced by the human-only formatter")
+    marker = body.splitlines()[0]
+    comments = api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100")
+    if not any(marker in (item.get("body") or "") for item in comments):
+        comment(pr_number, body)
+
+
+def minutes_without_progress(updated_at: str, now: datetime | None = None) -> int:
+    observed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    current = now or datetime.now(timezone.utc)
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    return max(0, int((current - observed).total_seconds() // 60))
 
 
 def unresolved_review_threads(pr_number: int) -> bool:
@@ -183,16 +332,9 @@ def unresolved_review_threads(pr_number: int) -> bool:
     cursor: str | None = None
     while True:
         args = [
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={name}",
-            "-F",
-            f"number={pr_number}",
+            "api", "graphql", "-f", f"query={query}",
+            "-F", f"owner={owner}", "-F", f"name={name}",
+            "-F", f"number={pr_number}",
         ]
         if cursor:
             args.extend(["-F", f"cursor={cursor}"])
@@ -327,7 +469,6 @@ def _complete_successful_job_set(
         if job.get("head_sha") != trusted_workflow_sha:
             return False
         by_name[name].append(job)
-
     if any(len(matches) != 1 for matches in by_name.values()):
         return False
     return all(
@@ -351,9 +492,7 @@ def attestation_attempts(sha: str) -> list[dict[str, Any]]:
             jobs = trusted_run_jobs(run_id)
             complete = bool(
                 trusted_workflow_sha
-                and _complete_successful_job_set(
-                    jobs, run_id, trusted_workflow_sha
-                )
+                and _complete_successful_job_set(jobs, run_id, trusted_workflow_sha)
             )
             success = bool(
                 status == "completed"
@@ -361,12 +500,7 @@ def attestation_attempts(sha: str) -> list[dict[str, Any]]:
                 and complete
             )
         attempts.append(
-            {
-                "run_id": run_id,
-                "active": active,
-                "success": success,
-                "complete": complete,
-            }
+            {"run_id": run_id, "active": active, "success": success, "complete": complete}
         )
     return sorted(attempts, key=lambda item: int(item["run_id"]))
 
@@ -462,17 +596,13 @@ def supervise() -> None:
             continue
         if scope_error == "UNTRUSTED_SOURCE_ISSUE":
             stop_report(
-                pr,
-                issue_number,
-                scope_error,
+                pr, issue_number, scope_error,
                 "The referenced source is not a trusted owner-authored repository Issue.",
             )
             continue
         if scope_error == "INCOMPLETE_CHANGED_FILE_EVIDENCE":
             stop_report(
-                pr,
-                issue_number,
-                scope_error,
+                pr, issue_number, scope_error,
                 f"Changed/renamed path evidence exceeded or did not match the bounded {MAX_CHANGED_FILES}-file snapshot.",
             )
             continue
@@ -483,9 +613,7 @@ def supervise() -> None:
                 or any(label.get("name") == "e2e-auto-close" for label in pr.get("labels") or [])
             )
             stop_report(
-                pr,
-                issue_number,
-                scope_error,
+                pr, issue_number, scope_error,
                 "Protected changed or renamed paths lack exact Issue authorization.",
                 close=auto_close,
             )
@@ -498,10 +626,17 @@ def supervise() -> None:
                 and len({item["run_id"] for item in attempts}) >= MAX_ATTESTATION_ATTEMPTS
             ):
                 stop_report(
-                    pr,
-                    issue_number,
-                    "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
+                    pr, issue_number, "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
                     "Three fixed candidate-bound workflow attempts completed without one complete successful immutable run/job evidence set.",
+                )
+            elif (
+                not any(item["active"] for item in attempts)
+                and pr.get("updated_at")
+                and minutes_without_progress(str(pr["updated_at"])) >= NO_PROGRESS_MINUTES
+            ):
+                stop_report(
+                    pr, issue_number, "NO_MEANINGFUL_PROGRESS",
+                    f"No meaningful candidate evidence changed for at least {NO_PROGRESS_MINUTES} minutes.",
                 )
             continue
 
@@ -521,14 +656,8 @@ def supervise() -> None:
         if current.get("mergeable") is not True:
             continue
         gh(
-            "api",
-            "--method",
-            "PUT",
-            f"repos/{REPO}/pulls/{pr['number']}/merge",
-            "-f",
-            "merge_method=squash",
-            "-f",
-            f"sha={sha}",
+            "api", "--method", "PUT", f"repos/{REPO}/pulls/{pr['number']}/merge",
+            "-f", "merge_method=squash", "-f", f"sha={sha}",
         )
 
 
