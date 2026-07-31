@@ -12,15 +12,19 @@ on:
         required: true
         type: string
       trusted_supervisor:
-        description: Must be true for default-branch supervisor dispatch
+        description: Must be true for a trusted supervisor dispatch
         required: true
         type: boolean
+      source_run_id:
+        description: Trusted supervisor workflow run ID for bot dispatch
+        required: false
+        type: string
+
+permissions: {}
 
 concurrency:
   group: claude-issue-${{ inputs.issue_number || github.event.issue.number }}
   cancel-in-progress: false
-
-permissions: {}
 
 jobs:
   prepare:
@@ -35,31 +39,68 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' &&
         inputs.trusted_supervisor == true &&
-        github.ref_name == github.event.repository.default_branch
+        github.ref_name == github.event.repository.default_branch &&
+        (
+          github.actor == github.repository_owner ||
+          (vars.AUTOMATION_OWNER != '' && github.actor == vars.AUTOMATION_OWNER) ||
+          github.actor == 'github-actions[bot]'
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       issues: write
       pull-requests: read
     outputs:
       issue_number: ${{ steps.guard.outputs.issue_number }}
       should_run: ${{ steps.guard.outputs.should_run }}
+      duplicate_skipped: ${{ steps.preflight.outputs.skip }}
     steps:
-      - id: guard
+      - name: Accept only an exact authorized trigger
+        id: guard
         env:
+          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_PATH: ${{ github.event_path }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
           python3 - <<'PY'
-          import json, os, re
+          import json
+          import os
+          import re
+          import subprocess
           from pathlib import Path
+
           event_name = os.environ["EVENT_NAME"]
-          event = json.loads(Path(os.environ["EVENT_PATH"]).read_text())
+          event = json.loads(Path(os.environ["EVENT_PATH"]).read_text(encoding="utf-8"))
+          actor = os.environ["ACTOR"]
+          repo = os.environ["REPOSITORY"]
+          default = os.environ["DEFAULT_BRANCH"]
+          owner = os.environ["AUTOMATION_OWNER"]
           trigger = "/claude-run"
           issue_number = ""
           allowed = False
+
+          def first_meaningful_line(body: str) -> str:
+              without_comments = re.sub(r"<!--.*?-->", "", body or "", flags=re.S)
+              for line in without_comments.splitlines():
+                  if line.strip():
+                      return line.strip()
+              return ""
+
+          def api(path: str):
+              output = subprocess.check_output(
+                  ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
+                  text=True,
+              )
+              return json.loads(output)
+
           if event_name == "issue_comment":
               issue = event.get("issue") or {}
               body = ((event.get("comment") or {}).get("body") or "")
@@ -68,28 +109,70 @@ jobs:
           elif event_name == "issues":
               issue = event.get("issue") or {}
               issue_number = str(issue.get("number") or "")
-              body = issue.get("body") or ""
-              lines = [line.strip() for line in re.sub(r"<!--.*?-->", "", body, flags=re.S).splitlines() if line.strip()]
-              allowed = bool(lines and lines[0] == trigger)
+              allowed = first_meaningful_line(issue.get("body") or "") == trigger
           elif event_name == "workflow_dispatch":
               issue_number = os.environ.get("DISPATCH_ISSUE", "")
-              allowed = issue_number.isdigit()
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"issue_number={issue_number}\n")
-              out.write(f"should_run={str(allowed).lower()}\n")
+              if issue_number.isdigit() and actor == owner:
+                  allowed = True
+              elif issue_number.isdigit() and actor == "github-actions[bot]":
+                  source_run_id = os.environ.get("SOURCE_RUN_ID", "")
+                  if source_run_id.isdigit():
+                      source = api(f"repos/{repo}/actions/runs/{source_run_id}")
+                      supervisor = api(f"repos/{repo}/actions/workflows/supervisor.yml")
+                      allowed = bool(
+                          int(source.get("workflow_id") or 0) == int(supervisor["id"])
+                          and ((source.get("repository") or {}).get("full_name") == repo)
+                          and source.get("head_branch") == default
+                          and source.get("event")
+                          in {"workflow_run", "issue_comment", "schedule", "workflow_dispatch"}
+                          and source.get("status") in {"queued", "in_progress"}
+                      )
+
+          if not issue_number.isdigit():
+              allowed = False
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"issue_number={issue_number}\n")
+              output.write(f"should_run={str(allowed).lower()}\n")
           PY
+
+      - name: Prevent duplicate open work
+        id: preflight
+        if: steps.guard.outputs.should_run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.guard.outputs.issue_number }}
+        run: |
+          existing=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 100 \
+            --json number,headRefName,url \
+            --jq ".[] | select(.headRefName | startswith(\"claude-issue-${ISSUE_NUMBER}-\")) | .url" \
+            | head -n 1)
+          if [ -n "$existing" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            gh issue comment "$ISSUE_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "A Claude Pull Request is already open for this Issue: $existing. Duplicate execution was skipped."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
   implement:
     needs: prepare
-    if: needs.prepare.outputs.should_run == 'true'
+    if: |
+      needs.prepare.outputs.should_run == 'true' &&
+      needs.prepare.outputs.duplicate_skipped != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
       actions: read
+      contents: write
       id-token: write
+      issues: write
+      pull-requests: write
+    outputs:
+      branch_name: ${{ steps.require-branch.outputs.branch_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -102,15 +185,110 @@ jobs:
           base_branch: ${{ github.event.repository.default_branch }}
           branch_prefix: claude-issue-${{ needs.prepare.outputs.issue_number }}-
           track_progress: true
+          trigger_phrase: "/claude-run"
           prompt: |
             Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written.
             Read AGENTS.md, CLAUDE.md, SECURITY.md, and docs/OPERATING_RULES.md.
             Change only authorized paths. Do not execute repository code, merge, deploy,
             access another repository, reveal Secrets, or change repository settings.
+            Stop instead of guessing when an essential requirement is ambiguous.
           claude_args: |
             --max-turns 40
             --allowedTools "Read,Write,Edit,Glob,Grep"
       - name: Require generated branch
+        id: require-branch
         env:
           BRANCH: ${{ steps.claude.outputs.branch_name }}
-        run: test -n "$BRANCH"
+          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
+        run: |
+          case "$BRANCH" in
+            claude-issue-${ISSUE_NUMBER}-*) ;;
+            *) echo "Claude returned an unexpected branch: $BRANCH" >&2; exit 1 ;;
+          esac
+          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+  resolve:
+    needs: [prepare, implement]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      branch_sha: ${{ steps.resolve.outputs.branch_sha }}
+    steps:
+      - name: Resolve generated branch to an immutable commit
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.implement.outputs.branch_name }}
+        run: |
+          branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$BRANCH" --jq .sha)
+          test -n "$branch_sha"
+          echo "branch_sha=$branch_sha" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.resolve.outputs.branch_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Parse complete workflow YAML streams
+        run: |
+          ruby -e 'require "psych"; Dir[".github/workflows/*.{yml,yaml}"].sort.each { |path| documents = Psych.parse_stream(File.read(path)).children; raise "#{path}: expected exactly one YAML document" unless documents.length == 1 }'
+      - run: python scripts/public_export_guard.py .
+      - run: python scripts/validate_repository.py
+      - run: python -m unittest discover -s tests
+
+  publish:
+    needs: [prepare, implement, resolve, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Create one Draft Pull Request for the verified commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
+          BRANCH: ${{ needs.implement.outputs.branch_name }}
+          TARGET_SHA: ${{ needs.resolve.outputs.branch_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$BRANCH" --jq .sha)
+          if [ "$current_sha" != "$TARGET_SHA" ]; then
+            echo "Generated branch moved after verification." >&2
+            exit 1
+          fi
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json url --jq '.[0].url // ""')
+          if [ -z "$existing" ]; then
+            cat > "$RUNNER_TEMP/pr-body.md" <<EOF_BODY
+          Closes #$ISSUE_NUMBER.
+
+          ## Verification
+
+          - immutable candidate: \`$TARGET_SHA\`
+          - public export guard, repository validator, complete workflow YAML parsing, and unit tests ran in a read-only job
+          - public Pull Request CI, trusted exact-SHA attestations, and independent Codex review are still required
+
+          ## Security boundary
+
+          - no proposed-branch code ran in this write-capable publication job
+          - no direct push to \`$DEFAULT_BRANCH\`, merge, deployment, Secret change, or external mutation was performed
+          EOF_BODY
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --base "$DEFAULT_BRANCH" \
+              --head "$BRANCH" \
+              --title "Claude: work item #$ISSUE_NUMBER" \
+              --body-file "$RUNNER_TEMP/pr-body.md"
+          fi
