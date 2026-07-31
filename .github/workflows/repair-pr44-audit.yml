@@ -25,24 +25,24 @@ jobs:
       TARGET_PR: "44"
       TARGET_BRANCH: fix/issue-36-human-notice-contract
       EXPECTED_HEAD: fe927718c7f70edc8cc04e4b5d3350eab93cbdb4
-      REPAIR_SCRIPT_SHA256: 061ecaa6c95812339668d86e4ab5ceefdc747457b2431e3fee72f0c88698df7c
-      REPAIR_SCRIPT_B64: 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
+      REPAIR_HELPER: .github/scripts/repair-pr44-audit.py
     steps:
-      - name: Apply immutable exact-scope audit repairs
+      - name: Load fixed helper from this default-branch commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import base64
-          import gzip
-          import hashlib
-          import os
-
-          compressed = base64.b64decode(os.environ["REPAIR_SCRIPT_B64"], validate=True)
-          actual = hashlib.sha256(compressed).hexdigest()
-          if actual != os.environ["REPAIR_SCRIPT_SHA256"]:
-              raise RuntimeError("Fixed repair payload digest mismatch")
-          script = gzip.decompress(compressed)
-          exec(compile(script, "repair-pr44-audit.py", "exec"), {"__name__": "__main__"})
-          PY
+          metadata=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/contents/$REPAIR_HELPER?ref=$GITHUB_SHA")
+          encoding=$(printf '%s' "$metadata" | jq -r .encoding)
+          if [ "$encoding" != "base64" ]; then
+            echo "Unexpected helper encoding: $encoding" >&2
+            exit 1
+          fi
+          printf '%s' "$metadata" \
+            | jq -r .content \
+            | tr -d '\n' \
+            | base64 --decode > "$RUNNER_TEMP/repair-pr44-audit.py"
+          python3 -m py_compile "$RUNNER_TEMP/repair-pr44-audit.py"
+          python3 "$RUNNER_TEMP/repair-pr44-audit.py"
