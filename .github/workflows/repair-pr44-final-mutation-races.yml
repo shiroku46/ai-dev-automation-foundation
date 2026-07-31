@@ -45,5 +45,55 @@ jobs:
             | jq -r .content \
             | tr -d '\n' \
             | base64 --decode > "$helper"
+
+          python3 - "$helper" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          old_guard = '''    if fresh_scope_reason is not None:
+                  raise RuntimeError(
+                      f"{reason} is no longer supported because source/scope evidence changed"
+                  )
+          '''
+          new_guard = '''    if fresh_issue_number != issue_number or fresh_scope_reason is not None:
+                  raise RuntimeError(
+                      f"{reason} is no longer supported because source/scope evidence changed"
+                  )
+          '''
+          test_anchor = '''    def test_retry_exhaustion_cleared_by_success_fails_closed(self):
+          '''
+          test_insert = '''    def test_non_scope_reason_rejects_changed_source_issue(self):
+                  changed_source = (10, {"number": 10}, ["docs/probe.md"], None)
+                  with (
+                      patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+                      patch.object(
+                          self.runtime,
+                          "source_and_scope",
+                          return_value=changed_source,
+                      ),
+                      self.assertRaisesRegex(RuntimeError, "source/scope evidence changed"),
+                  ):
+                      self.runtime._revalidate_stop_reason(
+                          PR_NUMBER,
+                          SHA,
+                          9,
+                          "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
+                      )
+
+              def test_retry_exhaustion_cleared_by_success_fails_closed(self):
+          '''
+          for old, new, label in (
+              (old_guard, new_guard, "source Issue preservation guard"),
+              (test_anchor, test_insert, "source Issue regression test"),
+          ):
+              if text.count(old) != 1:
+                  raise RuntimeError(f"{label} anchor count is not exactly one")
+              text = text.replace(old, new, 1)
+          compile(text, str(path), "exec")
+          path.write_text(text, encoding="utf-8")
+          PY
+
           python3 -m py_compile "$helper"
           python3 "$helper"
