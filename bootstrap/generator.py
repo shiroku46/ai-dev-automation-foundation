@@ -7,6 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWLIST = [
+    "README.md",
+    "LICENSE",
     "AGENTS.md",
     "CLAUDE.md",
     "SECURITY.md",
