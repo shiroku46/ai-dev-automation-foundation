@@ -16,29 +16,37 @@ jobs:
       cancel-in-progress: false
     permissions:
       actions: write
+      checks: read
       contents: read
       pull-requests: read
-      statuses: write
     steps:
       - name: Dispatch missing exact-SHA checks
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
         run: |
           python3 - <<'PY'
           import json, os, subprocess
           repo = os.environ["REPOSITORY"]
           default = os.environ["DEFAULT_BRANCH"]
-          required = {"CI / validate": "ci.yml", "Unit Tests / test": "unit-tests.yml"}
+          owner = os.environ["AUTOMATION_OWNER"]
+          required = {"validate": "ci.yml", "test": "unit-tests.yml"}
           allowed_prefixes = ("claude-issue-", "automation/", "fix/")
+          allowed_authors = {owner, "github-actions[bot]"}
+
           def gh(*args):
               return subprocess.check_output(["gh", *args], text=True)
+
           pulls = json.loads(gh("api", f"repos/{repo}/pulls?state=open&per_page=50"))
           candidates = []
           for pr in sorted(pulls, key=lambda p: int(p["number"])):
               head = pr.get("head") or {}
+              author = (pr.get("user") or {}).get("login") or ""
               if ((head.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if author not in allowed_authors:
                   continue
               if not (head.get("ref") or "").startswith(allowed_prefixes):
                   continue
@@ -47,22 +55,33 @@ jobs:
               candidates.append(pr)
               if len(candidates) >= 10:
                   break
+
           for observed in candidates:
               number = observed["number"]
               snapshot = json.loads(gh("api", f"repos/{repo}/pulls/{number}"))
               sha = snapshot["head"]["sha"]
-              if sha != observed["head"]["sha"] or snapshot["head"]["repo"]["full_name"] != repo:
+              if sha != observed["head"]["sha"]:
                   continue
-              statuses = json.loads(gh("api", f"repos/{repo}/commits/{sha}/status")).get("statuses", [])
-              current = {}
-              for status in statuses:
-                  current.setdefault(status.get("context"), status.get("state"))
-              for context, workflow in required.items():
-                  if current.get(context) in {"pending", "success", "failure", "error"}:
+              if snapshot["head"]["repo"]["full_name"] != repo:
+                  continue
+              if (snapshot.get("user") or {}).get("login") not in allowed_authors:
+                  continue
+
+              check_runs = json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json",
+                     f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
+              ).get("check_runs", [])
+              current = set()
+              for check in sorted(check_runs, key=lambda item: int(item.get("id") or 0), reverse=True):
+                  if ((check.get("app") or {}).get("slug") != "github-actions"):
                       continue
-                  gh("api", "--method", "POST", f"repos/{repo}/statuses/{sha}",
-                     "-f", "state=pending", "-f", f"context={context}",
-                     "-f", "description=Trusted reconciliation dispatched this check")
+                  name = check.get("name") or ""
+                  if name in required:
+                      current.add(name)
+
+              for job_name, workflow in required.items():
+                  if job_name in current:
+                      continue
                   gh("workflow", "run", workflow, "--repo", repo, "--ref", default,
                      "-f", f"target_ref={sha}")
           PY
