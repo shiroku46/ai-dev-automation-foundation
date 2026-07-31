@@ -33,14 +33,34 @@ class WorkflowSecurityTest(unittest.TestCase):
 
     def test_queue_owner_guard_correction(self):
         text = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        self.assertIn("github.actor == github.repository_owner", text)
         self.assertIn("github.actor == vars.AUTOMATION_OWNER", text)
         self.assertNotIn("github.triggering_actor", text)
         self.assertIn('body.strip() == trigger', text)
+        self.assertIn("github.ref_name == github.event.repository.default_branch", text)
 
-    def test_write_supervisor_uses_default_branch(self):
-        text = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", text)
-        self.assertNotIn("github.event.pull_request.head.sha", text)
+    def test_reconciliation_uses_check_runs_and_fixed_trusted_authors(self):
+        text = (ROOT / ".github/workflows/ci-reconcile.yml").read_text(encoding="utf-8")
+        self.assertIn("checks: read", text)
+        self.assertIn("commits/{sha}/check-runs", text)
+        self.assertIn('allowed_authors = {owner, "github-actions[bot]"}', text)
+        self.assertIn('{"validate": "ci.yml", "test": "unit-tests.yml"}', text)
+        self.assertNotIn("statuses: write", text)
+        self.assertNotIn("/statuses/", text)
+
+    def test_write_supervisor_uses_default_branch_and_trusted_evidence(self):
+        workflow = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
+        runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
+        self.assertIn("checks: read", workflow)
+        self.assertIn("AUTOMATION_OWNER", workflow)
+        self.assertNotIn("github.event.pull_request.head.sha", workflow)
+        self.assertIn("commits/{sha}/check-runs", runtime)
+        self.assertIn('"github-actions[bot]"', runtime)
+        self.assertIn('get("slug") != "github-actions"', runtime)
+        self.assertIn("issues/comments/{request['id']}/reactions", runtime)
+        self.assertIn("reviewThreads(first:100)", runtime)
+        self.assertNotIn("/commits/{sha}/status", runtime)
 
 
 if __name__ == "__main__":
