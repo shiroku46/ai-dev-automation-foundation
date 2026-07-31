@@ -91,12 +91,15 @@ class NextPhase:
 class SelfResolutionAudit:
     """Immutable evidence that connected recovery paths were exhausted.
 
+    Audit evidence is valid for one exact head SHA and one reason family only.
     Internal stops require a completed audit and at least one attempted connected
     path. Human-only escalation additionally requires impossibility evidence, one
     minimal UI action, and an automatic-resumption condition.
     """
 
     completed: bool = False
+    audited_sha: str = ""
+    reason_family: str = ""
     attempted_connected_paths: tuple[str, ...] = ()
     impossibility_evidence: tuple[str, ...] = ()
     minimal_human_action: str = ""
@@ -219,21 +222,31 @@ def _decision(
     return Decision(action, reason, explanation, key)
 
 
+def _audit_is_bound(state: State, reason: Reason) -> bool:
+    audit = state.self_resolution_audit
+    return bool(
+        audit.completed
+        and audit.audited_sha == state.head_sha
+        and audit.reason_family == reason.value
+        and audit.attempted_connected_paths
+    )
+
+
 def _internal_stop_after_audit(
     state: State,
     policy: Policy,
     reason: Reason,
     explanation: str,
 ) -> Decision:
-    audit = state.self_resolution_audit
-    if not audit.completed or not audit.attempted_connected_paths:
+    if not _audit_is_bound(state, reason):
         return _decision(
             state,
             policy,
             Action.RUN_SELF_RESOLUTION_AUDIT,
             Reason.AUDIT_REQUIRED,
             "Run the mandatory repository, workflow, check, review, permission, "
-            "and alternative-path self-resolution audit before recording an internal stop.",
+            "and alternative-path self-resolution audit bound to the current exact "
+            f"SHA and reason family `{reason.value}` before recording an internal stop.",
         )
     return _decision(state, policy, Action.INTERNAL_STOP, reason, explanation)
 
@@ -245,8 +258,7 @@ def _human_only_decision(
 ) -> Decision:
     audit = state.self_resolution_audit
     complete = bool(
-        audit.completed
-        and audit.attempted_connected_paths
+        _audit_is_bound(state, reason)
         and audit.impossibility_evidence
         and audit.minimal_human_action.strip()
         and audit.automatic_resume_condition.strip()
@@ -257,9 +269,10 @@ def _human_only_decision(
             policy,
             Action.RUN_SELF_RESOLUTION_AUDIT,
             Reason.AUDIT_REQUIRED,
-            "Human-only notification is forbidden until a completed audit records "
-            "attempted connected paths, impossibility evidence, the minimal UI action, "
-            "and the automatic-resumption condition.",
+            "Human-only notification is forbidden until a completed audit bound to "
+            "the current exact SHA and selected reason family records attempted connected "
+            "paths, impossibility evidence, the minimal UI action, and the automatic-"
+            "resumption condition.",
         )
     attempted = "; ".join(audit.attempted_connected_paths)
     impossible = "; ".join(audit.impossibility_evidence)
