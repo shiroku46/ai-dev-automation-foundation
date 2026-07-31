@@ -1384,6 +1384,20 @@ def supervise() -> None:
         final_native_clean, _ = native_workflow_evidence(sha, pr_number)
         if not final_native_clean or not exact_codex_clean(pr_number, sha):
             continue
+
+        merge_candidate = _live_pr(pr_number, sha)
+        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+            merge_candidate
+        ):
+            continue
+        final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)
+        if final_issue_number != issue_number or final_scope_error:
+            continue
+        merge_candidate = _live_pr(pr_number, sha)
+        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+            merge_candidate
+        ):
+            continue
         gh(
             "api",
             "--method",

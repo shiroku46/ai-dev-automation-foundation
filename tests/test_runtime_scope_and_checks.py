@@ -310,5 +310,115 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
         self.assertEqual(len(evidence), 2)
 
 
+class FinalMergeGateRevalidationTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+
+    def _candidate(self, *, labels=None):
+        return {
+            "number": PR_NUMBER,
+            "state": "open",
+            "draft": False,
+            "mergeable": True,
+            "mergeable_state": "clean",
+            "head": {
+                "sha": SHA,
+                "ref": "fix/probe",
+                "repo": {"full_name": "example/foundation"},
+            },
+            "base": {
+                "ref": "main",
+                "repo": {"full_name": "example/foundation"},
+            },
+            "user": {"login": "owner"},
+            "labels": labels or [],
+            "body": "Closes #9",
+        }
+
+    def _run_final_gate(self, snapshots, source_result):
+        with (
+            patch.object(self.runtime, "candidate_pulls", return_value=[snapshots[0]]),
+            patch.object(self.runtime, "api", side_effect=snapshots),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                side_effect=[
+                    (9, {"number": 9}, ["docs/probe.md"], None),
+                    source_result,
+                ],
+            ),
+            patch.object(
+                self.runtime,
+                "attestation_attempts",
+                return_value=[{"success": True, "active": False, "run_id": 1}],
+            ),
+            patch.object(
+                self.runtime,
+                "native_workflow_evidence",
+                return_value=(True, []),
+            ),
+            patch.object(
+                self.runtime,
+                "exact_codex_evidence",
+                return_value={
+                    "state": "clean",
+                    "timestamp": "2026-07-31T12:00:00Z",
+                    "request_timestamp": "2026-07-31T11:00:00Z",
+                },
+            ),
+            patch.object(self.runtime, "exact_codex_clean", return_value=True),
+            patch.object(self.runtime, "gh") as gh,
+        ):
+            self.runtime.supervise()
+        return gh
+
+    def test_new_ai_no_merge_label_blocks_final_merge(self):
+        clean = self._candidate()
+        held = self._candidate(labels=[{"name": "ai-no-merge"}])
+        gh = self._run_final_gate(
+            [clean, clean, clean, held],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+    def test_changed_issue_authorization_blocks_final_merge(self):
+        clean = self._candidate()
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], "UNAUTHORIZED_CHANGED_PATH"),
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+    def test_clean_revalidated_scope_reaches_expected_sha_merge(self):
+        clean = self._candidate()
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        merge_calls = [
+            call
+            for call in gh.call_args_list
+            if len(call.args) >= 4
+            and call.args[0:3] == ("api", "--method", "PUT")
+            and call.args[3].endswith("/merge")
+        ]
+        self.assertEqual(len(merge_calls), 1)
+        self.assertIn(f"sha={SHA}", merge_calls[0].args)
+
+
 if __name__ == "__main__":
     unittest.main()
