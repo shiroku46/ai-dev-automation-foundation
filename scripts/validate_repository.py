@@ -9,6 +9,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_BOOTSTRAP_DIR = ROOT / "bootstrap"
 SOURCE_GENERATOR = SOURCE_BOOTSTRAP_DIR / "generator.py"
+GENERATED_TARGET_MARKER = ROOT / ".foundation-generated-target"
+GENERATED_TARGET_MARKER_CONTENT = "ai-dev-automation-foundation-bootstrap-v1\n"
 REQUIRED = {
     "README.md",
     "LICENSE",
@@ -51,6 +53,17 @@ def job_block(text: str, job: str, next_job: str | None = None) -> str:
 
 
 def main() -> int:
+    generated_target = GENERATED_TARGET_MARKER.is_file()
+    if generated_target:
+        if GENERATED_TARGET_MARKER.read_text(encoding="utf-8") != GENERATED_TARGET_MARKER_CONTENT:
+            fail("generated-target marker is invalid")
+        if SOURCE_BOOTSTRAP_DIR.exists():
+            fail("generated target must not contain the Foundation Bootstrap source directory")
+        if not (ROOT / "INSTALL_CHECKLIST.md").is_file():
+            fail("generated target is missing INSTALL_CHECKLIST.md")
+    elif not SOURCE_GENERATOR.is_file():
+        fail("Foundation source checkout is missing bootstrap/generator.py")
+
     missing = sorted(path for path in REQUIRED if not (ROOT / path).is_file())
     if missing:
         fail(f"missing required files: {missing}")
@@ -203,17 +216,14 @@ def main() -> int:
     if 'get("login") == ACTIONS_LOGIN' not in request_function:
         fail("Codex request deduplication trusts untrusted marker comments")
 
-    # The Foundation source tree contains Bootstrap source and must retain the
-    # generator. A rendered target intentionally omits the entire directory but
-    # keeps all runtime/workflow security invariants above.
-    if SOURCE_BOOTSTRAP_DIR.is_dir():
-        if not SOURCE_GENERATOR.is_file():
-            fail("Foundation source checkout is missing bootstrap/generator.py")
+    if not generated_target:
         generator = SOURCE_GENERATOR.read_text(encoding="utf-8")
         if '".github/workflows/trusted-checks.yml"' not in generator:
             fail("Bootstrap allowlist does not include trusted exact-SHA checks")
         if '"README.md"' not in generator or '"LICENSE"' not in generator:
             fail("Bootstrap allowlist does not include public README and license")
+        if 'GENERATED_TARGET_MARKER' not in generator:
+            fail("Bootstrap generator does not identify rendered targets explicitly")
 
     print("repository validation: clean")
     return 0
