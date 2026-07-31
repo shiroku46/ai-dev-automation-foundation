@@ -1,0 +1,166 @@
+name: Repair PR 58 Compressed Payload Byte
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-58-compressed-payload-byte
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      TARGET_PR: "58"
+      TARGET_BRANCH: fix/issue-57-pr44-remaining-gates
+      EXPECTED_HEAD: b32b8867f67952a7ded36a8c180cf14eb6bf792b
+      TARGET_PATH: .github/workflows/repair-pr44-remaining-gates.yml
+    steps:
+      - name: Repair one immutable payload byte and validate the stream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import json
+          import os
+          import re
+          import subprocess
+          from urllib.parse import quote
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          target_pr = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          target_path = os.environ["TARGET_PATH"]
+
+          def gh_json(*arguments: str, input_text: str | None = None) -> dict:
+              output = subprocess.check_output(
+                  ["gh", *arguments], input=input_text, text=True
+              )
+              return json.loads(output)
+
+          def live_target() -> dict:
+              live = gh_json("api", f"repos/{repository}/pulls/{target_pr}")
+              if live.get("state") != "open":
+                  raise SystemExit("Fixed target Pull Request is no longer open")
+              if str((live.get("head") or {}).get("ref") or "") != target_branch:
+                  raise SystemExit("Fixed target branch changed")
+              if str(((live.get("head") or {}).get("repo") or {}).get("full_name") or "") != repository:
+                  raise SystemExit("Fixed target is no longer same-repository")
+              return live
+
+          live = live_target()
+          if str((live.get("head") or {}).get("sha") or "") != expected_head:
+              print("PR #58 moved; this immutable repair is no longer applicable.")
+              raise SystemExit(0)
+
+          payload = gh_json(
+              "api",
+              f"repos/{repository}/contents/{quote(target_path)}?ref={quote(expected_head)}",
+          )
+          if payload.get("type") != "file" or payload.get("encoding") != "base64":
+              raise SystemExit("Unexpected immutable content response")
+          encoded_file = str(payload.get("content") or "").replace("\n", "")
+          text = base64.b64decode(encoded_file, validate=True).decode("utf-8")
+          if text.count("dvMMzcf") != 1 or text.count("dvLMzcf") != 0:
+              raise SystemExit("The exact corrupted byte pattern is not unique")
+          repaired = text.replace("dvMMzcf", "dvLMzcf", 1)
+
+          embedded = re.findall(
+              r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 --decode "
+              r"\| gzip --decompress \| python3",
+              repaired,
+          )
+          if len(embedded) != 1:
+              raise SystemExit("Expected exactly one embedded compressed payload")
+          compressed = base64.b64decode(embedded[0], validate=True)
+          source = gzip.decompress(compressed).decode("utf-8")
+          compile(source, "repair-pr44-remaining-gates.py", "exec")
+
+          base_commit = gh_json("api", f"repos/{repository}/git/commits/{expected_head}")
+          base_tree = gh_json(
+              "api",
+              f"repos/{repository}/git/trees/{base_commit['tree']['sha']}?recursive=1",
+          )
+          matches = [
+              item
+              for item in base_tree.get("tree") or []
+              if item.get("path") == target_path
+          ]
+          if len(matches) != 1 or matches[0].get("mode") not in {"100644", "100755"}:
+              raise SystemExit("Immutable base path is missing or not a regular file")
+
+          blob = gh_json(
+              "api",
+              "--method",
+              "POST",
+              f"repos/{repository}/git/blobs",
+              "--input",
+              "-",
+              input_text=json.dumps({"content": repaired, "encoding": "utf-8"}),
+          )
+          tree = gh_json(
+              "api",
+              "--method",
+              "POST",
+              f"repos/{repository}/git/trees",
+              "--input",
+              "-",
+              input_text=json.dumps(
+                  {
+                      "base_tree": base_commit["tree"]["sha"],
+                      "tree": [
+                          {
+                              "path": target_path,
+                              "mode": matches[0]["mode"],
+                              "type": "blob",
+                              "sha": blob["sha"],
+                          }
+                      ],
+                  }
+              ),
+          )
+          commit = gh_json(
+              "api",
+              "--method",
+              "POST",
+              f"repos/{repository}/git/commits",
+              "--input",
+              "-",
+              input_text=json.dumps(
+                  {
+                      "message": "Restore exact valid compressed repair payload",
+                      "tree": tree["sha"],
+                      "parents": [expected_head],
+                  }
+              ),
+          )
+
+          final = live_target()
+          if str((final.get("head") or {}).get("sha") or "") != expected_head:
+              print("PR #58 moved before publication; refusing stale repair.")
+              raise SystemExit(0)
+          gh_json(
+              "api",
+              "--method",
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{quote(target_branch, safe='/')}",
+              "--input",
+              "-",
+              input_text=json.dumps({"sha": commit["sha"], "force": False}),
+          )
+          PY
