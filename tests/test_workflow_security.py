@@ -62,6 +62,14 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("reviewThreads(first:100)", runtime)
         self.assertNotIn("/commits/{sha}/status", runtime)
 
+    def test_source_issue_and_negative_e2e_close_are_owner_trusted(self):
+        runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
+        self.assertIn('get("login") == AUTOMATION_OWNER', runtime)
+        self.assertIn('not issue.get("pull_request")', runtime)
+        self.assertIn('E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"', runtime)
+        self.assertIn("E2E_AUTO_CLOSE_MARKER in issue_body", runtime)
+        self.assertIn('"UNTRUSTED_SOURCE_ISSUE"', runtime)
+
 
 if __name__ == "__main__":
     unittest.main()
