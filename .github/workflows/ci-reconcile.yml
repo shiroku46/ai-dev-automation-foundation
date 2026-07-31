@@ -1,87 +1,58 @@
 name: Trusted CI Reconciliation
 
 on:
+  workflow_run:
+    workflows: ["CI", "Unit Tests"]
+    types: [completed]
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: trusted-ci-reconcile
+  cancel-in-progress: false
+
 permissions: {}
 
 jobs:
-  reconcile:
+  discover:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency:
-      group: trusted-ci-reconcile
-      cancel-in-progress: false
     permissions:
-      actions: write
+      actions: read
       checks: read
       contents: read
       pull-requests: read
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
     steps:
-      - name: Dispatch missing exact-SHA checks
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Discover bounded exact-SHA candidates without valid or active attestations
+        id: discover
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
         run: |
-          python3 - <<'PY'
-          import json, os, subprocess
-          repo = os.environ["REPOSITORY"]
-          default = os.environ["DEFAULT_BRANCH"]
-          owner = os.environ["AUTOMATION_OWNER"]
-          required = {"validate": "ci.yml", "test": "unit-tests.yml"}
-          allowed_prefixes = ("claude-issue-", "automation/", "fix/")
-          allowed_authors = {owner, "github-actions[bot]"}
+          matrix=$(python -m scripts.supervisor_runtime discover)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-          def gh(*args):
-              return subprocess.check_output(["gh", *args], text=True)
-
-          pulls = json.loads(gh("api", f"repos/{repo}/pulls?state=open&per_page=50"))
-          candidates = []
-          for pr in sorted(pulls, key=lambda p: int(p["number"])):
-              head = pr.get("head") or {}
-              author = (pr.get("user") or {}).get("login") or ""
-              if ((head.get("repo") or {}).get("full_name") != repo):
-                  continue
-              if author not in allowed_authors:
-                  continue
-              if not (head.get("ref") or "").startswith(allowed_prefixes):
-                  continue
-              if any(label.get("name") == "ai-no-merge" for label in pr.get("labels") or []):
-                  continue
-              candidates.append(pr)
-              if len(candidates) >= 10:
-                  break
-
-          for observed in candidates:
-              number = observed["number"]
-              snapshot = json.loads(gh("api", f"repos/{repo}/pulls/{number}"))
-              sha = snapshot["head"]["sha"]
-              if sha != observed["head"]["sha"]:
-                  continue
-              if snapshot["head"]["repo"]["full_name"] != repo:
-                  continue
-              if (snapshot.get("user") or {}).get("login") not in allowed_authors:
-                  continue
-
-              check_runs = json.loads(
-                  gh("api", "-H", "Accept: application/vnd.github+json",
-                     f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
-              ).get("check_runs", [])
-              current = set()
-              for check in sorted(check_runs, key=lambda item: int(item.get("id") or 0), reverse=True):
-                  if ((check.get("app") or {}).get("slug") != "github-actions"):
-                      continue
-                  name = check.get("name") or ""
-                  if name in required:
-                      current.add(name)
-
-              for job_name, workflow in required.items():
-                  if job_name in current:
-                      continue
-                  gh("workflow", "run", workflow, "--repo", repo, "--ref", default,
-                     "-f", f"target_ref={sha}")
-          PY
+  attest:
+    needs: discover
+    if: needs.discover.outputs.matrix != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target_sha: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    uses: ./.github/workflows/trusted-checks.yml
+    with:
+      target_sha: ${{ matrix.target_sha }}
+    permissions:
+      actions: read
+      checks: write
+      contents: read
