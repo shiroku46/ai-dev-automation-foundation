@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bootstrap.generator import ALLOWLIST, render
+from bootstrap.generator import (
+    ALLOWLIST,
+    GENERATED_TARGET_MARKER,
+    GENERATED_TARGET_MARKER_CONTENT,
+    render,
+)
 
 
 def run_validator(target: Path) -> subprocess.CompletedProcess[str]:
@@ -26,6 +31,10 @@ class BootstrapTest(unittest.TestCase):
                 self.assertTrue((target / path).is_file(), path)
             self.assertTrue((target / "README.md").read_text(encoding="utf-8").strip())
             self.assertTrue((target / "LICENSE").read_text(encoding="utf-8").strip())
+            self.assertEqual(
+                (target / GENERATED_TARGET_MARKER).read_text(encoding="utf-8"),
+                GENERATED_TARGET_MARKER_CONTENT,
+            )
             checklist = (target / "INSTALL_CHECKLIST.md").read_text(encoding="utf-8")
             self.assertIn("example-owner", checklist)
             self.assertNotIn("notion", checklist.lower())
@@ -39,7 +48,20 @@ class BootstrapTest(unittest.TestCase):
             )
             self.assertIn("repository validation: clean", result.stdout)
 
-    def test_source_bootstrap_directory_requires_generator(self):
+    def test_source_mode_requires_generator_even_when_directory_is_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render(target, "example-owner")
+            (target / GENERATED_TARGET_MARKER).unlink()
+
+            result = run_validator(target)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(
+                "Foundation source checkout is missing bootstrap/generator.py",
+                result.stderr,
+            )
+
+    def test_generated_marker_does_not_hide_bootstrap_source(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             render(target, "example-owner")
@@ -48,7 +70,7 @@ class BootstrapTest(unittest.TestCase):
             result = run_validator(target)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(
-                "Foundation source checkout is missing bootstrap/generator.py",
+                "generated target must not contain the Foundation Bootstrap source directory",
                 result.stderr,
             )
 
