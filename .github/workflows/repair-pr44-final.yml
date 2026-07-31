@@ -1,4 +1,4 @@
-name: Repair PR 44 Final Gate
+name: Repair PR 44 Final Audit
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: repair-pr-44-final-gate
+  group: repair-pr-44-final-audit
   cancel-in-progress: false
 
 jobs:
@@ -24,9 +24,9 @@ jobs:
     env:
       TARGET_BRANCH: fix/issue-36-human-notice-contract
       TARGET_PR: "44"
-      EXPECTED_HEAD: 3be4d1f551116b30e937543384372649d3b7250d
+      EXPECTED_HEAD: fe927718c7f70edc8cc04e4b5d3350eab93cbdb4
     steps:
-      - name: Apply immutable exact-scope final-gate repair
+      - name: Apply immutable audit-evidence repair
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -35,7 +35,6 @@ jobs:
           import json
           import os
           import subprocess
-          import sys
 
           REPOSITORY = os.environ["GITHUB_REPOSITORY"]
           TARGET_BRANCH = os.environ["TARGET_BRANCH"]
@@ -43,14 +42,197 @@ jobs:
           EXPECTED_HEAD = os.environ["EXPECTED_HEAD"]
           TARGET_PATHS = (
               "scripts/supervisor_runtime.py",
+              "tests/test_runtime_human_notice.py",
               "tests/test_runtime_scope_and_checks.py",
           )
 
-          OLD_RUNTIME = '        final = _live_pr(pr_number, sha)\n        if final.get("mergeable") is not True or not trusted_candidate(final):\n            continue\n        final_native_clean, _ = native_workflow_evidence(sha, pr_number)\n        if not final_native_clean or not exact_codex_clean(pr_number, sha):\n            continue\n        gh(\n'
-          NEW_RUNTIME = '        final = _live_pr(pr_number, sha)\n        if final.get("mergeable") is not True or not trusted_candidate(final):\n            continue\n        final_native_clean, _ = native_workflow_evidence(sha, pr_number)\n        if not final_native_clean or not exact_codex_clean(pr_number, sha):\n            continue\n\n        merge_candidate = _live_pr(pr_number, sha)\n        if merge_candidate.get("mergeable") is not True or not trusted_candidate(\n            merge_candidate\n        ):\n            continue\n        final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)\n        if final_issue_number != issue_number or final_scope_error:\n            continue\n        merge_candidate = _live_pr(pr_number, sha)\n        if merge_candidate.get("mergeable") is not True or not trusted_candidate(\n            merge_candidate\n        ):\n            continue\n        gh(\n'
-          TEST_INSERT = '\n\nclass FinalMergeGateRevalidationTest(unittest.TestCase):\n    def setUp(self):\n        self.runtime = load_runtime()\n\n    def _candidate(self, *, labels=None):\n        return {\n            "number": PR_NUMBER,\n            "state": "open",\n            "draft": False,\n            "mergeable": True,\n            "mergeable_state": "clean",\n            "head": {\n                "sha": SHA,\n                "ref": "fix/probe",\n                "repo": {"full_name": "example/foundation"},\n            },\n            "base": {\n                "ref": "main",\n                "repo": {"full_name": "example/foundation"},\n            },\n            "user": {"login": "owner"},\n            "labels": labels or [],\n            "body": "Closes #9",\n        }\n\n    def _run_final_gate(self, snapshots, source_result):\n        with (\n            patch.object(self.runtime, "candidate_pulls", return_value=[snapshots[0]]),\n            patch.object(self.runtime, "api", side_effect=snapshots),\n            patch.object(\n                self.runtime,\n                "source_and_scope",\n                side_effect=[\n                    (9, {"number": 9}, ["docs/probe.md"], None),\n                    source_result,\n                ],\n            ),\n            patch.object(\n                self.runtime,\n                "attestation_attempts",\n                return_value=[{"success": True, "active": False, "run_id": 1}],\n            ),\n            patch.object(\n                self.runtime,\n                "native_workflow_evidence",\n                return_value=(True, []),\n            ),\n            patch.object(\n                self.runtime,\n                "exact_codex_evidence",\n                return_value={\n                    "state": "clean",\n                    "timestamp": "2026-07-31T12:00:00Z",\n                    "request_timestamp": "2026-07-31T11:00:00Z",\n                },\n            ),\n            patch.object(self.runtime, "exact_codex_clean", return_value=True),\n            patch.object(self.runtime, "gh") as gh,\n        ):\n            self.runtime.supervise()\n        return gh\n\n    def test_new_ai_no_merge_label_blocks_final_merge(self):\n        clean = self._candidate()\n        held = self._candidate(labels=[{"name": "ai-no-merge"}])\n        gh = self._run_final_gate(\n            [clean, clean, clean, held],\n            (9, {"number": 9}, ["docs/probe.md"], None),\n        )\n        self.assertFalse(\n            any(\n                len(call.args) >= 4\n                and call.args[0:3] == ("api", "--method", "PUT")\n                and call.args[3].endswith("/merge")\n                for call in gh.call_args_list\n            )\n        )\n\n    def test_changed_issue_authorization_blocks_final_merge(self):\n        clean = self._candidate()\n        gh = self._run_final_gate(\n            [clean, clean, clean, clean],\n            (9, {"number": 9}, ["docs/probe.md"], "UNAUTHORIZED_CHANGED_PATH"),\n        )\n        self.assertFalse(\n            any(\n                len(call.args) >= 4\n                and call.args[0:3] == ("api", "--method", "PUT")\n                and call.args[3].endswith("/merge")\n                for call in gh.call_args_list\n            )\n        )\n\n    def test_clean_revalidated_scope_reaches_expected_sha_merge(self):\n        clean = self._candidate()\n        gh = self._run_final_gate(\n            [clean, clean, clean, clean, clean],\n            (9, {"number": 9}, ["docs/probe.md"], None),\n        )\n        merge_calls = [\n            call\n            for call in gh.call_args_list\n            if len(call.args) >= 4\n            and call.args[0:3] == ("api", "--method", "PUT")\n            and call.args[3].endswith("/merge")\n        ]\n        self.assertEqual(len(merge_calls), 1)\n        self.assertIn(f"sha={SHA}", merge_calls[0].args)\n'
-          TEST_MARKER = "\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+          CONSTANT_ANCHOR = 'SAFE_REASON = re.compile(r"^[A-Z0-9_]+$")\n'
+          CONSTANT_REPLACEMENT = (
+              CONSTANT_ANCHOR
+              + 'REPOSITORY_TARGET = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")\n'
+              + 'SCOPE_STOP_REASONS = frozenset(\n'
+              + '    {\n'
+              + '        "MISSING_TRUSTED_SOURCE_ISSUE",\n'
+              + '        "UNTRUSTED_SOURCE_ISSUE",\n'
+              + '        "INCOMPLETE_CHANGED_FILE_EVIDENCE",\n'
+              + '        "UNAUTHORIZED_CHANGED_PATH",\n'
+              + '        "UNAUTHORIZED_PROTECTED_PATH",\n'
+              + '    }\n'
+              + ')\n'
+          )
+          FORMAT_OLD = '''        if len(target_list) != 2 or any("/" not in item for item in target_list):
+            raise ValueError("repository-creation notice requires exactly two owner/name targets")
+'''
+          FORMAT_NEW = '''        if len(target_list) != 2 or any(
+            REPOSITORY_TARGET.fullmatch(item) is None for item in target_list
+        ):
+            raise ValueError("repository-creation notice requires exactly two owner/name targets")
+'''
+          CONNECTED_OLD = '''    if len(targets) != 2 or any("/" not in target for target in targets):
+        raise ValueError("repository-creation audit requires exactly two owner/name targets")
+'''
+          CONNECTED_NEW = '''    if len(targets) != 2 or any(
+        REPOSITORY_TARGET.fullmatch(target) is None for target in targets
+    ):
+        raise ValueError("repository-creation audit requires exactly two owner/name targets")
+'''
+          STOP_OLD = '''    live = _live_pr(pr_number, sha)
+    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
+        raise RuntimeError("terminal mergeability changed before stop persistence")
+    path = internal_stop_record_path(pr_number, sha, reason)
+'''
+          STOP_NEW = '''    live = _live_pr(pr_number, sha)
+    if reason in SCOPE_STOP_REASONS:
+        live_issue_number, _, _, live_scope_error = source_and_scope(live)
+        if live_issue_number != issue_number or live_scope_error != reason:
+            raise RuntimeError("scope stop reason changed before stop persistence")
+    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
+        raise RuntimeError("terminal mergeability changed before stop persistence")
+    path = internal_stop_record_path(pr_number, sha, reason)
+'''
+          PERSIST_OLD = '''    _live_pr(pr_number, sha)
+    persist_internal_stop_record(path, content, reason, pr_number)
+    if close:
+        _live_pr(pr_number, sha)
+        gh("pr", "close", str(pr_number), "--repo", REPO)
+'''
+          PERSIST_NEW = '''    live = _live_pr(pr_number, sha)
+    if reason in SCOPE_STOP_REASONS:
+        live_issue_number, _, _, live_scope_error = source_and_scope(live)
+        if live_issue_number != issue_number or live_scope_error != reason:
+            raise RuntimeError("scope stop reason changed immediately before persistence")
+    persist_internal_stop_record(path, content, reason, pr_number)
+    if close:
+        live = _live_pr(pr_number, sha)
+        if reason in SCOPE_STOP_REASONS:
+            live_issue_number, _, _, live_scope_error = source_and_scope(live)
+            if live_issue_number != issue_number or live_scope_error != reason:
+                raise RuntimeError("scope stop reason changed immediately before close")
+        gh("pr", "close", str(pr_number), "--repo", REPO)
+'''
 
+          HUMAN_TEST_INSERT = r'''
+
+class RepositoryTargetValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+        self.sha = "a" * 40
+        self.reason = "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE"
+        self.valid_targets = ("owner/foundation", "owner/foundation-e2e")
+
+    def _fields(self, targets):
+        attempted = tuple(f"GitHub API GET repos/{target}" for target in targets)
+        impossible = tuple(
+            f"GitHub API returned HTTP 404 for {target}; the exact repository is absent or unavailable to the connected token."
+            for target in targets
+        )
+        return {
+            "reason": self.reason,
+            "issue_number": 58,
+            "pr_number": 62,
+            "exact_head_sha": self.sha,
+            "attempted_connected_paths": attempted,
+            "impossibility_evidence": impossible,
+            "provider_ui_action": self.runtime.HUMAN_ONLY_ACTIONS[self.reason],
+            "automatic_resume_condition": "Both exact repositories become visible.",
+            "targets": targets,
+        }
+
+    def test_formatter_rejects_subresources_and_empty_components(self):
+        invalid_sets = (
+            ("owner/existing-repo/branches/missing", "owner/other"),
+            ("owner/", "owner/other"),
+            ("/repo", "owner/other"),
+            ("owner/repo?ref=missing", "owner/other"),
+        )
+        for targets in invalid_sets:
+            with self.subTest(targets=targets), self.assertRaises(ValueError):
+                self.runtime.format_human_only_notice(**self._fields(targets))
+
+    def test_connected_query_rejects_malformed_target_before_api_call(self):
+        malformed = ("owner/existing-repo/branches/missing", "owner/other")
+        with patch.object(self.runtime, "gh_result") as connected:
+            with self.assertRaises(ValueError):
+                self.runtime._connected_repository_creation_evidence(malformed)
+        connected.assert_not_called()
+'''
+
+          SCOPE_TEST_INSERT = r'''
+
+class StopReasonRevalidationTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+        self.sha = SHA
+        self.pr = {
+            "number": PR_NUMBER,
+            "state": "open",
+            "head": {
+                "sha": self.sha,
+                "ref": "fix/probe",
+                "repo": {"full_name": "example/foundation"},
+            },
+            "base": {
+                "ref": "main",
+                "repo": {"full_name": "example/foundation"},
+            },
+            "user": {"login": "owner"},
+            "labels": [],
+            "body": "Closes #9",
+        }
+
+    def test_cleared_scope_denial_writes_nothing(self):
+        with (
+            patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
+            patch.object(self.runtime, "_live_pr", return_value=self.pr),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(9, {"number": 9}, ["docs/probe.md"], None),
+            ),
+            patch.object(self.runtime, "persist_internal_stop_record") as persist,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "scope stop reason changed"):
+                self.runtime.stop_report(
+                    self.pr,
+                    9,
+                    "UNAUTHORIZED_CHANGED_PATH",
+                    "stale denial",
+                    close=True,
+                )
+        persist.assert_not_called()
+
+    def test_live_scope_denial_is_rechecked_before_persistence_and_close(self):
+        with (
+            patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
+            patch.object(self.runtime, "_live_pr", return_value=self.pr) as live,
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(
+                    9,
+                    {"number": 9},
+                    ["docs/probe.md"],
+                    "UNAUTHORIZED_CHANGED_PATH",
+                ),
+            ) as source,
+            patch.object(
+                self.runtime, "persist_internal_stop_record", return_value=True
+            ) as persist,
+            patch.object(self.runtime, "gh") as gh,
+        ):
+            self.runtime.stop_report(
+                self.pr,
+                9,
+                "UNAUTHORIZED_CHANGED_PATH",
+                "current denial",
+                close=True,
+            )
+        self.assertGreaterEqual(live.call_count, 3)
+        self.assertEqual(source.call_count, 3)
+        persist.assert_called_once()
+        gh.assert_called_once_with("pr", "close", str(PR_NUMBER), "--repo", "example/foundation")
+'''
+          TEST_MARKER = '\n\nif __name__ == "__main__":\n    unittest.main()\n'
 
           def gh(*args, input_value=None):
               result = subprocess.run(
@@ -62,19 +244,14 @@ jobs:
               )
               if result.returncode != 0:
                   raise RuntimeError(
-                      "gh command failed: "
-                      + " ".join(args)
-                      + "\n"
-                      + result.stderr.strip()
+                      "gh command failed: " + " ".join(args) + "\n" + result.stderr.strip()
                   )
               return result.stdout
-
 
           def api(path):
               return json.loads(
                   gh("api", "-H", "Accept: application/vnd.github+json", path)
               )
-
 
           def api_json(method, path, payload):
               return json.loads(
@@ -90,7 +267,6 @@ jobs:
                       input_value=json.dumps(payload),
                   )
               )
-
 
           pr = api(f"repos/{REPOSITORY}/pulls/{TARGET_PR}")
           head = pr.get("head") or {}
@@ -133,28 +309,42 @@ jobs:
               ).decode("utf-8")
 
           runtime = texts["scripts/supervisor_runtime.py"]
-          if runtime.count(OLD_RUNTIME) != 1:
-              raise RuntimeError("Runtime replacement anchor count is not exactly one")
-          runtime = runtime.replace(OLD_RUNTIME, NEW_RUNTIME, 1)
+          replacements = (
+              (CONSTANT_ANCHOR, CONSTANT_REPLACEMENT),
+              (FORMAT_OLD, FORMAT_NEW),
+              (CONNECTED_OLD, CONNECTED_NEW),
+              (STOP_OLD, STOP_NEW),
+              (PERSIST_OLD, PERSIST_NEW),
+          )
+          for old, new in replacements:
+              if runtime.count(old) != 1:
+                  raise RuntimeError("Runtime replacement anchor count is not exactly one")
+              runtime = runtime.replace(old, new, 1)
 
-          tests = texts["tests/test_runtime_scope_and_checks.py"]
-          if "class FinalMergeGateRevalidationTest" in tests:
-              print("Focused final-gate tests already exist; nothing to do.")
-              raise SystemExit(0)
-          if tests.count(TEST_MARKER) != 1:
-              raise RuntimeError("Test insertion marker count is not exactly one")
-          tests = tests.replace(TEST_MARKER, TEST_INSERT + TEST_MARKER, 1)
+          human_tests = texts["tests/test_runtime_human_notice.py"]
+          scope_tests = texts["tests/test_runtime_scope_and_checks.py"]
+          for name, text, insertion in (
+              ("human notice tests", human_tests, HUMAN_TEST_INSERT),
+              ("scope tests", scope_tests, SCOPE_TEST_INSERT),
+          ):
+              if text.count(TEST_MARKER) != 1:
+                  raise RuntimeError(f"{name} insertion marker count is not exactly one")
+              if insertion.splitlines()[2] in text:
+                  raise RuntimeError(f"{name} already contain the focused repair tests")
+          human_tests = human_tests.replace(TEST_MARKER, HUMAN_TEST_INSERT + TEST_MARKER, 1)
+          scope_tests = scope_tests.replace(TEST_MARKER, SCOPE_TEST_INSERT + TEST_MARKER, 1)
 
-          replacements = {
+          replacements_by_path = {
               "scripts/supervisor_runtime.py": runtime,
-              "tests/test_runtime_scope_and_checks.py": tests,
+              "tests/test_runtime_human_notice.py": human_tests,
+              "tests/test_runtime_scope_and_checks.py": scope_tests,
           }
           tree_items = []
           for path in TARGET_PATHS:
               blob = api_json(
                   "POST",
                   f"repos/{REPOSITORY}/git/blobs",
-                  {"content": replacements[path], "encoding": "utf-8"},
+                  {"content": replacements_by_path[path], "encoding": "utf-8"},
               )
               mode = entries[path].get("mode")
               if mode not in {"100644", "100755"}:
@@ -172,24 +362,21 @@ jobs:
               "POST",
               f"repos/{REPOSITORY}/git/commits",
               {
-                  "message": "Revalidate scope and hold label at final merge gate",
+                  "message": "Revalidate live scope stops and repository targets",
                   "tree": new_tree["sha"],
                   "parents": [EXPECTED_HEAD],
               },
           )
 
           live = api(f"repos/{REPOSITORY}/pulls/{TARGET_PR}")
-          live_head = (live.get("head") or {}).get("sha")
-          live_ref = (live.get("head") or {}).get("ref")
-          if live_head != EXPECTED_HEAD or live_ref != TARGET_BRANCH:
+          if (live.get("head") or {}).get("sha") != EXPECTED_HEAD:
               raise RuntimeError("Target Pull Request moved before exact ref update")
+          if (live.get("head") or {}).get("ref") != TARGET_BRANCH:
+              raise RuntimeError("Target Pull Request branch changed before exact ref update")
           api_json(
               "PATCH",
               f"repos/{REPOSITORY}/git/refs/heads/{TARGET_BRANCH}",
               {"sha": new_commit["sha"], "force": False},
           )
-          print(
-              f"Repaired PR #{TARGET_PR} from {EXPECTED_HEAD} "
-              f"to {new_commit['sha']}."
-          )
+          print(f"Repaired PR #{TARGET_PR} to {new_commit['sha']}.")
           PY
