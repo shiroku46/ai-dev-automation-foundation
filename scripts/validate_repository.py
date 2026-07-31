@@ -45,8 +45,8 @@ def main() -> int:
     ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     if "permissions:\n  contents: read" not in ci or "secrets." in ci or "id-token: write" in ci:
         fail("fork CI must be read-only and secret-free")
-    if "YAML.safe_load" not in ci:
-        fail("CI must perform a zero-dependency workflow YAML syntax check")
+    if "Psych.parse_stream" not in ci or "documents.length == 1" not in ci:
+        fail("CI must parse the complete workflow YAML stream and require one document")
 
     queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
     if "github.actor == vars.AUTOMATION_OWNER" not in queue:
