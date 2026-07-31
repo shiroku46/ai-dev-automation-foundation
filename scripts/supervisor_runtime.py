@@ -16,6 +16,7 @@ ALLOWED_PREFIXES = ("claude-issue-", "automation/", "fix/")
 ALLOWED_AUTHORS = {AUTOMATION_OWNER, "github-actions[bot]"}
 CODEX_LOGIN = "chatgpt-codex-connector[bot]"
 STOP_PREFIX = "<!-- foundation-stop:"
+E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"
 
 
 def gh(*args: str) -> str:
@@ -139,6 +140,13 @@ def trusted_candidate(pr) -> bool:
     )
 
 
+def trusted_source_issue(issue) -> bool:
+    return (
+        not issue.get("pull_request")
+        and (issue.get("user") or {}).get("login") == AUTOMATION_OWNER
+    )
+
+
 def main() -> None:
     pulls = api(f"repos/{REPO}/pulls?state=open&per_page=50")
     candidates = [pr for pr in sorted(pulls, key=lambda item: int(item["number"]))
@@ -156,12 +164,21 @@ def main() -> None:
             continue
 
         issue = api(f"repos/{REPO}/issues/{issue_number}")
+        if not trusted_source_issue(issue):
+            stop_report(pr, issue_number, "UNTRUSTED_SOURCE_ISSUE",
+                        "The referenced source is not an owner-authored repository Issue.")
+            continue
+        issue_body = issue.get("body") or ""
+
         files = api(f"repos/{REPO}/pulls/{pr['number']}/files?per_page=100")
         changed = [item["filename"] for item in files]
         protected = [path for path in changed if is_protected(path)]
-        if protected and not protected_scope_is_authorized(changed, issue.get("body") or ""):
-            auto_close = any(label.get("name") == "e2e-auto-close"
-                             for label in pr.get("labels") or [])
+        if protected and not protected_scope_is_authorized(changed, issue_body):
+            auto_close = (
+                E2E_AUTO_CLOSE_MARKER in issue_body
+                or any(label.get("name") == "e2e-auto-close"
+                       for label in pr.get("labels") or [])
+            )
             stop_report(pr, issue_number, "UNAUTHORIZED_PROTECTED_PATH",
                         "Protected paths are not covered by Issue authorization.",
                         close=auto_close)
