@@ -12,25 +12,36 @@ FAILED = (
     Check("CI / validate", "failure", SHA, "github-actions[bot]"),
     Check("Unit Tests / test", "success", SHA, "github-actions[bot]"),
 )
-INTERNAL_AUDIT = SelfResolutionAudit(
-    completed=True,
-    attempted_connected_paths=(
-        "rechecked repository and Pull Request metadata",
-        "reconciled workflows, checks, reviews, permissions, and bounded alternatives",
-    ),
+ATTEMPTED = (
+    "rechecked repository and Pull Request metadata",
+    "reconciled workflows, checks, reviews, permissions, and bounded alternatives",
 )
-HUMAN_AUDIT = SelfResolutionAudit(
-    completed=True,
-    attempted_connected_paths=(
-        "checked connected GitHub repository and installation APIs",
-        "checked callable reconnection and credential renewal paths",
-    ),
-    impossibility_evidence=(
-        "the connected tools expose no account-level creation or identity-verification UI",
-    ),
-    minimal_human_action="Create or reconnect the named repository in the provider UI.",
-    automatic_resume_condition="The repository becomes visible to the connected GitHub App.",
-)
+
+
+def internal_audit(reason: Reason, sha: str = SHA) -> SelfResolutionAudit:
+    return SelfResolutionAudit(
+        completed=True,
+        audited_sha=sha,
+        reason_family=reason.value,
+        attempted_connected_paths=ATTEMPTED,
+    )
+
+
+def human_audit(reason: Reason, sha: str = SHA) -> SelfResolutionAudit:
+    return SelfResolutionAudit(
+        completed=True,
+        audited_sha=sha,
+        reason_family=reason.value,
+        attempted_connected_paths=(
+            "checked connected GitHub repository and installation APIs",
+            "checked callable reconnection and credential renewal paths",
+        ),
+        impossibility_evidence=(
+            "the connected tools expose no account-level creation or identity-verification UI",
+        ),
+        minimal_human_action="Create or reconnect the named repository in the provider UI.",
+        automatic_resume_condition="The repository becomes visible to the connected GitHub App.",
+    )
 
 
 class RecoverySupervisorTest(unittest.TestCase):
@@ -93,7 +104,10 @@ class RecoverySupervisorTest(unittest.TestCase):
             Action.RUN_SELF_RESOLUTION_AUDIT,
         )
         audited = State(
-            **{**exhausted.__dict__, "self_resolution_audit": INTERNAL_AUDIT}
+            **{
+                **exhausted.__dict__,
+                "self_resolution_audit": internal_audit(Reason.EXHAUSTED),
+            }
         )
         decision = decide(audited)
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
@@ -123,7 +137,7 @@ class RecoverySupervisorTest(unittest.TestCase):
             concrete_failure_fingerprint="fingerprint",
             bounded_fix=fix,
             allowed_fix_paths=("a.py",),
-            self_resolution_audit=INTERNAL_AUDIT,
+            self_resolution_audit=internal_audit(Reason.AMBIGUOUS),
         )
         decision = decide(stale)
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
@@ -170,7 +184,10 @@ class RecoverySupervisorTest(unittest.TestCase):
             Action.RUN_SELF_RESOLUTION_AUDIT,
         )
         audited = State(
-            **{**state.__dict__, "self_resolution_audit": INTERNAL_AUDIT}
+            **{
+                **state.__dict__,
+                "self_resolution_audit": internal_audit(Reason.NO_PROGRESS),
+            }
         )
         decision = decide(audited)
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
@@ -183,7 +200,10 @@ class RecoverySupervisorTest(unittest.TestCase):
             Action.RUN_SELF_RESOLUTION_AUDIT,
         )
         audited = State(
-            **{**state.__dict__, "self_resolution_audit": INTERNAL_AUDIT}
+            **{
+                **state.__dict__,
+                "self_resolution_audit": internal_audit(Reason.AUTOMATABLE_PERMISSION),
+            }
         )
         decision = decide(audited)
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
@@ -200,7 +220,7 @@ class RecoverySupervisorTest(unittest.TestCase):
             2,
             SHA,
             risk_flags=("provider-ui",),
-            self_resolution_audit=HUMAN_AUDIT,
+            self_resolution_audit=human_audit(Reason.HUMAN_CREDENTIAL_UI),
         )
         decision = decide(audited)
         self.assertEqual(decision.action, Action.ESCALATE_HUMAN)
@@ -216,7 +236,7 @@ class RecoverySupervisorTest(unittest.TestCase):
             0,
             SHA,
             risk_flags=("account-level-repository-creation-ui-unavailable",),
-            self_resolution_audit=HUMAN_AUDIT,
+            self_resolution_audit=human_audit(Reason.HUMAN_REPOSITORY_UI),
         )
         decision = decide(state)
         self.assertEqual(decision.action, Action.ESCALATE_HUMAN)
@@ -224,6 +244,33 @@ class RecoverySupervisorTest(unittest.TestCase):
         self.assertEqual(
             decision.reason.value,
             "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
+        )
+
+    def test_stale_or_wrong_reason_audit_is_rejected(self):
+        exhausted = State(
+            1,
+            2,
+            SHA,
+            FAILED,
+            attempt_count=3,
+            seconds_since_last_attempt=9999,
+            transient_failure=True,
+            self_resolution_audit=internal_audit(Reason.EXHAUSTED, "b" * 40),
+        )
+        self.assertEqual(
+            decide(exhausted).action,
+            Action.RUN_SELF_RESOLUTION_AUDIT,
+        )
+        wrong_reason = State(
+            1,
+            2,
+            SHA,
+            risk_flags=("provider-ui",),
+            self_resolution_audit=human_audit(Reason.HUMAN_REPOSITORY_UI),
+        )
+        self.assertEqual(
+            decide(wrong_reason).action,
+            Action.RUN_SELF_RESOLUTION_AUDIT,
         )
 
     def test_generic_authentication_or_ambiguity_is_not_human_only(self):
@@ -234,7 +281,7 @@ class RecoverySupervisorTest(unittest.TestCase):
                     2,
                     SHA,
                     risk_flags=(flag,),
-                    self_resolution_audit=INTERNAL_AUDIT,
+                    self_resolution_audit=internal_audit(Reason.AUTOMATABLE_PERMISSION),
                 )
                 self.assertEqual(decide(state).action, Action.INTERNAL_STOP)
 
@@ -247,7 +294,7 @@ class RecoverySupervisorTest(unittest.TestCase):
             CodexEvidence(SHA, True),
             draft=False,
             mergeable=False,
-            self_resolution_audit=INTERNAL_AUDIT,
+            self_resolution_audit=internal_audit(Reason.MERGE_BLOCKED),
         )
         decision = decide(state)
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
