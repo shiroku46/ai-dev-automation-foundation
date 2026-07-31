@@ -1,4 +1,4 @@
-name: Repair PR 58 Base64 Padding
+name: Repair PR 58 Canonical Payload
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: repair-pr-58-base64-padding
+  group: repair-pr-58-canonical-payload
   cancel-in-progress: false
 
 jobs:
@@ -22,12 +22,14 @@ jobs:
       contents: write
       pull-requests: read
     steps:
-      - name: Append the single missing padding character
+      - name: Restore canonical bytes and one padding character
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_PR: "58"
           TARGET_BRANCH: fix/issue-57-pr44-remaining-gates
-          EXPECTED_HEAD: e3570416a911974fdc80ef18307778a7d38c8202
+          EXPECTED_HEAD: b32b8867f67952a7ded36a8c180cf14eb6bf792b
+          CANONICAL_COMMIT: e3570416a911974fdc80ef18307778a7d38c8202
+          CANONICAL_BLOB: 0570b56fa936d58e2f7006fdace8e416d72d2b9a
           TARGET_PATH: .github/workflows/repair-pr44-remaining-gates.yml
         run: |
           python3 - <<'PY'
@@ -42,6 +44,8 @@ jobs:
           pr_number = int(os.environ["TARGET_PR"])
           target_branch = os.environ["TARGET_BRANCH"]
           expected_head = os.environ["EXPECTED_HEAD"]
+          canonical_commit = os.environ["CANONICAL_COMMIT"]
+          canonical_blob = os.environ["CANONICAL_BLOB"]
           target_path = os.environ["TARGET_PATH"]
 
           def gh(*args, input_value=None):
@@ -91,72 +95,89 @@ jobs:
               if head.get("ref") != target_branch:
                   raise RuntimeError("Target Pull Request branch changed")
               if head.get("sha") != expected_head:
-                  print("Target head already moved; exact padding repair is no longer applicable.")
+                  print("Target head moved; canonical repair is no longer applicable.")
                   raise SystemExit(0)
 
           pull = api(f"repos/{repository}/pulls/{pr_number}")
           require_target(pull)
-          commit = api(f"repos/{repository}/git/commits/{expected_head}")
-          tree_sha = (commit.get("tree") or {}).get("sha")
-          if not tree_sha:
-              raise RuntimeError("Expected commit has no tree")
-          tree = api(f"repos/{repository}/git/trees/{tree_sha}?recursive=1")
-          matches = [
-              item
-              for item in tree.get("tree") or []
-              if item.get("path") == target_path
-          ]
-          if len(matches) != 1:
-              raise RuntimeError("Expected tree does not contain exactly one target path")
-          entry = matches[0]
-          if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
-              raise RuntimeError("Target is not an expected regular text file")
 
-          metadata = api(f"repos/{repository}/contents/{target_path}?ref={expected_head}")
-          if metadata.get("sha") != entry.get("sha") or metadata.get("encoding") != "base64":
-              raise RuntimeError("Immutable target blob/tree binding failed")
-          content = base64.b64decode(
-              (metadata.get("content") or "").encode("ascii"), validate=True
+          current_commit = api(f"repos/{repository}/git/commits/{expected_head}")
+          current_tree_sha = (current_commit.get("tree") or {}).get("sha")
+          canonical_snapshot = api(f"repos/{repository}/git/commits/{canonical_commit}")
+          canonical_tree_sha = (canonical_snapshot.get("tree") or {}).get("sha")
+          if not current_tree_sha or not canonical_tree_sha:
+              raise RuntimeError("Current or canonical commit has no tree")
+
+          def exact_entry(tree_sha):
+              tree = api(f"repos/{repository}/git/trees/{tree_sha}?recursive=1")
+              entries = [
+                  item
+                  for item in tree.get("tree") or []
+                  if item.get("path") == target_path
+              ]
+              if len(entries) != 1:
+                  raise RuntimeError("Tree does not contain exactly one target path")
+              entry = entries[0]
+              if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
+                  raise RuntimeError("Target path is not a regular file")
+              return entry
+
+          current_entry = exact_entry(current_tree_sha)
+          canonical_entry = exact_entry(canonical_tree_sha)
+          if canonical_entry.get("sha") != canonical_blob:
+              raise RuntimeError("Canonical blob identity changed")
+          if current_entry.get("mode") != canonical_entry.get("mode"):
+              raise RuntimeError("Current and canonical file modes differ")
+
+          metadata = api(
+              f"repos/{repository}/contents/{target_path}?ref={canonical_commit}"
+          )
+          if metadata.get("sha") != canonical_blob or metadata.get("encoding") != "base64":
+              raise RuntimeError("Canonical contents are not bound to the fixed blob")
+          encoded_content = "".join((metadata.get("content") or "").split())
+          canonical = base64.b64decode(
+              encoded_content.encode("ascii"), validate=True
           ).decode("utf-8")
 
           pattern = re.compile(
               r"(?m)^          printf '%s' '([A-Za-z0-9+/]+)' \| base64 --decode \| gzip --decompress \| python3$"
           )
-          found = pattern.findall(content)
-          if len(found) != 1:
-              raise RuntimeError("Expected exactly one unpadded fixed payload pipeline")
-          token = found[0]
+          tokens = pattern.findall(canonical)
+          if len(tokens) != 1:
+              raise RuntimeError("Canonical workflow lacks exactly one unpadded pipeline")
+          token = tokens[0]
           if "=" in token or len(token) % 4 != 3:
-              raise RuntimeError("Payload is not the exact one-character padding case")
+              raise RuntimeError("Canonical token is not the fixed one-padding case")
           padded = token + "="
-          decoded = base64.b64decode(padded.encode("ascii"), validate=True)
-          source = gzip.decompress(decoded)
-          compile(source.decode("utf-8"), "<fixed-repair-payload>", "exec")
+          source = gzip.decompress(
+              base64.b64decode(padded.encode("ascii"), validate=True)
+          ).decode("utf-8")
+          compile(source, "<canonical-repair-payload>", "exec")
           replacement = (
               "          printf '%s' '"
               + padded
               + "' | base64 --decode | gzip --decompress | python3"
           )
-          repaired, count = pattern.subn(replacement, content)
-          if count != 1 or repaired == content or repaired.count(padded) != 1:
-              raise RuntimeError("Padding transformation was not exactly one character")
-          if repaired.replace(padded, token, 1) != content:
-              raise RuntimeError("Padding transformation changed unrelated content")
+          desired, count = pattern.subn(replacement, canonical)
+          if count != 1 or desired == canonical:
+              raise RuntimeError("Canonical padding transformation was not exactly one edit")
+          if desired.replace(padded, token, 1) != canonical:
+              raise RuntimeError("Desired content is not canonical bytes plus one padding character")
 
           blob = api_json(
               "POST",
               f"repos/{repository}/git/blobs",
-              {"content": repaired, "encoding": "utf-8"},
+              {"content": desired, "encoding": "utf-8"},
           )
           new_tree = api_json(
               "POST",
               f"repos/{repository}/git/trees",
               {
-                  "base_tree": tree_sha,
+                  "base_tree": current_tree_sha,
                   "tree": [
                       {
                           "path": target_path,
-                          "mode": entry["mode"],
+                          "mode": canonical_entry["mode"],
                           "type": "blob",
                           "sha": blob["sha"],
                       }
@@ -167,7 +188,7 @@ jobs:
               "POST",
               f"repos/{repository}/git/commits",
               {
-                  "message": "Restore exact Base64 padding in PR 58 repair payload",
+                  "message": "Restore canonical padded repair payload",
                   "tree": new_tree["sha"],
                   "parents": [expected_head],
               },
@@ -180,5 +201,5 @@ jobs:
               f"repos/{repository}/git/refs/heads/{target_branch}",
               {"sha": new_commit["sha"], "force": False},
           )
-          print(f"Repaired PR #{pr_number} to {new_commit['sha']}.")
+          print(f"Restored PR #{pr_number} to {new_commit['sha']}.")
           PY
