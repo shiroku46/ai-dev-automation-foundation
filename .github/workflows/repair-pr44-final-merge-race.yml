@@ -1,0 +1,247 @@
+name: Repair PR 44 final merge race gates
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr44-final-merge-race
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: >-
+      github.repository == 'shiroku46/ai-dev-automation-foundation' &&
+      github.ref_name == github.event.repository.default_branch &&
+      (github.actor == github.repository_owner || github.actor == 'github-actions[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: shiroku46/ai-dev-automation-foundation
+      TARGET_PR: "44"
+      TARGET_BRANCH: fix/issue-36-human-notice-contract
+      EXPECTED_HEAD: b5df12e4368131b3be2ec82977bb703b459157b4
+      SOURCE_ISSUE: "36"
+    steps:
+      - name: Apply two exact race-gate fixes as inert data
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+
+          repo = os.environ["REPOSITORY"]
+          pr_number = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          source_issue = int(os.environ["SOURCE_ISSUE"])
+          runtime_path = "scripts/supervisor_runtime.py"
+          test_path = "tests/test_runtime_scope_and_checks.py"
+
+          def gh_json(method: str, path: str, payload=None):
+              command = [
+                  "gh", "api", "-H", "Accept: application/vnd.github+json",
+                  "--method", method, path,
+              ]
+              if payload is None:
+                  result = subprocess.run(command, check=True, text=True, capture_output=True)
+              else:
+                  result = subprocess.run(
+                      [*command, "--input", "-"],
+                      input=json.dumps(payload, separators=(",", ":")),
+                      check=True,
+                      text=True,
+                      capture_output=True,
+                  )
+              return json.loads(result.stdout)
+
+          def exact_replace(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one exact match, found {count}")
+              return text.replace(old, new, 1)
+
+          pull = gh_json("GET", f"repos/{repo}/pulls/{pr_number}")
+          head = pull.get("head") or {}
+          base = pull.get("base") or {}
+          if (
+              pull.get("state") != "open"
+              or (head.get("repo") or {}).get("full_name") != repo
+              or (base.get("repo") or {}).get("full_name") != repo
+              or head.get("ref") != target_branch
+              or base.get("ref") != "main"
+          ):
+              raise SystemExit("PR #44 provenance no longer matches the fixed repair contract")
+          current_head = str(head.get("sha") or "")
+          if current_head != expected_head:
+              print(f"Exact head moved from {expected_head} to {current_head}; fixed repair is no longer applicable.")
+              raise SystemExit(0)
+          body = str(pull.get("body") or "")
+          if f"Closes #{source_issue}" not in body:
+              raise SystemExit("PR #44 no longer identifies the fixed trusted source Issue")
+
+          def fetch_text(path: str):
+              value = gh_json("GET", f"repos/{repo}/contents/{path}?ref={expected_head}")
+              if value.get("type") != "file" or value.get("encoding") != "base64":
+                  raise SystemExit(f"{path}: expected one base64 file")
+              return base64.b64decode(value["content"]).decode("utf-8")
+
+          runtime = fetch_text(runtime_path)
+          tests = fetch_text(test_path)
+
+          runtime_old = '''        merge_candidate = _live_pr(pr_number, sha)
+          if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+              merge_candidate
+          ):
+              continue
+          gh(
+'''
+          runtime_new = '''        merge_candidate = _live_pr(pr_number, sha)
+          if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+              merge_candidate
+          ):
+              continue
+          if parse_issue_number(merge_candidate.get("body") or "") != issue_number:
+              continue
+          if not exact_codex_clean(pr_number, sha):
+              continue
+          gh(
+'''
+          runtime = exact_replace(
+              runtime, runtime_old, runtime_new, "final live merge gate"
+          )
+
+          tests = exact_replace(
+              tests,
+              "    def _run_final_gate(self, snapshots, source_result):\n",
+              "    def _run_final_gate(\n        self, snapshots, source_result, codex_clean=(True, True)\n    ):\n",
+              "test helper signature",
+          )
+          tests = exact_replace(
+              tests,
+              '            patch.object(self.runtime, "exact_codex_clean", return_value=True),\n',
+              '            patch.object(\n                self.runtime, "exact_codex_clean", side_effect=codex_clean\n            ),\n',
+              "test helper Codex sequence",
+          )
+          insertion_point = '''    def test_clean_revalidated_scope_reaches_expected_sha_merge(self):
+'''
+          added_tests = '''    def test_late_source_link_edit_blocks_final_merge(self):
+        clean = self._candidate()
+        edited = self._candidate()
+        edited["body"] = "Closes #10"
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean, edited],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+    def test_late_codex_blocker_blocks_final_merge(self):
+        clean = self._candidate()
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+            codex_clean=(True, False),
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+'''
+          tests = exact_replace(
+              tests,
+              insertion_point,
+              added_tests + insertion_point,
+              "focused final-race tests",
+          )
+
+          compile(runtime, runtime_path, "exec")
+          compile(tests, test_path, "exec")
+
+          commit = gh_json("GET", f"repos/{repo}/git/commits/{expected_head}")
+          base_tree = str((commit.get("tree") or {}).get("sha") or "")
+          if not base_tree:
+              raise SystemExit("Could not resolve the exact candidate base tree")
+          tree = gh_json("GET", f"repos/{repo}/git/trees/{base_tree}?recursive=1")
+          if tree.get("truncated"):
+              raise SystemExit("Candidate tree listing was truncated")
+          entries = {
+              item.get("path"): item
+              for item in tree.get("tree") or []
+              if item.get("type") == "blob"
+          }
+          if set((runtime_path, test_path)) - set(entries):
+              raise SystemExit("A fixed target path is absent from the exact candidate tree")
+
+          updated = {runtime_path: runtime, test_path: tests}
+          replacements = []
+          for path in (runtime_path, test_path):
+              blob = gh_json(
+                  "POST",
+                  f"repos/{repo}/git/blobs",
+                  {"content": updated[path], "encoding": "utf-8"},
+              )
+              replacements.append(
+                  {
+                      "path": path,
+                      "mode": entries[path]["mode"],
+                      "type": "blob",
+                      "sha": blob["sha"],
+                  }
+              )
+
+          new_tree = gh_json(
+              "POST",
+              f"repos/{repo}/git/trees",
+              {"base_tree": base_tree, "tree": replacements},
+          )["sha"]
+          new_commit = gh_json(
+              "POST",
+              f"repos/{repo}/git/commits",
+              {
+                  "message": "Fix final source-link and Codex merge races for Issue #36",
+                  "tree": new_tree,
+                  "parents": [expected_head],
+              },
+          )["sha"]
+
+          live = gh_json("GET", f"repos/{repo}/pulls/{pr_number}")
+          live_head = live.get("head") or {}
+          if (
+              live.get("state") != "open"
+              or (live_head.get("repo") or {}).get("full_name") != repo
+              or live_head.get("ref") != target_branch
+              or live_head.get("sha") != expected_head
+          ):
+              raise SystemExit("PR #44 moved before the fixed non-force update")
+          ref = gh_json("GET", f"repos/{repo}/git/ref/heads/{target_branch}")
+          if str((ref.get("object") or {}).get("sha") or "") != expected_head:
+              raise SystemExit("Target branch ref moved before the fixed non-force update")
+          gh_json(
+              "PATCH",
+              f"repos/{repo}/git/refs/heads/{target_branch}",
+              {"sha": new_commit, "force": False},
+          )
+          print(f"Updated PR #44 from {expected_head} to {new_commit} with exactly two file edits.")
+          PY
