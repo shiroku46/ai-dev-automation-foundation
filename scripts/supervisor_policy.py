@@ -91,6 +91,9 @@ def declared_paths(issue_body: str) -> set[str]:
         if heading:
             in_scope = heading.group(1).strip().lower() in ALLOWED_SCOPE_HEADINGS
             continue
+        if in_scope and line.startswith("<!--"):
+            in_scope = False
+            continue
         if in_scope:
             path = _bullet_path(raw)
             if path:
