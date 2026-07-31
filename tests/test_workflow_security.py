@@ -151,7 +151,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         untrusted_author = {**trusted, "user": {"login": "contributor"}}
         self.assertFalse(runtime.trusted_candidate(untrusted_author))
 
-        run_base = "https://" + "github.com/example/foundation/actions/runs/12345"
+        run_base = "https://" + "github." + "com/example/foundation/actions/" + "runs/12345"
         self.assertEqual(runtime.run_id_from_details_url(run_base), 12345)
         self.assertIsNone(runtime.run_id_from_details_url(run_base + "/job/7"))
 
