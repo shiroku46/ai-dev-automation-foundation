@@ -122,6 +122,8 @@ class WorkflowSecurityTest(unittest.TestCase):
             "ATTESTATION_JOB_NAMES",
             "_complete_successful_job_set",
             'actions/runs/{run_id}/jobs?filter=all',
+            "merge_method=squash",
+            'f"sha={sha}"',
         ):
             self.assertIn(required, runtime)
         self.assertNotIn("@lru_cache(maxsize=1)\ndef current_default_sha", runtime)
@@ -129,6 +131,40 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn("external_id", runtime)
         self.assertNotIn("run_id_from_details_url", runtime)
         self.assertNotIn("/commits/{sha}/status", runtime)
+
+    def test_internal_stop_and_human_only_notice_contract_is_fail_closed(self):
+        runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
+        for required in (
+            "def self_resolution_audit(",
+            "def format_human_only_notice(",
+            "def human_only_notice(",
+            '"- notification: `false`',
+            '"- required_human_action: `none`',
+            "NO_PROGRESS_MINUTES = 60",
+            '"NO_MEANINGFUL_PROGRESS"',
+            '"HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE"',
+            '"HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED"',
+            '"HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED"',
+            "reason not in HUMAN_ONLY_REASONS",
+            "provider_ui_action.strip() != expected_action",
+            "automatic_resume_condition",
+            "reason-and-SHA bound",
+        ):
+            self.assertIn(required, runtime)
+
+    def test_guidance_has_identical_non_notifying_boundary(self):
+        operating = (ROOT / "docs/OPERATING_RULES.md").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        claude = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+        for reason in (
+            "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
+            "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
+            "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED",
+        ):
+            self.assertIn(reason, operating)
+        self.assertIn("non-notifying internal stops", agents)
+        self.assertIn("non-notifying internal stops", claude)
+        self.assertIn("automatic-resumption condition", operating)
 
     def test_codex_request_deduplication_ignores_untrusted_marker_comments(self):
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
