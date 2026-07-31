@@ -37,6 +37,24 @@ rollback: revert the merge commit
 
 The supervisor fails closed when this contract is absent or does not cover every protected path.
 
-## Stop boundary
+## Internal stops are non-notifying
 
-Automation may escalate only after a self-resolution audit proves the missing action cannot be performed safely by existing GitHub permissions or default-branch workflows. Human action is limited to genuine account/provider UI, credential, MFA, CAPTCHA, or hardware-key requirements, or an unresolved substantive decision.
+A retry limit, no-progress state, stale or incomplete evidence, mergeability state, review finding, ambiguous technical condition, or unauthorized protected path is an internal automation state. The supervisor records one reason-and-SHA-bound `stop_report`, includes its self-resolution audit, and sets `notification: false` and `required_human_action: none`.
+
+An internal stop must never ask a person to merge, approve, retry, close, resolve review, change workflow permissions or settings, alter billing, or deploy. Repeated reconciliation of the same reason and exact SHA must not create duplicate comments.
+
+Before recording an internal stop, the runtime rechecks repository metadata, fixed workflow-run and job evidence, changed and renamed paths, scope and authorization, Codex/review provenance, available permissions, idempotency, and alternative connected repair paths.
+
+## Human-only notice boundary
+
+A separate fail-closed formatter may notify a person only for one of these reason codes:
+
+- `HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE`
+- `HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED`
+- `HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED`
+
+Every human-only notice must contain an exact Issue, Pull Request, lowercase 40-character head SHA, concrete connected paths already attempted, impossibility evidence, the exact affected target or provider, one canonical reason-compatible provider UI action, and an automatic-resumption condition. The notice is deduplicated by reason, Issue, Pull Request, and exact SHA.
+
+Routine technical failures, retry exhaustion, no progress, missing checks, merge state, protected-path denial, untrusted evidence, authentication declarations without proved provider-UI necessity, or unresolved ambiguity cannot use the human-only formatter.
+
+Automation resumes automatically when the audited UI condition changes; a new owner message is not required.
