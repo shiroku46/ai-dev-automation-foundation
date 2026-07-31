@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate required public foundation structure and workflow invariants."""
+"""Validate the public automation foundation and rendered targets."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,16 +7,21 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 SOURCE_MARKER = ROOT / "tests/test_bootstrap.py"
 SOURCE_GENERATOR = ROOT / "bootstrap/generator.py"
-GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
+PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
+
 REQUIRED = {
     "README.md",
     "LICENSE",
     "SECURITY.md",
     "AGENTS.md",
     "CLAUDE.md",
+    "docs/OPERATING_RULES.md",
+    "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py",
+    "scripts/validate_repository.py",
     "scripts/ai_recovery_supervisor.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
@@ -27,206 +32,333 @@ REQUIRED = {
     ".github/workflows/ci-reconcile.yml",
     ".github/workflows/supervisor.yml",
 }
-PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
 
 
 def fail(message: str) -> None:
     raise AssertionError(message)
 
 
-def workflow(name: str) -> str:
-    return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+def text(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
-def job_block(text: str, job: str, next_job: str | None = None) -> str:
+def require_all(content: str, values: tuple[str, ...], context: str) -> None:
+    for value in values:
+        if value not in content:
+            fail(f"{context} invariant is missing: {value}")
+
+
+def job_block(content: str, job: str, next_job: str | None = None) -> str:
     marker = f"\n  {job}:\n"
-    if marker not in text:
+    if marker not in content:
         fail(f"missing job {job}")
-    block = text.split(marker, 1)[1]
+    result = content.split(marker, 1)[1]
     if next_job:
         boundary = f"\n  {next_job}:\n"
-        if boundary not in block:
+        if boundary not in result:
             fail(f"missing following job {next_job}")
-        block = block.split(boundary, 1)[0]
-    return block
+        result = result.split(boundary, 1)[0]
+    return result
+
+
+def function_block(content: str, name: str, next_name: str) -> str:
+    marker = f"def {name}("
+    boundary = f"\ndef {next_name}("
+    if marker not in content:
+        fail(f"missing function {name}")
+    result = content.split(marker, 1)[1]
+    if boundary not in result:
+        fail(f"runtime function boundary missing: {name} -> {next_name}")
+    return result.split(boundary, 1)[0]
+
+
+def validate_workflows() -> None:
+    workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+    if not workflows:
+        fail("no workflows found")
+    for path in workflows:
+        content = path.read_text(encoding="utf-8")
+        if "\t" in content:
+            fail(f"{path}: tab indentation is prohibited")
+        if not content.startswith("name:") or "\non:\n" not in content or "\njobs:\n" not in content:
+            fail(f"{path}: required top-level sections are missing")
+        if "pull_request_target" in content:
+            fail(f"{path}: pull_request_target is prohibited")
+        for line in content.splitlines():
+            stripped = line.strip().removeprefix("- ")
+            if stripped.startswith("uses:") and not PIN.search(line):
+                fail(f"{path}: action is not pinned to a 40-character commit")
+
+    for name in ("ci.yml", "unit-tests.yml"):
+        content = text(f".github/workflows/{name}")
+        require_all(
+            content,
+            ("\n  pull_request:\n", "permissions:\n  contents: read", "persist-credentials: false"),
+            name,
+        )
+        for forbidden in (
+            "secrets.",
+            "id-token: write",
+            "actions: write",
+            "checks: write",
+            "statuses: write",
+            "contents: write",
+        ):
+            if forbidden in content:
+                fail(f"{name}: contributor job has forbidden capability {forbidden}")
+    require_all(
+        text(".github/workflows/ci.yml"),
+        ("Psych.parse_stream", "documents.length == 1"),
+        "CI parser",
+    )
+
+    trusted = text(".github/workflows/trusted-checks.yml")
+    require_all(
+        trusted,
+        (
+            "run-name: Trusted checks ${{ inputs.target_sha }}",
+            "\n  workflow_dispatch:\n",
+            "WORKFLOW_REF: ${{ github.workflow_ref }}",
+            "WORKFLOW_SHA: ${{ github.workflow_sha }}",
+            "name: CI / validate",
+            "name: Unit Tests / test",
+        ),
+        "trusted checks",
+    )
+    for forbidden in (
+        "workflow_call:",
+        "checks: write",
+        "statuses: write",
+        "/check-runs",
+        '"external_id"',
+    ):
+        if forbidden in trusted:
+            fail(f"trusted checks contain forbidden evidence path {forbidden}")
+    authorize = job_block(trusted, "authorize", "validate_target")
+    for forbidden in ("actions/checkout@", "secrets.", "issues: write", "checks: write"):
+        if forbidden in authorize:
+            fail(f"trusted authorize job has forbidden capability {forbidden}")
+    for candidate_job in (
+        job_block(trusted, "validate_target", "test_target"),
+        job_block(trusted, "test_target"),
+    ):
+        require_all(
+            candidate_job,
+            (
+                "permissions:\n      contents: read",
+                "persist-credentials: false",
+                'test "$(git rev-parse HEAD)" = "$TARGET_SHA"',
+            ),
+            "trusted candidate job",
+        )
+        for forbidden in ("secrets.", "id-token: write", "contents: write", "checks: write"):
+            if forbidden in candidate_job:
+                fail(f"trusted candidate job has forbidden capability {forbidden}")
+
+    queue = text(".github/workflows/claude-queue.yml")
+    require_all(
+        queue,
+        (
+            "github.actor == github.repository_owner",
+            "github.actor == vars.AUTOMATION_OWNER",
+            'body.strip() == trigger',
+            "trusted_run_id",
+            "actions/runs/{run_id}",
+        ),
+        "Queue",
+    )
+    if "github.triggering_actor" in queue:
+        fail("Queue must not depend on github.triggering_actor")
+
+    reconcile = text(".github/workflows/ci-reconcile.yml")
+    require_all(
+        reconcile,
+        (
+            'workflows: ["CI", "Unit Tests"]',
+            "python -m scripts.supervisor_runtime discover",
+            "gh workflow run trusted-checks.yml",
+            '--ref "$DEFAULT_BRANCH"',
+            '-f "target_sha=$TARGET_SHA"',
+            "actions: write",
+            "max-parallel: 2",
+        ),
+        "reconciliation",
+    )
+    if "statuses: write" in reconcile or "/statuses/" in reconcile:
+        fail("reconciliation must not publish custom statuses")
+
+    supervisor = text(".github/workflows/supervisor.yml")
+    require_all(
+        supervisor,
+        (
+            '"Trusted Exact-SHA Checks"',
+            "ref: ${{ github.event.repository.default_branch }}",
+            "persist-credentials: false",
+            "contents: write",
+        ),
+        "supervisor",
+    )
+    for forbidden in ("\n  pull_request:\n", "secrets.", "id-token: write"):
+        if forbidden in supervisor:
+            fail(f"write-capable supervisor is not fork safe: {forbidden}")
+
+
+def validate_policy_and_runtime() -> None:
+    policy = text("scripts/supervisor_policy.py")
+    require_all(
+        policy,
+        (
+            "declared_paths",
+            "protected_authorized_paths",
+            "scope_is_authorized",
+            "protected_scope_is_authorized",
+            'authorized.endswith("/**")',
+            'any(character in authorized for character in "*?[")',
+            'line.startswith("<!--")',
+            '"scripts/supervisor_policy.py"',
+        ),
+        "source scope policy",
+    )
+
+    runtime = text("scripts/supervisor_runtime.py")
+    require_all(
+        runtime,
+        (
+            "trusted_workflow_id()",
+            "current_default_sha()",
+            'run.get("event") != "workflow_dispatch"',
+            'run.get("display_title") != f"Trusted checks {sha}"',
+            "trusted_runs_for_sha",
+            "trusted_run_jobs",
+            'actions/runs/{run_id}/jobs?filter=all',
+            "ATTESTATION_JOB_NAMES",
+            "_complete_successful_job_set",
+            "previous_filename",
+            "scope_is_authorized(changed, issue_body)",
+            "protected_scope_is_authorized",
+            '"UNAUTHORIZED_CHANGED_PATH"',
+            "_codex_items",
+            "_codex_event_timestamp",
+            "_workflow_definition_matches_default",
+            "_content_blob_sha",
+            "candidate_blob == default_blob",
+            "stable_default_sha = _require_exact_sha(current_default_sha())",
+            "final_default_sha != stable_default_sha",
+            "Default branch moved during complete native workflow evidence validation",
+            "_run_belongs_to_pr",
+            "native_workflow_evidence",
+            '"e2e.yml", "E2E Acceptance"',
+            "_connected_repository_creation_evidence",
+            "_connected_human_notice_evidence",
+            "human_notice_context",
+            "human_only_connected_evidence",
+            "Final audit impossibility evidence changed",
+            "Connected human-only condition changed after the final audit",
+            "Connected human-only condition changed before publication",
+            "Caller attempted-path assertions do not match connected audit evidence",
+            "No reason-specific connected provider evidence adapter is available",
+            'INTERNAL_STOP_BRANCH = "automation-internal-stops"',
+            "canonical_internal_stop_record",
+            "canonical_human_notice_record",
+            "persist_internal_stop_record",
+            "persist_human_notice_record",
+            '"notification": False',
+            '"required_human_action": None',
+            "merge_method=squash",
+            'f"sha={sha}"',
+        ),
+        "runtime",
+    )
+    for forbidden in ("external_id", "run_id_from_details_url", "/commits/{sha}/status"):
+        if forbidden in runtime:
+            fail(f"runtime trusts forbidden metadata {forbidden}")
+
+    stop = function_block(runtime, "stop_report", "format_human_only_notice")
+    require_all(
+        stop,
+        ("self_resolution_audit", "persist_internal_stop_record", "_revalidate_stop_reason"),
+        "internal stop",
+    )
+    for forbidden in ("comment(", "ensure_label(", "--add-label", "/comments"):
+        if forbidden in stop:
+            fail(f"routine stop notifies or mutates labels: {forbidden}")
+
+    notice = function_block(runtime, "human_only_notice", "discover_targets")
+    require_all(
+        notice,
+        (
+            "_connected_human_notice_evidence",
+            "format_human_only_notice",
+            "_validated_notice_destination",
+            "human_notice_context=notice_context",
+            "persist_human_notice_record",
+            "_existing_internal_record",
+            "ACTIONS_LOGIN",
+            'item.get("created_at") == item.get("updated_at")',
+        ),
+        "human-only notice",
+    )
+
+    supervise = function_block(runtime, "supervise", "main")
+    if 'pr.get("updated_at")' in supervise or 'pr["updated_at"]' in supervise:
+        fail("no-progress must not use Pull Request-wide updated_at")
+    require_all(
+        supervise,
+        (
+            'minutes_since(codex.get("request_timestamp"))',
+            "latest_successful_attestation_timestamp(attempts)",
+            "native_workflow_evidence(sha, pr_number)",
+            "final_native_clean",
+            'scope_error in {"UNAUTHORIZED_CHANGED_PATH", "UNAUTHORIZED_PROTECTED_PATH"}',
+        ),
+        "terminal evidence gate",
+    )
+
+
+def validate_identity() -> None:
+    checklist = ROOT / "INSTALL_CHECKLIST.md"
+    generated = checklist.is_file() and GENERATED_TARGET_MARKER in checklist.read_text(encoding="utf-8")
+    source = SOURCE_MARKER.is_file()
+    if generated:
+        if SOURCE_GENERATOR.exists():
+            fail("generated target unexpectedly contains bootstrap/generator.py")
+        return
+    if source:
+        if not SOURCE_GENERATOR.is_file():
+            fail("Foundation source checkout is missing bootstrap/generator.py")
+        generator = SOURCE_GENERATOR.read_text(encoding="utf-8")
+        require_all(
+            generator,
+            (
+                '".github/workflows/trusted-checks.yml"',
+                '"README.md"',
+                '"LICENSE"',
+                "GENERATED_TARGET_MARKER",
+                "every changed and renamed path",
+                "protected-change authorization",
+                "native pull-request workflow evidence",
+                "one stable default-branch commit",
+                "E2E Acceptance",
+                "automation-internal-stops",
+                "never posted as Issue or Pull Request comments",
+                "github-actions[bot]",
+                "automatic-resumption condition",
+                "inside the final audit",
+                "immediately before publication",
+            ),
+            "Bootstrap parity",
+        )
+        return
+    fail("repository identity is ambiguous: no source marker or generated-target marker")
 
 
 def main() -> int:
     missing = sorted(path for path in REQUIRED if not (ROOT / path).is_file())
     if missing:
         fail(f"missing required files: {missing}")
-
-    workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
-    if not workflows:
-        fail("no workflows found")
-    for path in workflows:
-        text = path.read_text(encoding="utf-8")
-        if "\t" in text:
-            fail(f"{path}: tab indentation is prohibited")
-        if not text.startswith("name:") or "\non:\n" not in text or "\njobs:\n" not in text:
-            fail(f"{path}: required top-level sections are missing")
-        if "pull_request_target" in text:
-            fail(f"{path}: pull_request_target is prohibited")
-        for line in text.splitlines():
-            stripped = line.strip().removeprefix("- ")
-            if stripped.startswith("uses:") and not PIN.search(line):
-                fail(f"{path}: action is not pinned to a commit: {stripped}")
-
-    ci = workflow("ci.yml")
-    unit = workflow("unit-tests.yml")
-    for name, text in (("ci.yml", ci), ("unit-tests.yml", unit)):
-        if "\n  pull_request:\n" not in text:
-            fail(f"{name}: public Pull Request trigger is missing")
-        if "permissions:\n  contents: read" not in text:
-            fail(f"{name}: public workflow must be read-only")
-        for forbidden in (
-            "secrets.",
-            "id-token: write",
-            "checks: write",
-            "statuses: write",
-            "actions: write",
-        ):
-            if forbidden in text:
-                fail(f"{name}: forbidden capability {forbidden}")
-    if "Psych.parse_stream" not in ci or "documents.length == 1" not in ci:
-        fail("CI must parse the complete single-document YAML stream")
-
-    trusted = workflow("trusted-checks.yml")
-    if "run-name: Trusted checks ${{ inputs.target_sha }}" not in trusted:
-        fail("trusted workflow run title is not candidate-bound")
-    if "\n  workflow_dispatch:\n" not in trusted or "workflow_call:" in trusted:
-        fail("trusted checks must use the fixed default-branch dispatch path")
-    if "WORKFLOW_REF: ${{ github.workflow_ref }}" not in trusted:
-        fail("trusted checks do not verify their fixed workflow identity")
-    if "WORKFLOW_SHA: ${{ github.workflow_sha }}" not in trusted:
-        fail("trusted checks do not verify the current default-branch workflow SHA")
-    if "name: CI / validate" not in trusted or "name: Unit Tests / test" not in trusted:
-        fail("trusted exact-SHA GitHub-owned job names are missing")
-    for forbidden in (
-        "checks: write",
-        "/check-runs",
-        '"external_id"',
-        "finalize:",
-        "statuses: write",
-    ):
-        if forbidden in trusted:
-            fail(f"trusted workflow still contains custom metadata publication: {forbidden}")
-
-    authorize = job_block(trusted, "authorize", "validate_target")
-    validate = job_block(trusted, "validate_target", "test_target")
-    test = job_block(trusted, "test_target")
-
-    for required in ("contents: read", "pull-requests: read"):
-        if required not in authorize:
-            fail(f"trusted authorize job is missing {required}")
-    for forbidden in ("issues: write", "checks: write", "actions/checkout@", "secrets."):
-        if forbidden in authorize:
-            fail(f"trusted authorize job has forbidden capability or candidate execution: {forbidden}")
-    for required in ("WORKFLOW_REF", "WORKFLOW_SHA", "pr_number="):
-        if required not in authorize:
-            fail(f"trusted authorize identity invariant is missing: {required}")
-
-    for name, block, display_name in (
-        ("validate", validate, "name: CI / validate"),
-        ("test", test, "name: Unit Tests / test"),
-    ):
-        if display_name not in block:
-            fail(f"trusted {name} job name is not fixed")
-        if "permissions:\n      contents: read" not in block:
-            fail(f"trusted {name} execution job must be read-only")
-        for forbidden in ("checks: write", "id-token: write", "secrets.", "issues: write"):
-            if forbidden in block:
-                fail(f"trusted {name} execution job has write/secret capability")
-        if "actions/checkout@" not in block or "ref: ${{ env.TARGET_SHA }}" not in block:
-            fail(f"trusted {name} job is not bound to the immutable candidate")
-        if "persist-credentials: false" not in block:
-            fail(f"trusted {name} job persists credentials")
-        if 'test "$(git rev-parse HEAD)" = "$TARGET_SHA"' not in block:
-            fail(f"trusted {name} job does not verify the checked-out SHA")
-
-    queue = workflow("claude-queue.yml")
-    if "github.actor == github.repository_owner" not in queue:
-        fail("queue repository-owner authorization is missing")
-    if "github.actor == vars.AUTOMATION_OWNER" not in queue:
-        fail("queue configured-owner authorization is missing")
-    if "github.triggering_actor" in queue:
-        fail("queue must not depend on github.triggering_actor")
-    if 'body.strip() == trigger' not in queue:
-        fail("queue exact standalone comment trigger is missing")
-    if "trusted_run_id" not in queue or "actions/runs/{run_id}" not in queue:
-        fail("queue bot dispatch is not bound to a concrete supervisor run")
-
-    reconcile = workflow("ci-reconcile.yml")
-    if 'workflows: ["CI", "Unit Tests"]' not in reconcile:
-        fail("reconciliation must start only from fixed public workflows or schedule")
-    if "python -m scripts.supervisor_runtime discover" not in reconcile:
-        fail("reconciliation does not use bounded default-branch discovery")
-    if "gh workflow run trusted-checks.yml" not in reconcile:
-        fail("reconciliation does not dispatch the fixed trusted workflow")
-    if '--ref "$DEFAULT_BRANCH"' not in reconcile or '-f "target_sha=$TARGET_SHA"' not in reconcile:
-        fail("reconciliation dispatch is not fixed to default branch and exact candidate")
-    if "actions: write" not in reconcile or "max-parallel: 2" not in reconcile:
-        fail("reconciliation dispatch permission or bound is missing")
-    if "statuses: write" in reconcile or "/statuses/" in reconcile:
-        fail("reconciliation must not publish orphan statuses")
-
-    supervisor = workflow("supervisor.yml")
-    if "\n  pull_request:\n" in supervisor:
-        fail("write-capable supervisor must not load from a proposed Pull Request ref")
-    if "ref: ${{ github.event.repository.default_branch }}" not in supervisor:
-        fail("write-capable supervisor must checkout the default branch explicitly")
-    if '"Trusted Exact-SHA Checks"' not in supervisor:
-        fail("supervisor must reconcile immediately after trusted checks complete")
-
-    runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
-    for required in (
-        "trusted_workflow_id()",
-        "current_default_sha()",
-        'run.get("event") != "workflow_dispatch"',
-        'run.get("display_title") != f"Trusted checks {sha}"',
-        "trusted_runs_for_sha",
-        "trusted_run_jobs",
-        'actions/runs/{run_id}/jobs?filter=all',
-        "ATTESTATION_JOB_NAMES",
-        "_complete_successful_job_set",
-        "previous_filename",
-        "exact_codex_clean",
-        "MAX_ATTESTATION_ATTEMPTS",
-        "merge_method=squash",
-        'f"sha={sha}"',
-    ):
-        if required not in runtime:
-            fail(f"supervisor runtime invariant is missing: {required}")
-    for forbidden in ("/check-runs", "external_id", "run_id_from_details_url"):
-        if forbidden in runtime:
-            fail(f"supervisor still trusts custom check metadata: {forbidden}")
-    request_function = runtime.split("def request_codex", 1)[1].split("def supervise", 1)[0]
-    if 'get("login") == ACTIONS_LOGIN' not in request_function:
-        fail("Codex request deduplication trusts untrusted marker comments")
-
-    checklist = ROOT / "INSTALL_CHECKLIST.md"
-    generated_target = (
-        checklist.is_file()
-        and GENERATED_TARGET_MARKER in checklist.read_text(encoding="utf-8")
-    )
-    source_checkout = SOURCE_MARKER.is_file()
-
-    if generated_target:
-        if SOURCE_GENERATOR.exists():
-            fail("generated target unexpectedly contains bootstrap/generator.py")
-    elif source_checkout:
-        if not SOURCE_GENERATOR.is_file():
-            fail("Foundation source checkout is missing bootstrap/generator.py")
-        generator = SOURCE_GENERATOR.read_text(encoding="utf-8")
-        if '".github/workflows/trusted-checks.yml"' not in generator:
-            fail("Bootstrap allowlist does not include trusted exact-SHA checks")
-        if '"README.md"' not in generator or '"LICENSE"' not in generator:
-            fail("Bootstrap allowlist does not include public README and license")
-        if "GENERATED_TARGET_MARKER" not in generator:
-            fail("Bootstrap generator does not emit the generated-target identity marker")
-    else:
-        fail("repository identity is ambiguous: no source marker or generated-target marker")
-
+    validate_workflows()
+    validate_policy_and_runtime()
+    validate_identity()
     print("repository validation: clean")
     return 0
 
