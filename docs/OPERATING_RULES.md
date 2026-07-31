@@ -49,7 +49,7 @@ Before readiness or merge, the supervisor resolves fixed active default-branch w
 - `.github/workflows/unit-tests.yml` / `Unit Tests`;
 - `.github/workflows/e2e.yml` / `E2E Acceptance`, when that fixed workflow exists.
 
-For each required identity, the candidate workflow file blob must exactly equal the current stable default-branch blob. The default branch is rechecked during comparison. A candidate-modified workflow can never validate itself.
+The runtime captures one immutable default-branch commit for the entire native evidence gate. Every required candidate workflow file blob is compared with the corresponding blob from that same default commit. After all workflow metadata, blob, and run queries finish, the default branch is read again; any movement invalidates the complete gate. A mixed old/new default workflow set or candidate-modified workflow can never validate itself.
 
 The supervisor then requires a successful completed `pull_request` run belonging to the exact Pull Request, same repository, fixed workflow identity, and current head SHA. Missing, pending, cancelled, failed, stale-SHA, cross-Pull-Request, wrong-workflow, wrong-repository, candidate-modified-workflow, or candidate-authored status evidence cannot authorize progress. The complete gate is repeated immediately before merge.
 
@@ -57,7 +57,7 @@ The supervisor then requires a successful completed `pull_request` run belonging
 
 Retry exhaustion, no progress, stale or incomplete evidence, blocking review, merge state, ambiguous technical conditions, all-path denial, and protected-path denial are internal automation states. They must never become routine requests for a person to merge, approve, retry, close, resolve a review, change permissions or settings, alter billing, or deploy.
 
-Before persisting an internal stop, the runtime performs the mandatory self-resolution audit against the live exact SHA. It rechecks repository metadata; current Pull Request head and mergeability; complete changed and renamed paths; source Issue trust, ordinary allowlist, and protected authorization; fixed workflow identities and default blobs; immutable trusted workflow-run/job evidence; complete native Pull Request workflow evidence; GitHub check evidence; Codex evidence and unresolved threads; collaborator permission; idempotency; and alternative connected recovery paths. It fetches the live Pull Request again after all queries and immediately before any record or disposable close. A failed query or moved head produces no effect.
+Before persisting an internal stop, the runtime performs the mandatory self-resolution audit against the live exact SHA. It rechecks repository metadata; current Pull Request head and mergeability; complete changed and renamed paths; source Issue trust, ordinary allowlist, and protected authorization; fixed workflow identities and the one stable default snapshot; immutable trusted workflow-run/job evidence; complete native Pull Request workflow evidence; GitHub check evidence; Codex evidence and unresolved threads; collaborator permission; idempotency; and alternative connected recovery paths. It fetches the live Pull Request again after all queries and immediately before any record or disposable close. A failed query or moved head produces no effect.
 
 Internal stop records are sanitized canonical JSON on the fixed non-default branch `automation-internal-stops` at:
 
@@ -80,6 +80,8 @@ Only these reason codes may notify a person:
 A notice requires a trusted source Issue, live open same-repository Pull Request, lowercase 40-character current head SHA, concrete connected paths already attempted, independently observed impossibility evidence, exact targets or provider, one canonical reason-compatible provider UI action, an automatic-resumption condition, and the same mandatory connected self-resolution audit.
 
 For account-level repository creation, the runtime independently queries the exact target repositories through the connected GitHub API. Caller-supplied attempted paths and impossibility assertions must exactly match the derived observations, and no notice is valid when both targets are visible. Credential and integration-reconnection reasons fail closed until a reason-specific connected provider evidence adapter can prove the UI-only condition; generic caller assertions are never sufficient.
+
+The connected condition is re-derived inside the final self-resolution audit and embedded in the persisted audit record. It is queried again after the audit and immediately before publication. A repository becoming visible, a provider state changing, or any mismatch between requested and connected evidence prevents the notice.
 
 Before publication, the runtime persists a sanitized deterministic record at:
 
