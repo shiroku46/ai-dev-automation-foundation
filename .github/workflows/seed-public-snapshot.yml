@@ -25,15 +25,12 @@ jobs:
           set -euo pipefail
           gh repo clone "$GITHUB_REPOSITORY" repository -- --branch main --single-branch
           cd repository
-          expected_chunks="00 01 02 03 04 05 06 07 08 09"
-          for suffix in $expected_chunks; do
-            if [ ! -f ".public-seed/chunk-$suffix" ]; then
-              echo "Seed chunks are incomplete; nothing to do yet."
-              exit 0
-            fi
-          done
-          cat .public-seed/chunk-* > "$RUNNER_TEMP/foundation-snapshot.tar.gz.b64"
-          base64 --decode "$RUNNER_TEMP/foundation-snapshot.tar.gz.b64" > "$RUNNER_TEMP/foundation-snapshot.tar.gz"
+          archive=.public-seed/foundation-snapshot.tar.gz.b64
+          if [ ! -f "$archive" ]; then
+            echo "Seed archive is not present yet; nothing to do."
+            exit 0
+          fi
+          base64 --decode "$archive" > "$RUNNER_TEMP/foundation-snapshot.tar.gz"
           echo "$EXPECTED_ARCHIVE_SHA256  $RUNNER_TEMP/foundation-snapshot.tar.gz" | sha256sum --check --status
           tar -xzf "$RUNNER_TEMP/foundation-snapshot.tar.gz"
           rm -rf .public-seed .github/workflows/seed-public-snapshot.yml
