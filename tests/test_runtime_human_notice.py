@@ -22,9 +22,13 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
     def setUp(self):
         self.runtime = load_runtime()
         self.sha = "a" * 40
-        self.pr = {"number": 7, "head": {"sha": self.sha}}
+        self.pr = {
+            "number": 7,
+            "head": {"sha": self.sha},
+            "changed_files": 1,
+        }
 
-    def valid_notice(self, **overrides):
+    def valid_fields(self, **overrides):
         values = {
             "reason": "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
             "issue_number": 58,
@@ -50,7 +54,10 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
             ],
         }
         values.update(overrides)
-        return self.runtime.format_human_only_notice(**values)
+        return values
+
+    def valid_notice(self, **overrides):
+        return self.runtime.format_human_only_notice(**self.valid_fields(**overrides))
 
     def test_repository_creation_notice_contains_exact_audited_contract(self):
         body = self.valid_notice()
@@ -99,14 +106,8 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
 
     def test_other_human_only_families_require_their_canonical_action(self):
         cases = (
-            (
-                "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
-                ["provider/account"],
-            ),
-            (
-                "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED",
-                ["provider/integration"],
-            ),
+            ("HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED", ["provider/account"]),
+            ("HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED", ["provider/integration"]),
         )
         for reason, targets in cases:
             with self.subTest(reason=reason):
@@ -117,10 +118,53 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                 )
                 self.assertIn(f"reason_code: `{reason}`", body)
 
+    def test_self_resolution_audit_performs_connected_queries(self):
+        observed_paths = []
+
+        def fake_api(path):
+            observed_paths.append(path)
+            if path == "repos/example/foundation":
+                return {"visibility": "public", "default_branch": "main"}
+            if path == "repos/example/foundation/pulls/7":
+                return self.pr
+            if path == "repos/example/foundation/collaborators/owner/permission":
+                return {"permission": "admin"}
+            if path == "repos/example/foundation/issues/5":
+                return {"state": "open", "user": {"login": "owner"}, "body": ""}
+            if "/actions/workflows/" in path:
+                return {"id": len(observed_paths), "state": "active"}
+            raise AssertionError(path)
+
+        with (
+            patch.object(self.runtime, "api", side_effect=fake_api),
+            patch.object(self.runtime, "changed_paths", return_value=["probe.py"]),
+            patch.object(self.runtime, "attestation_attempts", return_value=[{"run_id": 9, "active": False, "success": False, "complete": True}]),
+            patch.object(self.runtime, "exact_codex_state", return_value="blocking"),
+            patch.object(self.runtime, "unresolved_review_threads", return_value=True),
+        ):
+            audit = self.runtime.self_resolution_audit(self.pr, 5, "BLOCKING_CODEX_REVIEW")
+
+        self.assertIn("repos/example/foundation", observed_paths)
+        self.assertIn("repos/example/foundation/pulls/7", observed_paths)
+        self.assertIn("repos/example/foundation/issues/5", observed_paths)
+        self.assertIn("repos/example/foundation/collaborators/owner/permission", observed_paths)
+        for workflow in self.runtime.AUDIT_WORKFLOWS:
+            self.assertIn(f"repos/example/foundation/actions/workflows/{workflow}", observed_paths)
+        self.assertIn("run_id", audit["workflow_run_and_job_evidence"])
+        self.assertIn("codex=blocking", audit["review_and_provenance"])
+        self.assertIn("permission=admin", audit["permissions_and_credentials"])
+        self.assertIn("trusted-checks.yml:active", audit["alternative_connected_paths"])
+
     def test_internal_stop_is_non_notifying_audited_and_deduplicated(self):
         posted = []
         labels = []
+        audit = {
+            "workflow_run_and_job_evidence": "queried",
+            "alternative_connected_paths": "queried",
+            "exact_head_sha": self.sha,
+        }
         with (
+            patch.object(self.runtime, "self_resolution_audit", return_value=audit),
             patch.object(self.runtime, "api_list", side_effect=[[], [{"body": f"{self.runtime.STOP_PREFIX}NO_MEANINGFUL_PROGRESS:{self.sha} -->"}]]),
             patch.object(self.runtime, "comment", side_effect=lambda number, body: posted.append((number, body))),
             patch.object(self.runtime, "ensure_label", side_effect=lambda *args: labels.append(args)),
@@ -148,17 +192,21 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
         self.assertNotIn("press Merge", body)
         self.assertEqual(len(labels), 2)
 
-    def test_human_only_publisher_deduplicates_exact_marker(self):
-        body = self.valid_notice()
+    def test_human_only_publisher_revalidates_and_deduplicates(self):
+        fields = self.valid_fields()
+        body = self.runtime.format_human_only_notice(**fields)
         marker = body.splitlines()[0]
         posted = []
         with (
             patch.object(self.runtime, "api_list", side_effect=[[], [{"body": marker}]]),
             patch.object(self.runtime, "comment", side_effect=lambda number, text: posted.append((number, text))),
         ):
-            self.runtime.human_only_notice(62, body)
-            self.runtime.human_only_notice(62, body)
+            self.runtime.human_only_notice(**fields)
+            self.runtime.human_only_notice(**fields)
         self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0][0], 62)
+        with self.assertRaises(ValueError):
+            self.runtime.human_only_notice(**self.valid_fields(pr_number=0))
 
     def test_no_progress_threshold_is_deterministic(self):
         now = datetime(2026, 7, 31, 13, 0, tzinfo=timezone.utc)
