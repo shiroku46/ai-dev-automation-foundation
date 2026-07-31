@@ -30,6 +30,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          python3 - <<'PY'
           import base64
           import json
           import os
@@ -191,3 +192,4 @@ jobs:
               f"Repaired PR #{TARGET_PR} from {EXPECTED_HEAD} "
               f"to {new_commit['sha']}."
           )
+          PY
