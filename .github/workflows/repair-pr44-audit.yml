@@ -32,6 +32,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          helper="$RUNNER_TEMP/repair-pr44-audit.py"
           metadata=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "repos/$GITHUB_REPOSITORY/contents/$REPAIR_HELPER?ref=$GITHUB_SHA")
@@ -43,6 +44,32 @@ jobs:
           printf '%s' "$metadata" \
             | jq -r .content \
             | tr -d '\n' \
-            | base64 --decode > "$RUNNER_TEMP/repair-pr44-audit.py"
-          python3 -m py_compile "$RUNNER_TEMP/repair-pr44-audit.py"
-          python3 "$RUNNER_TEMP/repair-pr44-audit.py"
+            | base64 --decode > "$helper"
+
+          python3 - "$helper" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          replacements = (
+              (
+                  "    if len(set(canonical)) != 2:\n",
+                  "    if len({target.casefold() for target in canonical}) != 2:\n",
+              ),
+              (
+                  '            ("owner/repo", "owner/repo"),\n',
+                  '            ("owner/repo", "owner/repo"),\n'
+                  '            ("Owner/Repo", "owner/repo"),\n',
+              ),
+          )
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise RuntimeError("Case-insensitive target repair anchor count is not one")
+              text = text.replace(old, new, 1)
+          compile(text, str(path), "exec")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 -m py_compile "$helper"
+          python3 "$helper"
