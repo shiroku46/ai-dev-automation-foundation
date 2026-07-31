@@ -106,7 +106,11 @@ def validate_workflows() -> None:
         ):
             if forbidden in content:
                 fail(f"{name}: contributor job has forbidden capability {forbidden}")
-    require_all(text(".github/workflows/ci.yml"), ("Psych.parse_stream", "documents.length == 1"), "CI parser")
+    require_all(
+        text(".github/workflows/ci.yml"),
+        ("Psych.parse_stream", "documents.length == 1"),
+        "CI parser",
+    )
 
     trusted = text(".github/workflows/trusted-checks.yml")
     require_all(
@@ -121,7 +125,13 @@ def validate_workflows() -> None:
         ),
         "trusted checks",
     )
-    for forbidden in ("workflow_call:", "checks: write", "statuses: write", "/check-runs", '"external_id"'):
+    for forbidden in (
+        "workflow_call:",
+        "checks: write",
+        "statuses: write",
+        "/check-runs",
+        '"external_id"',
+    ):
         if forbidden in trusted:
             fail(f"trusted checks contain forbidden evidence path {forbidden}")
     authorize = job_block(trusted, "authorize", "validate_target")
@@ -134,7 +144,11 @@ def validate_workflows() -> None:
     ):
         require_all(
             candidate_job,
-            ("permissions:\n      contents: read", "persist-credentials: false", 'test "$(git rev-parse HEAD)" = "$TARGET_SHA"'),
+            (
+                "permissions:\n      contents: read",
+                "persist-credentials: false",
+                'test "$(git rev-parse HEAD)" = "$TARGET_SHA"',
+            ),
             "trusted candidate job",
         )
         for forbidden in ("secrets.", "id-token: write", "contents: write", "checks: write"):
@@ -201,6 +215,7 @@ def validate_policy_and_runtime() -> None:
             'authorized.endswith("/**")',
             'any(character in authorized for character in "*?[")',
             'line.startswith("<!--")',
+            '"scripts/supervisor_policy.py"',
         ),
         "source scope policy",
     )
@@ -227,11 +242,19 @@ def validate_policy_and_runtime() -> None:
             "_workflow_definition_matches_default",
             "_content_blob_sha",
             "candidate_blob == default_blob",
+            "stable_default_sha = _require_exact_sha(current_default_sha())",
+            "final_default_sha != stable_default_sha",
+            "Default branch moved during complete native workflow evidence validation",
             "_run_belongs_to_pr",
             "native_workflow_evidence",
             '"e2e.yml", "E2E Acceptance"',
             "_connected_repository_creation_evidence",
             "_connected_human_notice_evidence",
+            "human_notice_context",
+            "human_only_connected_evidence",
+            "Final audit impossibility evidence changed",
+            "Connected human-only condition changed after the final audit",
+            "Connected human-only condition changed before publication",
             "Caller attempted-path assertions do not match connected audit evidence",
             "No reason-specific connected provider evidence adapter is available",
             'INTERNAL_STOP_BRANCH = "automation-internal-stops"',
@@ -251,7 +274,11 @@ def validate_policy_and_runtime() -> None:
             fail(f"runtime trusts forbidden metadata {forbidden}")
 
     stop = function_block(runtime, "stop_report", "format_human_only_notice")
-    require_all(stop, ("self_resolution_audit", "persist_internal_stop_record", "_live_pr"), "internal stop")
+    require_all(
+        stop,
+        ("self_resolution_audit", "persist_internal_stop_record", "_live_pr"),
+        "internal stop",
+    )
     for forbidden in ("comment(", "ensure_label(", "--add-label", "/comments"):
         if forbidden in stop:
             fail(f"routine stop notifies or mutates labels: {forbidden}")
@@ -263,7 +290,7 @@ def validate_policy_and_runtime() -> None:
             "_connected_human_notice_evidence",
             "format_human_only_notice",
             "_validated_notice_destination",
-            "self_resolution_audit",
+            "human_notice_context=notice_context",
             "persist_human_notice_record",
             "_existing_internal_record",
             "ACTIONS_LOGIN",
@@ -310,11 +337,14 @@ def validate_identity() -> None:
                 "every changed and renamed path",
                 "protected-change authorization",
                 "native pull-request workflow evidence",
+                "one stable default-branch commit",
                 "E2E Acceptance",
                 "automation-internal-stops",
                 "never posted as Issue or Pull Request comments",
                 "github-actions[bot]",
                 "automatic-resumption condition",
+                "inside the final audit",
+                "immediately before publication",
             ),
             "Bootstrap parity",
         )
