@@ -95,61 +95,52 @@ def main() -> int:
     if "\n  workflow_dispatch:\n" not in trusted or "workflow_call:" in trusted:
         fail("trusted checks must use the fixed default-branch dispatch path")
     if "WORKFLOW_REF: ${{ github.workflow_ref }}" not in trusted:
-        fail("trusted checks do not verify their supported workflow identity")
+        fail("trusted checks do not verify their fixed workflow identity")
     if "WORKFLOW_SHA: ${{ github.workflow_sha }}" not in trusted:
-        fail("trusted checks do not verify the current workflow SHA")
-    if "job.workflow_ref" in trusted or "job.workflow_sha" in trusted:
-        fail("trusted checks use unsupported job context keys")
-    if "CI / validate" not in trusted or "Unit Tests / test" not in trusted:
-        fail("trusted exact-SHA check names are missing")
+        fail("trusted checks do not verify the current default-branch workflow SHA")
+    if "name: CI / validate" not in trusted or "name: Unit Tests / test" not in trusted:
+        fail("trusted exact-SHA GitHub-owned job names are missing")
+    for forbidden in (
+        "checks: write",
+        "/check-runs",
+        '"external_id"',
+        "finalize:",
+        "statuses: write",
+    ):
+        if forbidden in trusted:
+            fail(f"trusted workflow still contains custom metadata publication: {forbidden}")
 
     authorize = job_block(trusted, "authorize", "validate_target")
     validate = job_block(trusted, "validate_target", "test_target")
-    test = job_block(trusted, "test_target", "finalize")
-    finalize = job_block(trusted, "finalize")
+    test = job_block(trusted, "test_target")
 
-    for required in ("contents: read", "issues: write", "pull-requests: read"):
+    for required in ("contents: read", "pull-requests: read"):
         if required not in authorize:
             fail(f"trusted authorize job is missing {required}")
-    if "checks: write" in authorize:
-        fail("trusted authorize job must not write check metadata")
-    if "actions/checkout@" in authorize or "python scripts/" in authorize or "unittest" in authorize:
-        fail("trusted authorize metadata job must not execute candidate code")
-    for required in (
-        "foundation-attestation-authorization",
-        "pr_number=",
-        "WORKFLOW_REF",
-        "WORKFLOW_SHA",
-    ):
+    for forbidden in ("issues: write", "checks: write", "actions/checkout@", "secrets."):
+        if forbidden in authorize:
+            fail(f"trusted authorize job has forbidden capability or candidate execution: {forbidden}")
+    for required in ("WORKFLOW_REF", "WORKFLOW_SHA", "pr_number="):
         if required not in authorize:
-            fail(f"trusted authorize diagnostics or identity invariant is missing: {required}")
+            fail(f"trusted authorize identity invariant is missing: {required}")
 
-    for name, block in (("validate", validate), ("test", test)):
+    for name, block, display_name in (
+        ("validate", validate, "name: CI / validate"),
+        ("test", test, "name: Unit Tests / test"),
+    ):
+        if display_name not in block:
+            fail(f"trusted {name} job name is not fixed")
         if "permissions:\n      contents: read" not in block:
             fail(f"trusted {name} execution job must be read-only")
-        if "checks: write" in block or "id-token: write" in block or "secrets." in block:
-            fail(f"trusted {name} execution job has write/secret capability")
+        for forbidden in ("checks: write", "id-token: write", "secrets.", "issues: write"):
+            if forbidden in block:
+                fail(f"trusted {name} execution job has write/secret capability")
         if "actions/checkout@" not in block or "ref: ${{ env.TARGET_SHA }}" not in block:
             fail(f"trusted {name} job is not bound to the immutable candidate")
+        if "persist-credentials: false" not in block:
+            fail(f"trusted {name} job persists credentials")
         if 'test "$(git rev-parse HEAD)" = "$TARGET_SHA"' not in block:
             fail(f"trusted {name} job does not verify the checked-out SHA")
-
-    for required in ("checks: write", "issues: write", "contents: read"):
-        if required not in finalize:
-            fail(f"trusted finalize metadata job is missing {required}")
-    if "actions/checkout@" in finalize or "python scripts/" in finalize or "unittest" in finalize:
-        fail("trusted finalize metadata job must not execute candidate code")
-    for required in (
-        '"status": "completed"',
-        '"external_id"',
-        '"--input"',
-        "foundation-attestation-finalization",
-        "ATTESTATION_METADATA_PUBLICATION_FAILED",
-    ):
-        if required not in finalize:
-            fail(f"trusted finalize completed-check or diagnostic invariant is missing: {required}")
-    if "status=in_progress" in trusted or "--method PATCH" in trusted:
-        fail("trusted checks must publish completed checks directly, not patch in-progress checks")
 
     queue = workflow("claude-queue.yml")
     if "github.actor == github.repository_owner" not in queue:
@@ -192,14 +183,21 @@ def main() -> int:
         'run.get("event") != "workflow_dispatch"',
         'run.get("display_title") != f"Trusted checks {sha}"',
         "trusted_runs_for_sha",
-        'f"foundation:{run_id}:{name}:{sha}"',
+        "trusted_run_jobs",
+        'actions/runs/{run_id}/jobs?filter=all',
+        "ATTESTATION_JOB_NAMES",
+        "_complete_successful_job_set",
         "previous_filename",
         "exact_codex_clean",
+        "MAX_ATTESTATION_ATTEMPTS",
         "merge_method=squash",
         'f"sha={sha}"',
     ):
         if required not in runtime:
             fail(f"supervisor runtime invariant is missing: {required}")
+    for forbidden in ("/check-runs", "external_id", "run_id_from_details_url"):
+        if forbidden in runtime:
+            fail(f"supervisor still trusts custom check metadata: {forbidden}")
     request_function = runtime.split("def request_codex", 1)[1].split("def supervise", 1)[0]
     if 'get("login") == ACTIONS_LOGIN' not in request_function:
         fail("Codex request deduplication trusts untrusted marker comments")
