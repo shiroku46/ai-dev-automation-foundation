@@ -1,0 +1,444 @@
+name: Repair PR 44 Final Revalidation
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-44-final-revalidation
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Apply exact final stop and merge revalidation repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: "44"
+          TARGET_BRANCH: fix/issue-36-human-notice-contract
+          EXPECTED_HEAD: b5df12e4368131b3be2ec82977bb703b459157b4
+          RUNTIME_PATH: scripts/supervisor_runtime.py
+          TEST_PATH: tests/test_runtime_scope_and_checks.py
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          pr_number = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          runtime_path = os.environ["RUNTIME_PATH"]
+          test_path = os.environ["TEST_PATH"]
+          target_paths = (runtime_path, test_path)
+
+          def gh(*args, input_value=None):
+              result = subprocess.run(
+                  ["gh", *args],
+                  input=input_value,
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  raise RuntimeError(
+                      "gh command failed: " + " ".join(args) + "\n" + result.stderr.strip()
+                  )
+              return result.stdout
+
+          def api(path):
+              return json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json", path)
+              )
+
+          def api_json(method, path, payload):
+              return json.loads(
+                  gh(
+                      "api",
+                      "--method",
+                      method,
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "--input",
+                      "-",
+                      path,
+                      input_value=json.dumps(payload),
+                  )
+              )
+
+          def require_target(snapshot):
+              head = snapshot.get("head") or {}
+              base = snapshot.get("base") or {}
+              if snapshot.get("state") != "open":
+                  print("Target Pull Request is no longer open; nothing to repair.")
+                  raise SystemExit(0)
+              if (head.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target head is not same-repository")
+              if (base.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target base is not same-repository")
+              if head.get("ref") != target_branch:
+                  raise RuntimeError("Target branch changed")
+              if head.get("sha") != expected_head:
+                  print("Target head already moved; exact repair is no longer applicable.")
+                  raise SystemExit(0)
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one exact replacement target, found {count}")
+              return text.replace(old, new, 1)
+
+          require_target(api(f"repos/{repository}/pulls/{pr_number}"))
+          commit = api(f"repos/{repository}/git/commits/{expected_head}")
+          tree_sha = (commit.get("tree") or {}).get("sha")
+          if not tree_sha:
+              raise RuntimeError("Expected commit has no tree")
+          tree = api(f"repos/{repository}/git/trees/{tree_sha}?recursive=1")
+          by_path = {
+              item.get("path"): item
+              for item in tree.get("tree") or []
+              if item.get("path") in target_paths
+          }
+          if set(by_path) != set(target_paths):
+              raise RuntimeError("Expected tree does not contain the exact two target paths")
+
+          contents = {}
+          for path in target_paths:
+              entry = by_path[path]
+              if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
+                  raise RuntimeError(f"Unexpected target type or mode for {path}")
+              payload = api(f"repos/{repository}/contents/{path}?ref={expected_head}")
+              if payload.get("sha") != entry.get("sha") or payload.get("encoding") != "base64":
+                  raise RuntimeError(f"Immutable blob/tree binding failed for {path}")
+              encoded = "".join((payload.get("content") or "").splitlines())
+              contents[path] = base64.b64decode(encoded.encode("ascii"), validate=True).decode("utf-8")
+
+          runtime = contents[runtime_path]
+          helper_marker = '''def stop_report(
+    pr: dict[str, Any],
+    issue_number: int | None,
+    reason: str,
+    detail: str,
+    close: bool = False,
+) -> None:
+'''
+          helper_replacement = '''def _revalidate_stop_reason(
+    pr_number: int,
+    sha: str,
+    issue_number: int | None,
+    reason: str,
+) -> dict[str, Any]:
+    live = _live_pr(pr_number, sha)
+    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
+        raise RuntimeError("terminal mergeability changed before stop mutation")
+    if reason in {"UNAUTHORIZED_CHANGED_PATH", "UNAUTHORIZED_PROTECTED_PATH"}:
+        fresh_issue_number, _, _, fresh_reason = source_and_scope(live)
+        if fresh_issue_number != issue_number or fresh_reason != reason:
+            raise RuntimeError(
+                f"{reason} is no longer supported immediately before stop mutation"
+            )
+    return live
+
+
+def stop_report(
+    pr: dict[str, Any],
+    issue_number: int | None,
+    reason: str,
+    detail: str,
+    close: bool = False,
+) -> None:
+'''
+          runtime = replace_once(
+              runtime, helper_marker, helper_replacement, "insert stop revalidation helper"
+          )
+
+          old_stop = '''    audit = self_resolution_audit(pr, issue_number, reason)
+    live = _live_pr(pr_number, sha)
+    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
+        raise RuntimeError("terminal mergeability changed before stop persistence")
+    path = internal_stop_record_path(pr_number, sha, reason)
+    content = canonical_internal_stop_record(
+        pr_number=pr_number,
+        issue_number=issue_number,
+        sha=sha,
+        reason=reason,
+        detail=detail,
+        audit=audit,
+    )
+    _live_pr(pr_number, sha)
+    persist_internal_stop_record(path, content, reason, pr_number)
+    if close:
+        _live_pr(pr_number, sha)
+        gh("pr", "close", str(pr_number), "--repo", REPO)
+'''
+          new_stop = '''    audit = self_resolution_audit(pr, issue_number, reason)
+    _revalidate_stop_reason(pr_number, sha, issue_number, reason)
+    path = internal_stop_record_path(pr_number, sha, reason)
+    content = canonical_internal_stop_record(
+        pr_number=pr_number,
+        issue_number=issue_number,
+        sha=sha,
+        reason=reason,
+        detail=detail,
+        audit=audit,
+    )
+    _revalidate_stop_reason(pr_number, sha, issue_number, reason)
+    persist_internal_stop_record(path, content, reason, pr_number)
+    if close:
+        _revalidate_stop_reason(pr_number, sha, issue_number, reason)
+        gh("pr", "close", str(pr_number), "--repo", REPO)
+'''
+          runtime = replace_once(runtime, old_stop, new_stop, "replace stop mutation gate")
+
+          old_merge = '''        merge_candidate = _live_pr(pr_number, sha)
+        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+            merge_candidate
+        ):
+            continue
+        final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)
+        if final_issue_number != issue_number or final_scope_error:
+            continue
+        merge_candidate = _live_pr(pr_number, sha)
+        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+            merge_candidate
+        ):
+            continue
+        gh(
+'''
+          new_merge = '''        merge_candidate = _live_pr(pr_number, sha)
+        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
+            merge_candidate
+        ):
+            continue
+        final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)
+        if final_issue_number != issue_number or final_scope_error:
+            continue
+        if not exact_codex_clean(pr_number, sha):
+            continue
+        merge_candidate = _live_pr(pr_number, sha)
+        if (
+            merge_candidate.get("mergeable") is not True
+            or not trusted_candidate(merge_candidate)
+            or parse_issue_number(merge_candidate.get("body") or "") != issue_number
+        ):
+            continue
+        if not exact_codex_clean(pr_number, sha):
+            continue
+        merge_candidate = _live_pr(pr_number, sha)
+        if (
+            merge_candidate.get("mergeable") is not True
+            or not trusted_candidate(merge_candidate)
+            or parse_issue_number(merge_candidate.get("body") or "") != issue_number
+        ):
+            continue
+        gh(
+'''
+          runtime = replace_once(runtime, old_merge, new_merge, "replace final merge gate")
+          compile(runtime, runtime_path, "exec")
+
+          tests = contents[test_path]
+          old_signature = '''    def _run_final_gate(self, snapshots, source_result):
+        with (
+'''
+          new_signature = '''    def _run_final_gate(
+        self, snapshots, source_result, codex_clean_results=None
+    ):
+        codex_clean_results = codex_clean_results or [True, True, True]
+        with (
+'''
+          tests = replace_once(tests, old_signature, new_signature, "extend final gate helper")
+          tests = replace_once(
+              tests,
+              '''            patch.object(self.runtime, "exact_codex_clean", return_value=True),
+''',
+              '''            patch.object(
+                self.runtime,
+                "exact_codex_clean",
+                side_effect=codex_clean_results,
+            ),
+''',
+              "make exact Codex results sequence-aware",
+          )
+          tests = replace_once(
+              tests,
+              '''            [clean, clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        merge_calls = [
+''',
+              '''            [clean, clean, clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        merge_calls = [
+''',
+              "extend clean final gate snapshots",
+          )
+
+          stop_tests = '''
+
+class StopMutationRevalidationTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+        self.candidate = {
+            "number": PR_NUMBER,
+            "head": {"sha": SHA},
+            "mergeable": True,
+        }
+
+    def test_cleared_authorization_reason_fails_closed(self):
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(9, {"number": 9}, ["docs/probe.md"], None),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no longer supported"):
+                self.runtime._revalidate_stop_reason(
+                    PR_NUMBER, SHA, 9, "UNAUTHORIZED_CHANGED_PATH"
+                )
+
+    def test_stop_report_revalidates_before_persist_and_close(self):
+        with (
+            patch.object(self.runtime, "self_resolution_audit", return_value={}),
+            patch.object(
+                self.runtime,
+                "_revalidate_stop_reason",
+                return_value=self.candidate,
+            ) as revalidate,
+            patch.object(
+                self.runtime,
+                "canonical_internal_stop_record",
+                return_value="{}\\n",
+            ),
+            patch.object(self.runtime, "persist_internal_stop_record") as persist,
+            patch.object(self.runtime, "gh") as gh,
+        ):
+            self.runtime.stop_report(
+                self.candidate,
+                9,
+                "UNAUTHORIZED_CHANGED_PATH",
+                "blocked",
+                close=True,
+            )
+        self.assertEqual(revalidate.call_count, 3)
+        persist.assert_called_once()
+        gh.assert_called_once_with("pr", "close", str(PR_NUMBER), "--repo", "example/foundation")
+'''
+          tests = replace_once(
+              tests,
+              '''
+
+class FinalMergeGateRevalidationTest(unittest.TestCase):
+''',
+              stop_tests + '''
+
+class FinalMergeGateRevalidationTest(unittest.TestCase):
+''',
+              "add stop mutation tests",
+          )
+
+          final_tests = '''
+    def test_late_source_issue_link_edit_blocks_merge(self):
+        clean = self._candidate()
+        edited = self._candidate()
+        edited["body"] = "Closes #10"
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean, edited],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+    def test_late_exact_sha_codex_blocker_blocks_merge(self):
+        clean = self._candidate()
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+            codex_clean_results=[True, False],
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+'''
+          tests = replace_once(
+              tests,
+              '''
+
+if __name__ == "__main__":
+''',
+              "\n" + final_tests + '''
+if __name__ == "__main__":
+''',
+              "add late race regression tests",
+          )
+          compile(tests, test_path, "exec")
+
+          repaired = {runtime_path: runtime, test_path: tests}
+          live_before_objects = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(live_before_objects)
+
+          tree_entries = []
+          for path in target_paths:
+              blob = api_json(
+                  "POST",
+                  f"repos/{repository}/git/blobs",
+                  {"content": repaired[path], "encoding": "utf-8"},
+              )
+              tree_entries.append(
+                  {
+                      "path": path,
+                      "mode": by_path[path]["mode"],
+                      "type": "blob",
+                      "sha": blob["sha"],
+                  }
+              )
+          new_tree = api_json(
+              "POST",
+              f"repos/{repository}/git/trees",
+              {"base_tree": tree_sha, "tree": tree_entries},
+          )
+          new_commit = api_json(
+              "POST",
+              f"repos/{repository}/git/commits",
+              {
+                  "message": "Close final stop and merge revalidation races",
+                  "tree": new_tree["sha"],
+                  "parents": [expected_head],
+              },
+          )
+
+          require_target(api(f"repos/{repository}/pulls/{pr_number}"))
+          api_json(
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{target_branch}",
+              {"sha": new_commit["sha"], "force": False},
+          )
+          print(f"Repaired PR #{pr_number} to {new_commit['sha']}.")
+          PY
