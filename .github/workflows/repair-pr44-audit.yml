@@ -1,0 +1,75 @@
+name: Repair PR 44 Remaining Audit Blockers
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-44-remaining-audit
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      TARGET_PR: "44"
+      TARGET_BRANCH: fix/issue-36-human-notice-contract
+      EXPECTED_HEAD: fe927718c7f70edc8cc04e4b5d3350eab93cbdb4
+      REPAIR_HELPER: .github/scripts/repair-pr44-audit.py
+    steps:
+      - name: Load fixed helper from this default-branch commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          helper="$RUNNER_TEMP/repair-pr44-audit.py"
+          metadata=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/contents/$REPAIR_HELPER?ref=$GITHUB_SHA")
+          encoding=$(printf '%s' "$metadata" | jq -r .encoding)
+          if [ "$encoding" != "base64" ]; then
+            echo "Unexpected helper encoding: $encoding" >&2
+            exit 1
+          fi
+          printf '%s' "$metadata" \
+            | jq -r .content \
+            | tr -d '\n' \
+            | base64 --decode > "$helper"
+
+          python3 - "$helper" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          replacements = (
+              (
+                  "    if len(set(canonical)) != 2:\n",
+                  "    if len({target.casefold() for target in canonical}) != 2:\n",
+              ),
+              (
+                  '            ("owner/repo", "owner/repo"),\n',
+                  '            ("owner/repo", "owner/repo"),\n'
+                  '            ("Owner/Repo", "owner/repo"),\n',
+              ),
+          )
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise RuntimeError("Case-insensitive target repair anchor count is not one")
+              text = text.replace(old, new, 1)
+          compile(text, str(path), "exec")
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 -m py_compile "$helper"
+          python3 "$helper"
