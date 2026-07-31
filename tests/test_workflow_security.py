@@ -148,7 +148,14 @@ class WorkflowSecurityTest(unittest.TestCase):
             "reason not in HUMAN_ONLY_REASONS",
             "provider_ui_action.strip() != expected_action",
             "automatic_resume_condition",
-            "reason-and-SHA bound",
+            'api(f"repos/{REPO}")',
+            'api(f"repos/{REPO}/pulls/{pr_number}")',
+            'f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission"',
+            "AUDIT_WORKFLOWS",
+            "exact_codex_state",
+            'codex_state == "blocking"',
+            'current.get("mergeable") is False',
+            "body = format_human_only_notice(",
         ):
             self.assertIn(required, runtime)
 
