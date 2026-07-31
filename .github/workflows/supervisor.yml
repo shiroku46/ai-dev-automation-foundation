@@ -1,26 +1,31 @@
 name: Trusted Recovery and Merge Supervisor
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   workflow_run:
-    workflows: ["CI", "Unit Tests"]
+    workflows: ["Trusted Exact-SHA Checks"]
     types: [completed]
+  issue_comment:
+    types: [created]
   schedule:
     - cron: "41 * * * *"
   workflow_dispatch:
 
 permissions: {}
 
+concurrency:
+  group: foundation-supervisor
+  cancel-in-progress: false
+
 jobs:
   supervise:
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      github.actor == github.repository_owner ||
+      (vars.AUTOMATION_OWNER != '' && github.actor == vars.AUTOMATION_OWNER)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    concurrency:
-      group: foundation-supervisor
-      cancel-in-progress: false
     permissions:
-      actions: write
+      actions: read
       checks: read
       contents: read
       issues: write
