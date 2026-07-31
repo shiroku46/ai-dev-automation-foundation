@@ -1,26 +1,37 @@
 name: Trusted CI Reconciliation
 
 on:
+  workflow_run:
+    workflows: ["CI", "Unit Tests"]
+    types: [completed]
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
 
 permissions: {}
 
+concurrency:
+  group: trusted-ci-reconcile
+  cancel-in-progress: false
+
 jobs:
-  reconcile:
+  plan:
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      github.actor == github.repository_owner ||
+      (vars.AUTOMATION_OWNER != '' && github.actor == vars.AUTOMATION_OWNER)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    concurrency:
-      group: trusted-ci-reconcile
-      cancel-in-progress: false
     permissions:
-      actions: write
+      actions: read
       checks: read
       contents: read
       pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - name: Dispatch missing exact-SHA checks
+      - name: Select bounded exact-SHA candidates
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -28,60 +39,170 @@ jobs:
           AUTOMATION_OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess
+          import json
+          import os
+          import re
+          import subprocess
+
           repo = os.environ["REPOSITORY"]
           default = os.environ["DEFAULT_BRANCH"]
           owner = os.environ["AUTOMATION_OWNER"]
-          required = {"validate": "ci.yml", "test": "unit-tests.yml"}
-          allowed_prefixes = ("claude-issue-", "automation/", "fix/")
           allowed_authors = {owner, "github-actions[bot]"}
+          allowed_prefixes = ("claude-issue-", "automation/", "fix/")
+          required = {
+              "CI / validate": "ci",
+              "Unit Tests / test": "tests",
+          }
+          max_candidates = 10
+          max_attempts = 3
 
-          def gh(*args):
+          def gh(*args: str) -> str:
               return subprocess.check_output(["gh", *args], text=True)
 
-          pulls = json.loads(gh("api", f"repos/{repo}/pulls?state=open&per_page=50"))
-          candidates = []
-          for pr in sorted(pulls, key=lambda p: int(p["number"])):
-              head = pr.get("head") or {}
-              author = (pr.get("user") or {}).get("login") or ""
+          def api(path: str):
+              return json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json", path)
+              )
+
+          trusted_workflow = api(
+              f"repos/{repo}/actions/workflows/trusted-checks.yml"
+          )
+          trusted_workflow_id = int(trusted_workflow["id"])
+          workflow_runs = api(
+              f"repos/{repo}/actions/workflows/{trusted_workflow_id}/runs?per_page=100"
+          ).get("workflow_runs", [])
+          runs_by_id = {int(run["id"]): run for run in workflow_runs}
+          run_url_pattern = re.compile(
+              rf"^https://github\.com/{re.escape(repo)}/actions/runs/(\d+)$"
+          )
+
+          def trusted_run(run, sha: str) -> bool:
+              return bool(
+                  run
+                  and int(run.get("workflow_id") or 0) == trusted_workflow_id
+                  and run.get("event") == "workflow_call"
+                  and run.get("head_branch") == default
+                  and ((run.get("repository") or {}).get("full_name") == repo)
+                  and run.get("display_title") == f"Trusted checks {sha}"
+              )
+
+          def attestation_present(check, sha: str, kind: str) -> bool:
+              if ((check.get("app") or {}).get("slug") != "github-actions"):
+                  return False
+              if check.get("head_sha") != sha:
+                  return False
+              match = run_url_pattern.fullmatch(check.get("details_url") or "")
+              if not match:
+                  return False
+              run_id = int(match.group(1))
+              run = runs_by_id.get(run_id)
+              if run is None:
+                  try:
+                      run = api(f"repos/{repo}/actions/runs/{run_id}")
+                  except subprocess.CalledProcessError:
+                      return False
+              if not trusted_run(run, sha):
+                  return False
+              if check.get("external_id") != (
+                  f"foundation:trusted-checks:{kind}:{sha}:{run_id}"
+              ):
+                  return False
+              check_status = check.get("status")
+              run_status = run.get("status")
+              if check_status == "completed":
+                  return run_status == "completed"
+              return check_status in {"queued", "in_progress"} and run_status != "completed"
+
+          pulls = api(f"repos/{repo}/pulls?state=open&per_page=50")
+          matrix = []
+          for observed in sorted(pulls, key=lambda item: int(item["number"])):
+              head = observed.get("head") or {}
+              base = observed.get("base") or {}
+              author = (observed.get("user") or {}).get("login") or ""
               if ((head.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if ((base.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if base.get("ref") != default:
                   continue
               if author not in allowed_authors:
                   continue
               if not (head.get("ref") or "").startswith(allowed_prefixes):
                   continue
-              if any(label.get("name") == "ai-no-merge" for label in pr.get("labels") or []):
+              if any(
+                  label.get("name") == "ai-no-merge"
+                  for label in observed.get("labels") or []
+              ):
                   continue
-              candidates.append(pr)
-              if len(candidates) >= 10:
+
+              number = int(observed["number"])
+              current = api(f"repos/{repo}/pulls/{number}")
+              sha = (current.get("head") or {}).get("sha") or ""
+              if sha != (head.get("sha") or ""):
+                  continue
+              current_head = current.get("head") or {}
+              current_base = current.get("base") or {}
+              if ((current_head.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if ((current_base.get("repo") or {}).get("full_name") != repo):
+                  continue
+              if current_base.get("ref") != default:
+                  continue
+              if (current.get("user") or {}).get("login") not in allowed_authors:
+                  continue
+
+              check_runs = api(
+                  f"repos/{repo}/commits/{sha}/check-runs?per_page=100"
+              ).get("check_runs", [])
+              present = set()
+              for name, kind in required.items():
+                  for check in sorted(
+                      check_runs,
+                      key=lambda item: int(item.get("id") or 0),
+                      reverse=True,
+                  ):
+                      if check.get("name") != name:
+                          continue
+                      if attestation_present(check, sha, kind):
+                          present.add(name)
+                          break
+              if present == set(required):
+                  continue
+
+              matching_runs = [
+                  run
+                  for run in workflow_runs
+                  if trusted_run(run, sha)
+              ]
+              if any(run.get("status") != "completed" for run in matching_runs):
+                  continue
+              attempts = sum(
+                  1 for run in matching_runs if run.get("status") == "completed"
+              )
+              if attempts >= max_attempts:
+                  continue
+
+              matrix.append({"target_sha": sha})
+              if len(matrix) >= max_candidates:
                   break
 
-          for observed in candidates:
-              number = observed["number"]
-              snapshot = json.loads(gh("api", f"repos/{repo}/pulls/{number}"))
-              sha = snapshot["head"]["sha"]
-              if sha != observed["head"]["sha"]:
-                  continue
-              if snapshot["head"]["repo"]["full_name"] != repo:
-                  continue
-              if (snapshot.get("user") or {}).get("login") not in allowed_authors:
-                  continue
-
-              check_runs = json.loads(
-                  gh("api", "-H", "Accept: application/vnd.github+json",
-                     f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
-              ).get("check_runs", [])
-              current = set()
-              for check in sorted(check_runs, key=lambda item: int(item.get("id") or 0), reverse=True):
-                  if ((check.get("app") or {}).get("slug") != "github-actions"):
-                      continue
-                  name = check.get("name") or ""
-                  if name in required:
-                      current.add(name)
-
-              for job_name, workflow in required.items():
-                  if job_name in current:
-                      continue
-                  gh("workflow", "run", workflow, "--repo", repo, "--ref", default,
-                     "-f", f"target_ref={sha}")
+          compact = json.dumps(matrix, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={compact}\n")
           PY
+
+  run-trusted-checks:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]' && needs.plan.outputs.matrix != ''
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    uses: ./.github/workflows/trusted-checks.yml
+    with:
+      target_sha: ${{ matrix.target_sha }}
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: read
