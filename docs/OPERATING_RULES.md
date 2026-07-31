@@ -65,7 +65,7 @@ Internal stop records are sanitized canonical JSON on the fixed non-default bran
 automation-stops/pr-<number>/<exact-sha>/<REASON_CODE>.json
 ```
 
-The record contains `notification: false`, no required human action, the reason, Issue, Pull Request, exact SHA, bounded detail, and connected audit evidence. The path and exact content are the idempotency key. Routine internal stops never post Issue or Pull Request comments and never create or edit routine stop labels. A deliberately disposable negative E2E Pull Request may close only after exact record persistence and another live-head check.
+The record contains `notification: false`, no required human action, the reason, Issue, Pull Request, exact SHA, bounded detail, and connected audit evidence. The path and exact content are the idempotency key. Routine internal stops are never posted as Issue or Pull Request comments and never create or edit routine stop labels. A deliberately disposable negative E2E Pull Request may close only after exact record persistence and another live-head check.
 
 Combined Codex comments and reviews are ordered by immutable event time. Codex no-progress is measured from the immutable trusted exact-SHA request comment authored by `github-actions[bot]`. Native-check and mergeability no-progress use relevant immutable exact-SHA evidence, never Pull Request-wide `updated_at`.
 
