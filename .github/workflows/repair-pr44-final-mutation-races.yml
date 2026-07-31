@@ -84,9 +84,52 @@ jobs:
 
               def test_retry_exhaustion_cleared_by_success_fails_closed(self):
           '''
+          import_anchor = '''import os
+          import subprocess
+          '''
+          import_replacement = '''import os
+          import re
+          import subprocess
+          '''
+          target_anchor = '''    if (base.get("repo") or {}).get("full_name") != REPOSITORY:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if head.get("ref") != TARGET_BRANCH:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != EXPECTED_HEAD:
+                  print("Target head moved; exact repair is no longer applicable.")
+                  raise SystemExit(0)
+          '''
+          target_replacement = '''    if (base.get("repo") or {}).get("full_name") != REPOSITORY:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if base.get("ref") != "main":
+                  raise RuntimeError("Target Pull Request base branch changed")
+              if head.get("ref") != TARGET_BRANCH:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != EXPECTED_HEAD:
+                  print("Target head moved; exact repair is no longer applicable.")
+                  raise SystemExit(0)
+              source_link = re.compile(
+                  r"(?im)^\\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#36\\.?\\s*$"
+              )
+              if source_link.search(snapshot.get("body") or "") is None:
+                  raise RuntimeError("Target Pull Request source Issue linkage changed")
+              issue = api(f"repos/{REPOSITORY}/issues/36")
+              if issue.get("pull_request"):
+                  raise RuntimeError("Fixed source is not an Issue")
+              if (issue.get("user") or {}).get("login") != REPOSITORY.split("/", 1)[0]:
+                  raise RuntimeError("Fixed source Issue is not owner-authored")
+              issue_body = issue.get("body") or ""
+              for target_path in TARGET_PATHS:
+                  if target_path not in issue_body:
+                      raise RuntimeError(
+                          f"Fixed source Issue no longer authorizes {target_path}"
+                      )
+          '''
           for old, new, label in (
               (old_guard, new_guard, "source Issue preservation guard"),
               (test_anchor, test_insert, "source Issue regression test"),
+              (import_anchor, import_replacement, "source authorization import"),
+              (target_anchor, target_replacement, "live target authorization"),
           ):
               if text.count(old) != 1:
                   raise RuntimeError(f"{label} anchor count is not exactly one")
