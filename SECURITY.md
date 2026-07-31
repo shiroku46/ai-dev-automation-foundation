@@ -1,20 +1,21 @@
-# Security Policy
+# Security policy
 
 ## Reporting
 
-Do not publish credentials, tokens, private keys, billing information, private logs, or personal data in an Issue or Pull Request.
+Report suspected vulnerabilities privately through GitHub's security-advisory interface. Do not include credentials, token values, private logs, or private repository links in public issues.
 
-Report a suspected vulnerability privately to the repository owner through an appropriate private GitHub contact channel.
+## Trust boundaries
 
-## Public automation boundary
+- Fork pull requests are untrusted.
+- Proposed-branch code must never execute in a write-capable job.
+- `pull_request_target` is intentionally prohibited.
+- Write-capable jobs must use default-branch-controlled code.
+- Every merge decision is bound to the pull request's current exact head SHA.
+- A moved head invalidates checks, review evidence, and prior authorization decisions.
+- Protected paths require explicit trusted Issue authorization.
+- `ai-no-merge` is a hard hold.
+- Secrets, authentication, billing, repository settings, deployment, production mutation, and destructive data operations remain outside ordinary automation.
 
-- Forked and external Pull Requests must receive read-only validation only.
-- Workflows using write permissions, OIDC, or repository mutation must use default-branch-controlled code and must not check out or execute proposed-branch code.
-- Issue and comment commands must validate the authorized actor and exact standalone command syntax.
-- Pull Request eligibility and recovery decisions must use the exact current head SHA and reject stale evidence.
-- Workflow names, repositories, refs, shell commands, and privileged operations must not be selected from untrusted Issue or Pull Request text.
-- Secrets must not be printed, persisted, transferred between jobs, hashed for comparison, or committed.
+## Supported versions
 
-## Supported state
-
-Only the current default branch is supported. Security fixes are handled through a scoped Issue, dedicated branch, exact-SHA validation, independent review, and a guarded Pull Request merge.
+Only the current default branch is supported.

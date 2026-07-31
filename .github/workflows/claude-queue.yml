@@ -1,0 +1,113 @@
+name: Claude Issue Queue
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: Trusted Issue number
+        required: true
+        type: string
+      trusted_supervisor:
+        description: Must be true for default-branch supervisor dispatch
+        required: true
+        type: boolean
+
+concurrency:
+  group: claude-issue-${{ inputs.issue_number || github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prepare:
+    if: |
+      (
+        (github.event_name == 'issues' || github.event_name == 'issue_comment') &&
+        github.actor == vars.AUTOMATION_OWNER
+      ) ||
+      (
+        github.event_name == 'workflow_dispatch' &&
+        inputs.trusted_supervisor == true &&
+        github.ref_name == github.event.repository.default_branch
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: read
+    outputs:
+      issue_number: ${{ steps.guard.outputs.issue_number }}
+      should_run: ${{ steps.guard.outputs.should_run }}
+    steps:
+      - id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          DISPATCH_ISSUE: ${{ inputs.issue_number }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          event_name = os.environ["EVENT_NAME"]
+          event = json.loads(Path(os.environ["EVENT_PATH"]).read_text())
+          trigger = "/claude-run"
+          issue_number = ""
+          allowed = False
+          if event_name == "issue_comment":
+              issue = event.get("issue") or {}
+              body = ((event.get("comment") or {}).get("body") or "")
+              issue_number = str(issue.get("number") or "")
+              allowed = not issue.get("pull_request") and body.strip() == trigger
+          elif event_name == "issues":
+              issue = event.get("issue") or {}
+              issue_number = str(issue.get("number") or "")
+              body = issue.get("body") or ""
+              lines = [line.strip() for line in re.sub(r"<!--.*?-->", "", body, flags=re.S).splitlines() if line.strip()]
+              allowed = bool(lines and lines[0] == trigger)
+          elif event_name == "workflow_dispatch":
+              issue_number = os.environ.get("DISPATCH_ISSUE", "")
+              allowed = issue_number.isdigit()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"issue_number={issue_number}\n")
+              out.write(f"should_run={str(allowed).lower()}\n")
+          PY
+
+  implement:
+    needs: prepare
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - id: claude
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          base_branch: ${{ github.event.repository.default_branch }}
+          branch_prefix: claude-issue-${{ needs.prepare.outputs.issue_number }}-
+          track_progress: true
+          prompt: |
+            Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written.
+            Read AGENTS.md, CLAUDE.md, SECURITY.md, and docs/OPERATING_RULES.md.
+            Change only authorized paths. Do not execute repository code, merge, deploy,
+            access another repository, reveal Secrets, or change repository settings.
+          claude_args: |
+            --max-turns 40
+            --allowedTools "Read,Write,Edit,Glob,Grep"
+      - name: Require generated branch
+        env:
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+        run: test -n "$BRANCH"
