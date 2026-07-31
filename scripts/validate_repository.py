@@ -11,21 +11,12 @@ SOURCE_MARKER = ROOT / "tests/test_bootstrap.py"
 SOURCE_GENERATOR = ROOT / "bootstrap/generator.py"
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 REQUIRED = {
-    "README.md",
-    "LICENSE",
-    "SECURITY.md",
-    "AGENTS.md",
-    "CLAUDE.md",
-    "scripts/public_export_guard.py",
-    "scripts/ai_recovery_supervisor.py",
-    "scripts/supervisor_policy.py",
-    "scripts/supervisor_runtime.py",
-    ".github/workflows/ci.yml",
-    ".github/workflows/unit-tests.yml",
-    ".github/workflows/trusted-checks.yml",
-    ".github/workflows/claude-queue.yml",
-    ".github/workflows/ci-reconcile.yml",
-    ".github/workflows/supervisor.yml",
+    "README.md", "LICENSE", "SECURITY.md", "AGENTS.md", "CLAUDE.md",
+    "scripts/public_export_guard.py", "scripts/ai_recovery_supervisor.py",
+    "scripts/supervisor_policy.py", "scripts/supervisor_runtime.py",
+    ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
+    ".github/workflows/trusted-checks.yml", ".github/workflows/claude-queue.yml",
+    ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
 }
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
 
@@ -88,30 +79,18 @@ def main() -> int:
 
     for name in ("ci.yml", "unit-tests.yml"):
         text = workflow(name)
-        require_all(
-            text,
-            ("\n  pull_request:\n", "permissions:\n  contents: read", "persist-credentials: false"),
-            name,
-        )
+        require_all(text, ("\n  pull_request:\n", "permissions:\n  contents: read", "persist-credentials: false"), name)
         for forbidden in ("secrets.", "id-token: write", "checks: write", "statuses: write", "actions: write", "contents: write"):
             if forbidden in text:
                 fail(f"{name}: forbidden contributor capability {forbidden}")
-    ci = workflow("ci.yml")
-    require_all(ci, ("Psych.parse_stream", "documents.length == 1"), "CI YAML parsing")
+    require_all(workflow("ci.yml"), ("Psych.parse_stream", "documents.length == 1"), "CI YAML parsing")
 
     trusted = workflow("trusted-checks.yml")
-    require_all(
-        trusted,
-        (
-            "run-name: Trusted checks ${{ inputs.target_sha }}",
-            "\n  workflow_dispatch:\n",
-            "WORKFLOW_REF: ${{ github.workflow_ref }}",
-            "WORKFLOW_SHA: ${{ github.workflow_sha }}",
-            "name: CI / validate",
-            "name: Unit Tests / test",
-        ),
-        "trusted checks",
-    )
+    require_all(trusted, (
+        "run-name: Trusted checks ${{ inputs.target_sha }}", "\n  workflow_dispatch:\n",
+        "WORKFLOW_REF: ${{ github.workflow_ref }}", "WORKFLOW_SHA: ${{ github.workflow_sha }}",
+        "name: CI / validate", "name: Unit Tests / test",
+    ), "trusted checks")
     for forbidden in ("workflow_call:", "checks: write", "/check-runs", '"external_id"', "finalize:", "statuses: write"):
         if forbidden in trusted:
             fail(f"trusted workflow has forbidden metadata path: {forbidden}")
@@ -120,97 +99,52 @@ def main() -> int:
     for forbidden in ("issues: write", "checks: write", "actions/checkout@", "secrets."):
         if forbidden in authorize:
             fail(f"trusted authorize has forbidden capability: {forbidden}")
-    for block in (
-        job_block(trusted, "validate_target", "test_target"),
-        job_block(trusted, "test_target"),
-    ):
+    for block in (job_block(trusted, "validate_target", "test_target"), job_block(trusted, "test_target")):
         require_all(block, ("permissions:\n      contents: read", "actions/checkout@", "persist-credentials: false", 'test "$(git rev-parse HEAD)" = "$TARGET_SHA"'), "trusted candidate job")
         for forbidden in ("checks: write", "id-token: write", "secrets.", "issues: write"):
             if forbidden in block:
                 fail(f"trusted candidate job has forbidden capability: {forbidden}")
 
     queue = workflow("claude-queue.yml")
-    require_all(
-        queue,
-        (
-            "github.actor == github.repository_owner",
-            "github.actor == vars.AUTOMATION_OWNER",
-            'body.strip() == trigger',
-            "trusted_run_id",
-            "actions/runs/{run_id}",
-        ),
-        "Queue",
-    )
+    require_all(queue, (
+        "github.actor == github.repository_owner", "github.actor == vars.AUTOMATION_OWNER",
+        'body.strip() == trigger', "trusted_run_id", "actions/runs/{run_id}",
+    ), "Queue")
     if "github.triggering_actor" in queue:
         fail("Queue must not depend on github.triggering_actor")
 
     reconcile = workflow("ci-reconcile.yml")
-    require_all(
-        reconcile,
-        (
-            'workflows: ["CI", "Unit Tests"]',
-            "python -m scripts.supervisor_runtime discover",
-            "gh workflow run trusted-checks.yml",
-            '--ref "$DEFAULT_BRANCH"',
-            '-f "target_sha=$TARGET_SHA"',
-            "actions: write",
-            "max-parallel: 2",
-        ),
-        "reconciliation",
-    )
+    require_all(reconcile, (
+        'workflows: ["CI", "Unit Tests"]', "python -m scripts.supervisor_runtime discover",
+        "gh workflow run trusted-checks.yml", '--ref "$DEFAULT_BRANCH"',
+        '-f "target_sha=$TARGET_SHA"', "actions: write", "max-parallel: 2",
+    ), "reconciliation")
     if "statuses: write" in reconcile or "/statuses/" in reconcile:
         fail("reconciliation must not publish orphan statuses")
 
     supervisor = workflow("supervisor.yml")
-    require_all(
-        supervisor,
-        (
-            '"Trusted Exact-SHA Checks"',
-            "ref: ${{ github.event.repository.default_branch }}",
-            "persist-credentials: false",
-            "contents: write",
-        ),
-        "supervisor workflow",
-    )
+    require_all(supervisor, (
+        '"Trusted Exact-SHA Checks"', "ref: ${{ github.event.repository.default_branch }}",
+        "persist-credentials: false", "contents: write",
+    ), "supervisor workflow")
     if "\n  pull_request:\n" in supervisor or "secrets." in supervisor or "id-token: write" in supervisor:
         fail("write-capable supervisor is not default-branch/fork safe")
 
     runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
-    require_all(
-        runtime,
-        (
-            "trusted_workflow_id()",
-            "current_default_sha()",
-            'run.get("event") != "workflow_dispatch"',
-            'run.get("display_title") != f"Trusted checks {sha}"',
-            "trusted_runs_for_sha",
-            "trusted_run_jobs",
-            'actions/runs/{run_id}/jobs?filter=all',
-            "ATTESTATION_JOB_NAMES",
-            "_complete_successful_job_set",
-            "previous_filename",
-            "exact_codex_evidence",
-            "MAX_ATTESTATION_ATTEMPTS",
-            "merge_method=squash",
-            'f"sha={sha}"',
-            'INTERNAL_STOP_BRANCH = "automation-internal-stops"',
-            'INTERNAL_STOP_ROOT = "automation-stops"',
-            "internal_stop_record_path",
-            'return f"{INTERNAL_STOP_ROOT}/pr-",
-            "canonical_internal_stop_record",
-            "ensure_internal_stop_branch",
-            "persist_internal_stop_record",
-            "latest_successful_attestation_timestamp",
-            "request_timestamp",
-            'f"repos/{REPO}/commits/{sha}/check-runs?per_page=100"',
-            'f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission"',
-            "AUDIT_WORKFLOWS",
-            "initial_and_final_head_confirmed=true",
-            '"notification": False',
-            '"required_human_action": None',
-        ),
-        "runtime",
-    )
+    require_all(runtime, (
+        "trusted_workflow_id()", "current_default_sha()", 'run.get("event") != "workflow_dispatch"',
+        'run.get("display_title") != f"Trusted checks {sha}"', "trusted_runs_for_sha",
+        "trusted_run_jobs", 'actions/runs/{run_id}/jobs?filter=all', "ATTESTATION_JOB_NAMES",
+        "_complete_successful_job_set", "previous_filename", "exact_codex_evidence",
+        "MAX_ATTESTATION_ATTEMPTS", "merge_method=squash", 'f"sha={sha}"',
+        'INTERNAL_STOP_BRANCH = "automation-internal-stops"', 'INTERNAL_STOP_ROOT = "automation-stops"',
+        "internal_stop_record_path", "return f\"{INTERNAL_STOP_ROOT}/pr-", "canonical_internal_stop_record",
+        "ensure_internal_stop_branch", "persist_internal_stop_record",
+        "latest_successful_attestation_timestamp", "request_timestamp",
+        'f"repos/{REPO}/commits/{sha}/check-runs?per_page=100"',
+        'f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission"', "AUDIT_WORKFLOWS",
+        "initial_and_final_head_confirmed=true", '"notification": False', '"required_human_action": None',
+    ), "runtime")
     for forbidden in ("external_id", "run_id_from_details_url", "/commits/{sha}/status"):
         if forbidden in runtime:
             fail(f"runtime trusts prohibited custom metadata: {forbidden}")
@@ -223,29 +157,17 @@ def main() -> int:
     request = function_block(runtime, "request_codex", "_evidence_anchor")
     require_all(request, ('get("login") == ACTIONS_LOGIN', 'item.get("created_at") == item.get("updated_at")'), "Codex request dedupe")
     notice = function_block(runtime, "human_only_notice", "discover_targets")
-    require_all(
-        notice,
-        (
-            "format_human_only_notice",
-            "_validated_notice_destination",
-            "self_resolution_audit",
-            "ACTIONS_LOGIN",
-            'item.get("created_at") == item.get("updated_at")',
-            "marker",
-        ),
-        "human-only notice",
-    )
+    require_all(notice, (
+        "format_human_only_notice", "_validated_notice_destination", "self_resolution_audit",
+        "ACTIONS_LOGIN", 'item.get("created_at") == item.get("updated_at")', "marker",
+    ), "human-only notice")
     supervise = function_block(runtime, "supervise", "main")
     if 'pr.get("updated_at")' in supervise or 'pr["updated_at"]' in supervise:
         fail("no-progress must not use Pull Request-wide updated_at")
-    require_all(
-        supervise,
-        (
-            'minutes_since(codex.get("request_timestamp"))',
-            "latest_successful_attestation_timestamp(attempts)",
-        ),
-        "no-progress timing",
-    )
+    require_all(supervise, (
+        'minutes_since(codex.get("request_timestamp"))',
+        "latest_successful_attestation_timestamp(attempts)",
+    ), "no-progress timing")
 
     checklist = ROOT / "INSTALL_CHECKLIST.md"
     generated_target = checklist.is_file() and GENERATED_TARGET_MARKER in checklist.read_text(encoding="utf-8")
@@ -257,20 +179,12 @@ def main() -> int:
         if not SOURCE_GENERATOR.is_file():
             fail("Foundation source checkout is missing bootstrap/generator.py")
         generator = SOURCE_GENERATOR.read_text(encoding="utf-8")
-        require_all(
-            generator,
-            (
-                '".github/workflows/trusted-checks.yml"',
-                '"README.md"',
-                '"LICENSE"',
-                "GENERATED_TARGET_MARKER",
-                "automation-internal-stops",
-                "never posted as Issue or Pull Request comments",
-                "immutable trusted request timestamp",
-                "github-actions[bot]",
-            ),
-            "Bootstrap parity",
-        )
+        require_all(generator, (
+            '".github/workflows/trusted-checks.yml"', '"README.md"', '"LICENSE"',
+            "GENERATED_TARGET_MARKER", "automation-internal-stops",
+            "never posted as Issue or Pull Request comments", "immutable trusted request timestamp",
+            "github-actions[bot]",
+        ), "Bootstrap parity")
     else:
         fail("repository identity is ambiguous: no source marker or generated-target marker")
 
