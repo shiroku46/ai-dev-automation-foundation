@@ -39,48 +39,36 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("documents.length == 1", ci)
         self.assertNotIn("pip install", ci)
 
-    def test_trusted_attestation_publishes_completed_checks_after_read_only_jobs(self):
+    def test_trusted_attestation_uses_github_owned_run_job_evidence(self):
         text = (ROOT / ".github/workflows/trusted-checks.yml").read_text(encoding="utf-8")
         self.assertIn("run-name: Trusted checks ${{ inputs.target_sha }}", text)
         self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("workflow_call:", text)
         self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", text)
         self.assertIn("WORKFLOW_SHA: ${{ github.workflow_sha }}", text)
-        self.assertIn("CI / validate", text)
-        self.assertIn("Unit Tests / test", text)
-        self.assertIn('"status": "completed"', text)
-        self.assertIn('"external_id"', text)
-        self.assertIn('"--input"', text)
-        self.assertNotIn("status=in_progress", text)
-        self.assertNotIn("--method PATCH", text)
+        self.assertIn("name: CI / validate", text)
+        self.assertIn("name: Unit Tests / test", text)
+        self.assertNotIn("checks: write", text)
+        self.assertNotIn("/check-runs", text)
+        self.assertNotIn('"external_id"', text)
+        self.assertNotIn("finalize:", text)
 
         authorize = text.split("  authorize:\n", 1)[1].split("  validate_target:\n", 1)[0]
         validate = text.split("  validate_target:\n", 1)[1].split("  test_target:\n", 1)[0]
-        test = text.split("  test_target:\n", 1)[1].split("  finalize:\n", 1)[0]
-        finalize = text.split("  finalize:\n", 1)[1]
+        test = text.split("  test_target:\n", 1)[1]
 
         self.assertIn("contents: read", authorize)
-        self.assertIn("issues: write", authorize)
         self.assertIn("pull-requests: read", authorize)
+        self.assertNotIn("issues: write", authorize)
         self.assertNotIn("checks: write", authorize)
-        self.assertIn("foundation-attestation-authorization", authorize)
+        self.assertNotIn("actions/checkout", authorize)
         self.assertIn("pr_number=", authorize)
-
-        for metadata_job in (authorize, finalize):
-            self.assertNotIn("actions/checkout", metadata_job)
-            self.assertNotIn("python scripts/", metadata_job)
-            self.assertNotIn("unittest", metadata_job)
-
-        self.assertIn("checks: write", finalize)
-        self.assertIn("issues: write", finalize)
-        self.assertIn("foundation-attestation-finalization", finalize)
-        self.assertIn("ATTESTATION_METADATA_PUBLICATION_FAILED", finalize)
-        self.assertIn('f"foundation:{run_id}:{name}:{target_sha}"', finalize)
 
         for proposed_code_job in (validate, test):
             self.assertIn("permissions:\n      contents: read", proposed_code_job)
             self.assertIn("actions/checkout", proposed_code_job)
             self.assertIn('test "$(git rev-parse HEAD)" = "$TARGET_SHA"', proposed_code_job)
+            self.assertIn("persist-credentials: false", proposed_code_job)
             self.assertNotIn("checks: write", proposed_code_job)
             self.assertNotIn("id-token: write", proposed_code_job)
             self.assertNotIn("secrets.", proposed_code_job)
@@ -109,7 +97,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn("pull_request:\n", text)
         self.assertNotIn("uses: ./.github/workflows/", text)
 
-    def test_supervisor_runs_after_trusted_checks_and_keeps_provenance_gates(self):
+    def test_supervisor_uses_exact_run_job_attestation_and_provenance_gates(self):
         workflow = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
@@ -120,7 +108,6 @@ class WorkflowSecurityTest(unittest.TestCase):
             "current_default_sha()",
             'run.get("event") != "workflow_dispatch"',
             'run.get("display_title") != f"Trusted checks {sha}"',
-            'f"foundation:{run_id}:{name}:{sha}"',
             "reviewThreads(first:100,after:$cursor)",
             "hasNextPage",
             "marker = f\"<!-- foundation-codex-request:{sha} -->\"",
@@ -131,10 +118,16 @@ class WorkflowSecurityTest(unittest.TestCase):
             "api_list",
             "previous_filename",
             "trusted_runs_for_sha",
+            "trusted_run_jobs",
+            "ATTESTATION_JOB_NAMES",
+            "_complete_successful_job_set",
+            'actions/runs/{run_id}/jobs?filter=all',
         ):
             self.assertIn(required, runtime)
         self.assertNotIn("@lru_cache(maxsize=1)\ndef current_default_sha", runtime)
-        self.assertNotIn("referenced_workflows", runtime)
+        self.assertNotIn("/check-runs", runtime)
+        self.assertNotIn("external_id", runtime)
+        self.assertNotIn("run_id_from_details_url", runtime)
         self.assertNotIn("/commits/{sha}/status", runtime)
 
     def test_codex_request_deduplication_ignores_untrusted_marker_comments(self):
@@ -151,7 +144,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("E2E_AUTO_CLOSE_MARKER in issue_body", runtime)
         self.assertIn('"UNTRUSTED_SOURCE_ISSUE"', runtime)
 
-    def test_runtime_candidate_and_details_url_policy(self):
+    def test_runtime_candidate_policy(self):
         environment = {
             "REPOSITORY": "example/foundation",
             "DEFAULT_BRANCH": "main",
@@ -174,9 +167,6 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertFalse(runtime.trusted_candidate(wrong_base))
         untrusted_author = {**trusted, "user": {"login": "contributor"}}
         self.assertFalse(runtime.trusted_candidate(untrusted_author))
-        run_base = "https://github.com/" + "example/foundation/" + "actions/runs/"
-        self.assertEqual(runtime.run_id_from_details_url(run_base + "12345"), 12345)
-        self.assertIsNone(runtime.run_id_from_details_url(run_base + "12345/job/7"))
 
 
 if __name__ == "__main__":

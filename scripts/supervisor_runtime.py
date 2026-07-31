@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Trusted default-branch supervisor and attestation discovery runtime.
+"""Trusted default-branch supervisor and immutable run/job attestation runtime.
 
 Write-capable jobs execute this module only from the repository default branch.
 Candidate code is executed only by read-only jobs in the fixed trusted workflow.
+GitHub-owned workflow-run and workflow-job records are the attestation source; this
+module never relies on candidate-authored statuses or custom check runs.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from functools import lru_cache
@@ -25,7 +26,8 @@ DEFAULT_BRANCH = os.environ["DEFAULT_BRANCH"]
 AUTOMATION_OWNER = os.environ["AUTOMATION_OWNER"]
 REPOSITORY_OWNER = REPO.split("/", 1)[0]
 TRUSTED_ISSUE_AUTHORS = {AUTOMATION_OWNER, REPOSITORY_OWNER}
-ATTESTATION_NAMES = ("CI / validate", "Unit Tests / test")
+ATTESTATION_JOB_NAMES = ("CI / validate", "Unit Tests / test")
+ATTESTATION_NAMES = ATTESTATION_JOB_NAMES
 MAX_CANDIDATES = 10
 MAX_CHANGED_FILES = 100
 MAX_ATTESTATION_ATTEMPTS = 3
@@ -36,10 +38,7 @@ CODEX_LOGIN = "chatgpt-codex-connector[bot]"
 ACTIONS_LOGIN = "github-actions[bot]"
 STOP_PREFIX = "<!-- foundation-stop:"
 E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"
-RUN_URL = re.compile(
-    rf"^https://github\.com/{re.escape(REPO)}/actions/runs/(?P<run_id>[0-9]+)$"
-)
-ACTIVE_RUN_STATES = {"queued", "in_progress", "waiting", "pending"}
+ACTIVE_RUN_STATES = {"queued", "in_progress", "waiting", "pending", "requested"}
 
 
 def gh(*args: str) -> str:
@@ -92,7 +91,6 @@ def api_key_pages(path: str, key: str) -> list[dict[str, Any]]:
 
 
 def current_default_sha() -> str:
-    """Return a fresh default-branch SHA for every security decision."""
     return str(api(f"repos/{REPO}/commits/{DEFAULT_BRANCH}")["sha"])
 
 
@@ -154,9 +152,9 @@ def stop_report(
             f"- pull_request: `#{pr['number']}`\n"
             f"- exact_head_sha: `{sha}`\n"
             f"- detail: {detail}\n"
-            "- self_resolution_audit: metadata, changed/renamed paths, scope, "
-            "authorization, checks, review, provenance, idempotency, and available "
-            "GitHub permissions were rechecked before stopping.\n",
+            "- self_resolution_audit: repository metadata, workflow-run and job evidence, "
+            "changed/renamed paths, scope, authorization, review, provenance, "
+            "idempotency, and available connected repair paths were rechecked.\n",
         )
     ensure_label(
         int(pr["number"]),
@@ -269,11 +267,6 @@ def trusted_source_issue(issue: dict[str, Any]) -> bool:
     return not issue.get("pull_request") and login in TRUSTED_ISSUE_AUTHORS
 
 
-def run_id_from_details_url(details_url: str) -> int | None:
-    match = RUN_URL.fullmatch(details_url or "")
-    return int(match.group("run_id")) if match else None
-
-
 def trusted_attestation_run(
     run: dict[str, Any], sha: str, *, allow_active: bool
 ) -> bool:
@@ -311,42 +304,69 @@ def trusted_runs_for_sha(sha: str) -> list[dict[str, Any]]:
     return [run for run in runs if trusted_attestation_run(run, sha, allow_active=True)]
 
 
-def attestation_attempts(sha: str) -> list[dict[str, Any]]:
-    check_runs = api_key_pages(
-        f"repos/{REPO}/commits/{sha}/check-runs?per_page=100", "check_runs"
+def trusted_run_jobs(run_id: int) -> list[dict[str, Any]]:
+    return api_key_pages(
+        f"repos/{REPO}/actions/runs/{run_id}/jobs?filter=all&per_page=100",
+        "jobs",
     )
-    grouped: dict[int, dict[str, dict[str, Any]]] = {}
-    for check in check_runs:
-        name = str(check.get("name") or "")
-        if name not in ATTESTATION_NAMES or check.get("head_sha") != sha:
-            continue
-        if ((check.get("app") or {}).get("slug") != "github-actions"):
-            continue
-        run_id = run_id_from_details_url(str(check.get("details_url") or ""))
-        if not run_id:
-            continue
-        if check.get("external_id") != f"foundation:{run_id}:{name}:{sha}":
-            continue
-        grouped.setdefault(run_id, {})[name] = check
 
+
+def _complete_successful_job_set(
+    jobs: list[dict[str, Any]], run_id: int, trusted_workflow_sha: str
+) -> bool:
+    """Require one successful required job bound to the recognized run/ref SHA."""
+    by_name: dict[str, list[dict[str, Any]]] = {
+        name: [] for name in ATTESTATION_JOB_NAMES
+    }
+    for job in jobs:
+        name = str(job.get("name") or "")
+        if name not in by_name:
+            continue
+        if int(job.get("run_id") or 0) != run_id:
+            return False
+        if job.get("head_sha") != trusted_workflow_sha:
+            return False
+        by_name[name].append(job)
+
+    if any(len(matches) != 1 for matches in by_name.values()):
+        return False
+    return all(
+        matches[0].get("status") == "completed"
+        and matches[0].get("conclusion") == "success"
+        for matches in by_name.values()
+    )
+
+
+def attestation_attempts(sha: str) -> list[dict[str, Any]]:
+    """Classify each recognized run using GitHub-owned run/job evidence."""
     attempts: list[dict[str, Any]] = []
     for run in trusted_runs_for_sha(sha):
         run_id = int(run["id"])
-        checks = grouped.get(run_id, {})
-        complete = set(checks) == set(ATTESTATION_NAMES)
-        active = str(run.get("status") or "") in ACTIVE_RUN_STATES
-        success = bool(
-            complete
-            and run.get("status") == "completed"
-            and run.get("conclusion") == "success"
-            and all(
-                check.get("status") == "completed"
-                and check.get("conclusion") == "success"
-                for check in checks.values()
+        status = str(run.get("status") or "")
+        active = status in ACTIVE_RUN_STATES
+        complete = False
+        success = False
+        if not active:
+            trusted_workflow_sha = str(run.get("head_sha") or "")
+            jobs = trusted_run_jobs(run_id)
+            complete = bool(
+                trusted_workflow_sha
+                and _complete_successful_job_set(
+                    jobs, run_id, trusted_workflow_sha
+                )
             )
-        )
+            success = bool(
+                status == "completed"
+                and run.get("conclusion") == "success"
+                and complete
+            )
         attempts.append(
-            {"run_id": run_id, "active": active, "success": success, "complete": complete}
+            {
+                "run_id": run_id,
+                "active": active,
+                "success": success,
+                "complete": complete,
+            }
         )
     return sorted(attempts, key=lambda item: int(item["run_id"]))
 
@@ -481,7 +501,7 @@ def supervise() -> None:
                     pr,
                     issue_number,
                     "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
-                    "Three fixed candidate-bound attestation attempts completed without success.",
+                    "Three fixed candidate-bound workflow attempts completed without one complete successful immutable run/job evidence set.",
                 )
             continue
 

@@ -40,7 +40,9 @@ def render(target: Path, owner: str) -> None:
         f"- [ ] Optionally set repository variable `AUTOMATION_OWNER` to `{owner}`; "
         "the repository owner is the fail-closed default.\n"
         "- [ ] Review protected-change authorization.\n"
-        "- [ ] Confirm the fixed trusted-checks reusable workflow is present.\n"
+        "- [ ] Confirm the fixed default-branch `trusted-checks.yml` workflow is present.\n"
+        "- [ ] Confirm candidate jobs are read-only and publish no custom checks or statuses.\n"
+        "- [ ] Confirm the supervisor validates immutable workflow-run and exact job evidence.\n"
         "- [ ] Configure `CLAUDE_CODE_OAUTH_TOKEN` only through GitHub/provider UI.\n"
         "- [ ] Run export guard, validator, and tests.\n"
         "- [ ] Validate in a disposable E2E repository.\n",

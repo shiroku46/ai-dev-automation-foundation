@@ -17,11 +17,11 @@ concurrency:
 
 jobs:
   authorize:
+    name: Authorize exact candidate
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-      issues: write
       pull-requests: read
     outputs:
       pr_number: ${{ steps.authorize.outputs.pr_number }}
@@ -39,8 +39,6 @@ jobs:
           ACTOR: ${{ github.actor }}
           OWNER: ${{ github.repository_owner }}
           CONFIGURED_OWNER: ${{ vars.AUTOMATION_OWNER }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           python3 - <<'PY'
           import json
@@ -52,76 +50,33 @@ jobs:
           repository = os.environ["REPOSITORY"]
           default_branch = os.environ["DEFAULT_BRANCH"]
           target_sha = os.environ["TARGET_SHA"]
-          run_id = os.environ["RUN_ID"]
-          run_url = os.environ["RUN_URL"]
-          marker = f"<!-- foundation-attestation-authorization:{run_id}:{target_sha} -->"
 
-          def gh(*args: str, input_text: str | None = None) -> str:
+          def gh(*args: str) -> str:
               return subprocess.run(
                   ["gh", *args],
-                  input=input_text,
                   text=True,
                   check=True,
                   capture_output=True,
               ).stdout
 
-          pulls = []
-          pr_number = None
-          if re.fullmatch(r"[0-9a-f]{40}", target_sha):
-              resolved = json.loads(gh("api", f"repos/{repository}/commits/{target_sha}"))
-              if resolved.get("sha") == target_sha:
-                  pulls = json.loads(
-                      gh(
-                          "api",
-                          "-H",
-                          "Accept: application/vnd.github+json",
-                          f"repos/{repository}/commits/{target_sha}/pulls?per_page=100",
-                      )
-                  )
-                  for pull in pulls:
-                      head = pull.get("head") or {}
-                      if (
-                          pull.get("state") == "open"
-                          and head.get("sha") == target_sha
-                          and ((head.get("repo") or {}).get("full_name") == repository)
-                      ):
-                          pr_number = int(pull["number"])
-                          break
-
           def fail(code: str, detail: str) -> None:
-              if pr_number is not None:
-                  comments = json.loads(
-                      gh("api", f"repos/{repository}/issues/{pr_number}/comments?per_page=100")
-                  )
-                  if not any(marker in (item.get("body") or "") for item in comments):
-                      body = (
-                          f"{marker}\n"
-                          "## Trusted attestation authorization failure\n\n"
-                          f"- reason_code: `{code}`\n"
-                          f"- exact_head_sha: `{target_sha}`\n"
-                          f"- workflow_run: {run_url}\n"
-                          f"- detail: {detail}\n"
-                          "- no credential, Secret, or private diagnostic value is included.\n"
-                      )
-                      gh(
-                          "api",
-                          "--method",
-                          "POST",
-                          f"repos/{repository}/issues/{pr_number}/comments",
-                          "-f",
-                          f"body={body}",
-                      )
               print(f"{code}: {detail}", file=sys.stderr)
               raise SystemExit(1)
 
-          if pr_number is None:
-              fail("TARGET_NOT_OPEN_SAME_REPOSITORY_PR", "No open same-repository Pull Request has this exact head SHA.")
+          if not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+              fail("INVALID_TARGET_SHA", "The target must be one full lowercase commit SHA.")
 
-          expected_workflow = f"{repository}/.github/workflows/trusted-checks.yml@refs/heads/{default_branch}"
+          resolved = json.loads(gh("api", f"repos/{repository}/commits/{target_sha}"))
+          if resolved.get("sha") != target_sha:
+              fail("UNRESOLVED_TARGET_SHA", "The target did not resolve to itself.")
+
+          expected_workflow = (
+              f"{repository}/.github/workflows/trusted-checks.yml@refs/heads/{default_branch}"
+          )
           if os.environ["WORKFLOW_REF"] != expected_workflow:
               fail("UNTRUSTED_WORKFLOW_REF", "The workflow was not loaded from the fixed default-branch path.")
           if os.environ.get("GITHUB_REF_NAME") != default_branch:
-              fail("UNTRUSTED_WORKFLOW_REF", "The workflow dispatch ref is not the default branch.")
+              fail("UNTRUSTED_DISPATCH_REF", "The workflow dispatch ref is not the default branch.")
           if os.environ["EVENT_NAME"] != "workflow_dispatch":
               fail("UNTRUSTED_EVENT", "Only workflow_dispatch is accepted.")
 
@@ -136,40 +91,41 @@ jobs:
           if configured_owner:
               allowed_authors.add(configured_owner)
           if os.environ["ACTOR"] not in allowed_authors:
-              fail("UNTRUSTED_DISPATCH_ACTOR", "The dispatch actor is not an authorized owner or GitHub Actions.")
+              fail("UNTRUSTED_DISPATCH_ACTOR", "The dispatch actor is not authorized.")
 
+          pulls = json.loads(
+              gh(
+                  "api",
+                  "-H",
+                  "Accept: application/vnd.github+json",
+                  f"repos/{repository}/commits/{target_sha}/pulls?per_page=100",
+              )
+          )
           allowed_prefixes = ("claude-issue-", "automation/", "fix/")
-          eligible = False
           for pull in pulls:
               head = pull.get("head") or {}
               base = pull.get("base") or {}
               author = (pull.get("user") or {}).get("login") or ""
               labels = {label.get("name") for label in pull.get("labels") or []}
-              if pull.get("state") != "open" or head.get("sha") != target_sha:
-                  continue
-              if ((head.get("repo") or {}).get("full_name") != repository):
-                  continue
-              if ((base.get("repo") or {}).get("full_name") != repository):
-                  continue
-              if base.get("ref") != default_branch:
-                  continue
-              if author not in allowed_authors:
-                  continue
-              if not (head.get("ref") or "").startswith(allowed_prefixes):
-                  continue
-              if "ai-no-merge" in labels:
-                  continue
-              pr_number = int(pull["number"])
-              eligible = True
-              break
-          if not eligible:
-              fail("TARGET_NOT_ELIGIBLE", "The exact head is not an eligible owner/bot same-repository Pull Request.")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"pr_number={pr_number}\n")
+              if (
+                  pull.get("state") == "open"
+                  and head.get("sha") == target_sha
+                  and ((head.get("repo") or {}).get("full_name") == repository)
+                  and ((base.get("repo") or {}).get("full_name") == repository)
+                  and base.get("ref") == default_branch
+                  and author in allowed_authors
+                  and (head.get("ref") or "").startswith(allowed_prefixes)
+                  and "ai-no-merge" not in labels
+              ):
+                  with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                      output.write(f"pr_number={int(pull['number'])}\n")
+                  break
+          else:
+              fail("TARGET_NOT_ELIGIBLE", "No eligible open same-repository Pull Request has this exact head SHA.")
           PY
 
   validate_target:
+    name: CI / validate
     needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -194,6 +150,7 @@ jobs:
       - run: python scripts/validate_repository.py
 
   test_target:
+    name: Unit Tests / test
     needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -212,110 +169,3 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests
-
-  finalize:
-    needs: [authorize, validate_target, test_target]
-    if: always() && needs.authorize.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      checks: write
-      contents: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPOSITORY: ${{ github.repository }}
-      TARGET_SHA: ${{ inputs.target_sha }}
-      PR_NUMBER: ${{ needs.authorize.outputs.pr_number }}
-      VALIDATE_RESULT: ${{ needs.validate_target.result }}
-      TEST_RESULT: ${{ needs.test_target.result }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-      RUN_ID: ${{ github.run_id }}
-    steps:
-      - name: Publish completed immutable attestations without executing proposed code
-        run: |
-          python3 - <<'PY'
-          import datetime
-          import json
-          import os
-          import subprocess
-          import sys
-
-          repository = os.environ["REPOSITORY"]
-          target_sha = os.environ["TARGET_SHA"]
-          pr_number = int(os.environ["PR_NUMBER"])
-          run_id = os.environ["RUN_ID"]
-          run_url = os.environ["RUN_URL"]
-          completed_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-          marker = f"<!-- foundation-attestation-finalization:{run_id}:{target_sha} -->"
-
-          def gh(*args: str, input_data=None) -> str:
-              return subprocess.run(
-                  ["gh", *args],
-                  input=(json.dumps(input_data) if input_data is not None else None),
-                  text=True,
-                  check=True,
-                  capture_output=True,
-              ).stdout
-
-          def report_failure(detail: str) -> None:
-              comments = json.loads(
-                  gh("api", f"repos/{repository}/issues/{pr_number}/comments?per_page=100")
-              )
-              if not any(marker in (item.get("body") or "") for item in comments):
-                  body = (
-                      f"{marker}\n"
-                      "## Trusted attestation finalization failure\n\n"
-                      "- reason_code: `ATTESTATION_METADATA_PUBLICATION_FAILED`\n"
-                      f"- exact_head_sha: `{target_sha}`\n"
-                      f"- workflow_run: {run_url}\n"
-                      f"- detail: {detail}\n"
-                      "- no credential, Secret, or private diagnostic value is included.\n"
-                  )
-                  gh(
-                      "api",
-                      "--method",
-                      "POST",
-                      f"repos/{repository}/issues/{pr_number}/comments",
-                      "-f",
-                      f"body={body}",
-                  )
-
-          conclusions = {
-              "CI / validate": "success" if os.environ["VALIDATE_RESULT"] == "success" else "failure",
-              "Unit Tests / test": "success" if os.environ["TEST_RESULT"] == "success" else "failure",
-          }
-          try:
-              for name, conclusion in conclusions.items():
-                  payload = {
-                      "name": name,
-                      "head_sha": target_sha,
-                      "status": "completed",
-                      "conclusion": conclusion,
-                      "completed_at": completed_at,
-                      "details_url": run_url,
-                      "external_id": f"foundation:{run_id}:{name}:{target_sha}",
-                      "output": {
-                          "title": f"Trusted {name}",
-                          "summary": f"Fixed default-branch exact-SHA validation completed with conclusion: {conclusion}",
-                      },
-                  }
-                  gh(
-                      "api",
-                      "--method",
-                      "POST",
-                      "-H",
-                      "Accept: application/vnd.github+json",
-                      f"repos/{repository}/check-runs",
-                      "--input",
-                      "-",
-                      input_data=payload,
-                  )
-          except subprocess.CalledProcessError as error:
-              detail = (error.stderr or "check-run API failed").strip().splitlines()[-1]
-              report_failure(detail[:500])
-              raise
-
-          if any(value != "success" for value in conclusions.values()):
-              raise SystemExit(1)
-          PY
