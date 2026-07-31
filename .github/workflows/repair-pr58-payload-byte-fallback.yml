@@ -1,0 +1,199 @@
+name: Repair PR 58 Payload Byte Fallback
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "53 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-58-payload-byte-fallback
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Restore exact compressed payload byte without marker coupling
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: "58"
+          TARGET_BRANCH: fix/issue-57-pr44-remaining-gates
+          EXPECTED_HEAD: b32b8867f67952a7ded36a8c180cf14eb6bf792b
+          TARGET_PATH: .github/workflows/repair-pr44-remaining-gates.yml
+        run: |
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import json
+          import os
+          import re
+          import subprocess
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          pr_number = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          target_path = os.environ["TARGET_PATH"]
+          bad_segment = "x6dvMMzcf"
+          good_segment = "x6dvMLzcf"
+
+          def gh(*args, input_value=None):
+              result = subprocess.run(
+                  ["gh", *args],
+                  input=input_value,
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  raise RuntimeError(
+                      "gh command failed: " + " ".join(args) + "\n" + result.stderr.strip()
+                  )
+              return result.stdout
+
+          def api(path):
+              return json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json", path)
+              )
+
+          def api_json(method, path, payload):
+              return json.loads(
+                  gh(
+                      "api",
+                      "--method",
+                      method,
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "--input",
+                      "-",
+                      path,
+                      input_value=json.dumps(payload),
+                  )
+              )
+
+          def require_target(snapshot):
+              head = snapshot.get("head") or {}
+              base = snapshot.get("base") or {}
+              if snapshot.get("state") != "open":
+                  print("Target Pull Request is no longer open; nothing to repair.")
+                  raise SystemExit(0)
+              if (head.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target Pull Request head is not same-repository")
+              if (base.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if head.get("ref") != target_branch:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != expected_head:
+                  print("Target head already moved; exact fallback is no longer applicable.")
+                  raise SystemExit(0)
+
+          pull = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(pull)
+
+          commit = api(f"repos/{repository}/git/commits/{expected_head}")
+          tree_sha = (commit.get("tree") or {}).get("sha")
+          if not tree_sha:
+              raise RuntimeError("Expected commit has no tree")
+          tree = api(f"repos/{repository}/git/trees/{tree_sha}?recursive=1")
+          matches = [
+              item
+              for item in tree.get("tree") or []
+              if item.get("path") == target_path
+          ]
+          if len(matches) != 1:
+              raise RuntimeError("Expected tree does not contain exactly one target path")
+          entry = matches[0]
+          if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
+              raise RuntimeError("Target is not an expected regular text file")
+
+          metadata = api(f"repos/{repository}/contents/{target_path}?ref={expected_head}")
+          if metadata.get("sha") != entry.get("sha") or metadata.get("encoding") != "base64":
+              raise RuntimeError("Immutable target blob/tree binding failed")
+          encoded_content = "".join((metadata.get("content") or "").splitlines())
+          content = base64.b64decode(encoded_content.encode("ascii"), validate=True).decode("utf-8")
+
+          pattern = re.compile(
+              r"(?m)^          printf '%s' '([A-Za-z0-9+/=]+)' \| base64 --decode \| gzip --decompress \| python3$"
+          )
+          found = pattern.findall(content)
+          if len(found) != 1:
+              raise RuntimeError("Expected exactly one compressed payload pipeline")
+          token = found[0]
+          if token.count(bad_segment) != 1 or token.count(good_segment) != 0:
+              raise RuntimeError("Payload does not contain the unique expected corrupted segment")
+          if not token.endswith("==") or len(token) % 4 != 0:
+              raise RuntimeError("Payload does not retain the expected RFC 4648 padding")
+
+          fixed_token = token.replace(bad_segment, good_segment, 1)
+          differences = [
+              index
+              for index, pair in enumerate(zip(token, fixed_token))
+              if pair[0] != pair[1]
+          ]
+          if len(token) != len(fixed_token) or len(differences) != 1:
+              raise RuntimeError("Fallback did not preserve length and change exactly one character")
+          difference = differences[0]
+          if token[difference] != "M" or fixed_token[difference] != "L":
+              raise RuntimeError("Fallback is not the exact M-to-L correction")
+
+          compressed = base64.b64decode(fixed_token.encode("ascii"), validate=True)
+          source = gzip.decompress(compressed).decode("utf-8")
+          compile(source, "<fixed-repair-payload>", "exec")
+
+          repaired, count = pattern.subn(
+              lambda match: match.group(0).replace(token, fixed_token, 1),
+              content,
+          )
+          if count != 1 or repaired == content:
+              raise RuntimeError("Payload replacement was not unique")
+          if repaired.replace(fixed_token, token, 1) != content:
+              raise RuntimeError("Payload replacement changed unrelated content")
+
+          blob = api_json(
+              "POST",
+              f"repos/{repository}/git/blobs",
+              {"content": repaired, "encoding": "utf-8"},
+          )
+          new_tree = api_json(
+              "POST",
+              f"repos/{repository}/git/trees",
+              {
+                  "base_tree": tree_sha,
+                  "tree": [
+                      {
+                          "path": target_path,
+                          "mode": entry["mode"],
+                          "type": "blob",
+                          "sha": blob["sha"],
+                      }
+                  ],
+              },
+          )
+          new_commit = api_json(
+              "POST",
+              f"repos/{repository}/git/commits",
+              {
+                  "message": "Restore exact valid compressed payload byte in PR 58",
+                  "tree": new_tree["sha"],
+                  "parents": [expected_head],
+              },
+          )
+
+          live = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(live)
+          api_json(
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{target_branch}",
+              {"sha": new_commit["sha"], "force": False},
+          )
+          print(f"Repaired PR #{pr_number} to {new_commit['sha']}.")
+          PY
