@@ -53,11 +53,17 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("head_sha=$TARGET_SHA", text)
         self.assertIn("status=in_progress", text)
         self.assertIn("status=completed", text)
+        self.assertIn('f"repos/{repository}/commits/{target_sha}/pulls?per_page=100"', text)
+        self.assertIn('head.get("sha") != target_sha', text)
+        self.assertIn('base.get("ref") != default_branch', text)
+        self.assertIn('author not in allowed_authors', text)
+        self.assertIn('"ai-no-merge" in labels', text)
 
         authorize = text.split("  authorize:\n", 1)[1].split("  validate_target:\n", 1)[0]
         validate = text.split("  validate_target:\n", 1)[1].split("  test_target:\n", 1)[0]
         test = text.split("  test_target:\n", 1)[1].split("  finalize:\n", 1)[0]
         finalize = text.split("  finalize:\n", 1)[1]
+        self.assertIn("pull-requests: read", authorize)
         for metadata_job in (authorize, finalize):
             self.assertIn("checks: write", metadata_job)
             self.assertNotIn("actions/checkout", metadata_job)
@@ -119,6 +125,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             "trusted_runs_for_sha",
         ):
             self.assertIn(required, runtime)
+        self.assertNotIn("@lru_cache(maxsize=1)\ndef current_default_sha", runtime)
         self.assertNotIn("referenced_workflows", runtime)
         self.assertNotIn("/commits/{sha}/status", runtime)
 
