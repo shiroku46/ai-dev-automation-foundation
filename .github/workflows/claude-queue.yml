@@ -90,6 +90,14 @@ jobs:
           issue_number = ""
           allowed = False
 
+          def api(path: str):
+              return json.loads(
+                  subprocess.check_output(
+                      ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
+                      text=True,
+                  )
+              )
+
           if event_name == "issue_comment":
               issue = event.get("issue") or {}
               body = ((event.get("comment") or {}).get("body") or "")
@@ -114,20 +122,30 @@ jobs:
                   run_id = os.environ.get("TRUSTED_RUN_ID", "")
                   trusted = os.environ.get("TRUSTED_SUPERVISOR", "").lower() == "true"
                   if trusted and issue_number.isdigit() and run_id.isdigit():
-                      snapshot = json.loads(
-                          subprocess.check_output(
-                              ["gh", "api", f"repos/{repository}/actions/runs/{run_id}"],
-                              text=True,
-                          )
-                      )
+                      snapshot = api(f"repos/{repository}/actions/runs/{run_id}")
+                      default_sha = api(f"repos/{repository}/commits/{default_branch}")["sha"]
                       expected_path = f".github/workflows/supervisor.yml@{default_branch}"
                       allowed = (
                           (snapshot.get("repository") or {}).get("full_name") == repository
                           and snapshot.get("path") == expected_path
                           and snapshot.get("head_branch") == default_branch
-                          and snapshot.get("status") in {"queued", "in_progress", "completed"}
+                          and snapshot.get("head_sha") == default_sha
+                          and snapshot.get("status") in {"queued", "in_progress"}
                           and snapshot.get("event") in {"workflow_run", "schedule", "workflow_dispatch"}
                       )
+
+          if issue_number.isdigit() and allowed:
+              issue_snapshot = api(f"repos/{repository}/issues/{issue_number}")
+              issue_author = (issue_snapshot.get("user") or {}).get("login") or ""
+              trusted_authors = {owner}
+              if configured_owner:
+                  trusted_authors.add(configured_owner)
+              allowed = (
+                  not issue_snapshot.get("pull_request")
+                  and issue_author in trusted_authors
+              )
+          else:
+              allowed = False
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"issue_number={issue_number}\n")
