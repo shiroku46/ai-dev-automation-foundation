@@ -90,7 +90,8 @@ jobs:
           blob = gh_json("api", f"repos/{repository}/git/blobs/{payload_blob}")
           if blob.get("encoding") != "base64":
               raise SystemExit("Immutable payload blob encoding is unexpected")
-          workflow_bytes = base64.b64decode(str(blob.get("content") or ""), validate=True)
+          encoded_workflow = str(blob.get("content") or "").replace("\n", "")
+          workflow_bytes = base64.b64decode(encoded_workflow, validate=True)
           git_blob_sha = hashlib.sha1(
               f"blob {len(workflow_bytes)}\0".encode("ascii") + workflow_bytes
           ).hexdigest()
