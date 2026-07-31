@@ -7,6 +7,8 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+SOURCE_BOOTSTRAP_DIR = ROOT / "bootstrap"
+SOURCE_GENERATOR = SOURCE_BOOTSTRAP_DIR / "generator.py"
 REQUIRED = {
     "README.md",
     "LICENSE",
@@ -17,7 +19,6 @@ REQUIRED = {
     "scripts/ai_recovery_supervisor.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
-    "bootstrap/generator.py",
     ".github/workflows/ci.yml",
     ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml",
@@ -202,9 +203,17 @@ def main() -> int:
     if 'get("login") == ACTIONS_LOGIN' not in request_function:
         fail("Codex request deduplication trusts untrusted marker comments")
 
-    generator = (ROOT / "bootstrap/generator.py").read_text(encoding="utf-8")
-    if '".github/workflows/trusted-checks.yml"' not in generator:
-        fail("Bootstrap allowlist does not include trusted exact-SHA checks")
+    # The Foundation source tree contains Bootstrap source and must retain the
+    # generator. A rendered target intentionally omits the entire directory but
+    # keeps all runtime/workflow security invariants above.
+    if SOURCE_BOOTSTRAP_DIR.is_dir():
+        if not SOURCE_GENERATOR.is_file():
+            fail("Foundation source checkout is missing bootstrap/generator.py")
+        generator = SOURCE_GENERATOR.read_text(encoding="utf-8")
+        if '".github/workflows/trusted-checks.yml"' not in generator:
+            fail("Bootstrap allowlist does not include trusted exact-SHA checks")
+        if '"README.md"' not in generator or '"LICENSE"' not in generator:
+            fail("Bootstrap allowlist does not include public README and license")
 
     print("repository validation: clean")
     return 0
