@@ -1,0 +1,289 @@
+name: Repair PR 44 Final Merge Gate
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "29 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-44-final-merge-gate
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      TARGET_PR: "44"
+      TARGET_BRANCH: fix/issue-36-human-notice-contract
+      EXPECTED_HEAD: 3be4d1f551116b30e937543384372649d3b7250d
+    steps:
+      - name: Apply exact final-gate source and regression repairs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+          from urllib.parse import quote
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          target_pr = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          paths = (
+              "scripts/supervisor_runtime.py",
+              "tests/test_runtime_scope_and_checks.py",
+          )
+
+          def gh_json(*arguments: str, input_text: str | None = None) -> dict:
+              output = subprocess.check_output(
+                  ["gh", *arguments], input=input_text, text=True
+              )
+              return json.loads(output)
+
+          def live_target() -> dict:
+              live = gh_json("api", f"repos/{repository}/pulls/{target_pr}")
+              if live.get("state") != "open":
+                  raise SystemExit("Fixed target Pull Request is no longer open")
+              if str((live.get("head") or {}).get("ref") or "") != target_branch:
+                  raise SystemExit("Fixed target branch changed")
+              if str(((live.get("head") or {}).get("repo") or {}).get("full_name") or "") != repository:
+                  raise SystemExit("Fixed target is no longer same-repository")
+              return live
+
+          live = live_target()
+          if str((live.get("head") or {}).get("sha") or "") != expected_head:
+              print("PR #44 moved; this immutable repair is no longer applicable.")
+              raise SystemExit(0)
+
+          texts: dict[str, str] = {}
+          blob_shas: dict[str, str] = {}
+          for path in paths:
+              payload = gh_json(
+                  "api",
+                  f"repos/{repository}/contents/{quote(path)}?ref={quote(expected_head)}",
+              )
+              if payload.get("type") != "file" or payload.get("encoding") != "base64":
+                  raise SystemExit(f"Unexpected immutable content response for {path}")
+              encoded = str(payload.get("content") or "").replace("\n", "")
+              texts[path] = base64.b64decode(encoded, validate=True).decode("utf-8")
+              blob_shas[path] = str(payload.get("sha") or "")
+
+          runtime_path = "scripts/supervisor_runtime.py"
+          runtime = texts[runtime_path]
+          helper_marker = "\n\ndef candidate_pulls() -> list[dict[str, Any]]:\n"
+          if runtime.count(helper_marker) != 1:
+              raise SystemExit("Final-gate helper insertion marker is not unique")
+          helper = '''
+
+
+def _final_merge_candidate(
+    pr_number: int, issue_number: int | None, sha: str
+) -> bool:
+    """Revalidate mutable PR and trusted Issue authorization immediately before merge."""
+    final = _live_pr(pr_number, sha)
+    if final.get("mergeable") is not True or not trusted_candidate(final):
+        return False
+    final_issue_number, _, _, scope_error = source_and_scope(final)
+    return final_issue_number == issue_number and scope_error is None
+'''
+          runtime = runtime.replace(helper_marker, helper + helper_marker, 1)
+
+          old_merge = '''        final = _live_pr(pr_number, sha)
+        if final.get("mergeable") is not True or not trusted_candidate(final):
+            continue
+        final_native_clean, _ = native_workflow_evidence(sha, pr_number)
+        if not final_native_clean or not exact_codex_clean(pr_number, sha):
+            continue
+        gh(
+'''
+          new_merge = '''        final = _live_pr(pr_number, sha)
+        if final.get("mergeable") is not True or not trusted_candidate(final):
+            continue
+        final_native_clean, _ = native_workflow_evidence(sha, pr_number)
+        if not final_native_clean or not exact_codex_clean(pr_number, sha):
+            continue
+        if not _final_merge_candidate(pr_number, issue_number, sha):
+            continue
+        gh(
+'''
+          if runtime.count(old_merge) != 1:
+              raise SystemExit("Final merge block is not the exact reviewed version")
+          runtime = runtime.replace(old_merge, new_merge, 1)
+          compile(runtime, runtime_path, "exec")
+          texts[runtime_path] = runtime
+
+          test_path = "tests/test_runtime_scope_and_checks.py"
+          tests = texts[test_path]
+          test_marker = '\n\nif __name__ == "__main__":\n    unittest.main()\n'
+          if tests.count(test_marker) != 1:
+              raise SystemExit("Regression test insertion marker is not unique")
+          regression = '''
+
+
+class FinalMergeGateTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+
+    def candidate(self, *, labels=None):
+        return {
+            "number": PR_NUMBER,
+            "state": "open",
+            "draft": False,
+            "mergeable": True,
+            "changed_files": 1,
+            "body": "Closes #9",
+            "user": {"login": "owner"},
+            "labels": labels or [],
+            "head": {
+                "sha": SHA,
+                "ref": "fix/probe",
+                "repo": {"full_name": "example/foundation"},
+            },
+            "base": {
+                "ref": "main",
+                "repo": {"full_name": "example/foundation"},
+            },
+        }
+
+    def test_late_ai_no_merge_label_fails_closed(self):
+        held = self.candidate(labels=[{"name": "ai-no-merge"}])
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=held),
+            patch.object(self.runtime, "source_and_scope") as scope,
+        ):
+            self.assertFalse(
+                self.runtime._final_merge_candidate(PR_NUMBER, 9, SHA)
+            )
+        scope.assert_not_called()
+
+    def test_fresh_scope_and_authorization_are_required(self):
+        live = self.candidate()
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=live),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(9, {"number": 9}, ["scripts/probe.py"], None),
+            ) as scope,
+        ):
+            self.assertTrue(
+                self.runtime._final_merge_candidate(PR_NUMBER, 9, SHA)
+            )
+        scope.assert_called_once_with(live)
+
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=live),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(9, {"number": 9}, ["scripts/probe.py"], "UNAUTHORIZED_CHANGED_PATH"),
+            ),
+        ):
+            self.assertFalse(
+                self.runtime._final_merge_candidate(PR_NUMBER, 9, SHA)
+            )
+
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=live),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(10, {"number": 10}, ["scripts/probe.py"], None),
+            ),
+        ):
+            self.assertFalse(
+                self.runtime._final_merge_candidate(PR_NUMBER, 9, SHA)
+            )
+'''
+          tests = tests.replace(test_marker, regression + test_marker, 1)
+          compile(tests, test_path, "exec")
+          texts[test_path] = tests
+
+          base_commit = gh_json("api", f"repos/{repository}/git/commits/{expected_head}")
+          base_tree = gh_json(
+              "api",
+              f"repos/{repository}/git/trees/{base_commit['tree']['sha']}?recursive=1",
+          )
+          modes = {
+              str(item.get("path")): str(item.get("mode"))
+              for item in base_tree.get("tree") or []
+              if item.get("path") in paths
+          }
+          if set(modes) != set(paths):
+              raise SystemExit("Immutable base tree is missing a fixed repair path")
+          if any(mode not in {"100644", "100755"} for mode in modes.values()):
+              raise SystemExit("A fixed repair path is not a regular file")
+
+          entries = []
+          for path in paths:
+              blob = gh_json(
+                  "api",
+                  "--method",
+                  "POST",
+                  f"repos/{repository}/git/blobs",
+                  "--input",
+                  "-",
+                  input_text=json.dumps({"content": texts[path], "encoding": "utf-8"}),
+              )
+              entries.append(
+                  {
+                      "path": path,
+                      "mode": modes[path],
+                      "type": "blob",
+                      "sha": blob["sha"],
+                  }
+              )
+          tree = gh_json(
+              "api",
+              "--method",
+              "POST",
+              f"repos/{repository}/git/trees",
+              "--input",
+              "-",
+              input_text=json.dumps(
+                  {"base_tree": base_commit["tree"]["sha"], "tree": entries}
+              ),
+          )
+          commit = gh_json(
+              "api",
+              "--method",
+              "POST",
+              f"repos/{repository}/git/commits",
+              "--input",
+              "-",
+              input_text=json.dumps(
+                  {
+                      "message": "Revalidate live label and Issue scope before merge",
+                      "tree": tree["sha"],
+                      "parents": [expected_head],
+                  }
+              ),
+          )
+
+          final = live_target()
+          if str((final.get("head") or {}).get("sha") or "") != expected_head:
+              print("PR #44 moved before publication; refusing stale repair.")
+              raise SystemExit(0)
+          gh_json(
+              "api",
+              "--method",
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{quote(target_branch, safe='/')}",
+              "--input",
+              "-",
+              input_text=json.dumps({"sha": commit["sha"], "force": False}),
+          )
+          PY
