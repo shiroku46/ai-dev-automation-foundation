@@ -6,7 +6,10 @@ import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 ALLOWLIST = [
+    "README.md",
+    "LICENSE",
     "AGENTS.md",
     "CLAUDE.md",
     "SECURITY.md",
@@ -36,6 +39,7 @@ def render(target: Path, owner: str) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     (target / "INSTALL_CHECKLIST.md").write_text(
+        f"{GENERATED_TARGET_MARKER}\n"
         "# Installation checklist\n\n"
         f"- [ ] Optionally set repository variable `AUTOMATION_OWNER` to `{owner}`; "
         "the repository owner is the fail-closed default.\n"
