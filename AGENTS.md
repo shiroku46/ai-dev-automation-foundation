@@ -17,4 +17,3 @@
 15. Account-level repository absence must be independently derived from connected GitHub API queries of the exact targets, and caller assertions must match. Credential and reconnection reasons fail closed without a reason-specific connected provider adapter.
 16. Persist the exact deterministic human-only audit record before publication. Deduplication requires both that record and an immutable `github-actions[bot]` notice comment; untrusted or edited comments do not count.
 17. `ai-no-merge` always stops merge execution, and final merge uses expected-head-SHA protection.
-
