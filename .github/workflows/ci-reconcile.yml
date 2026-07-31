@@ -41,7 +41,7 @@ jobs:
           matrix=$(python -m scripts.supervisor_runtime discover)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-  attest:
+  dispatch:
     needs: discover
     if: needs.discover.outputs.matrix != '[]'
     strategy:
@@ -49,10 +49,21 @@ jobs:
       max-parallel: 2
       matrix:
         target_sha: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    uses: ./.github/workflows/trusted-checks.yml
-    with:
-      target_sha: ${{ matrix.target_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
-      actions: read
-      checks: write
+      actions: write
       contents: read
+    steps:
+      - name: Dispatch only the fixed trusted workflow on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TARGET_SHA: ${{ matrix.target_sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          gh workflow run trusted-checks.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f "target_sha=$TARGET_SHA"
