@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 QUEUE = ROOT / ".github/workflows/claude-queue.yml"
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
+HEREDOC = re.compile(r"(?ms)^\s*cat\s+>.*?<<EOF\s*$.*?^\s*EOF\s*$")
 
 
 def job_block(text: str, job: str, next_job: str | None = None) -> str:
@@ -12,6 +13,17 @@ def job_block(text: str, job: str, next_job: str | None = None) -> str:
     if next_job:
         block = block.split(f"\n  {next_job}:\n", 1)[0]
     return block
+
+
+def executable_shell(block: str) -> str:
+    """Remove literal heredoc payloads before checking executable commands.
+
+    Publication embeds the names of checks that already ran in the generated PR
+    body. Those evidence strings are data, not shell execution in the write-capable
+    job, so security assertions must inspect only executable shell outside heredocs.
+    """
+
+    return HEREDOC.sub("", block)
 
 
 class QueueWorkflowTest(unittest.TestCase):
@@ -53,11 +65,17 @@ class QueueWorkflowTest(unittest.TestCase):
         publish = job_block(self.text, "publish", "finalize")
         finalize = job_block(self.text, "finalize")
         for block in (publish, finalize):
-            self.assertNotIn("actions/checkout", block)
-            self.assertNotIn("python scripts/", block)
-            self.assertNotIn("unittest", block)
-            self.assertNotIn("secrets.", block)
-            self.assertNotIn("id-token: write", block)
+            executable = executable_shell(block)
+            self.assertNotIn("actions/checkout", executable)
+            self.assertNotIn("python scripts/", executable)
+            self.assertNotIn("python -m unittest", executable)
+            self.assertNotIn("secrets.", executable)
+            self.assertNotIn("id-token: write", executable)
+        # The immutable verification commands may be quoted only as evidence in
+        # the generated PR body; they must not be executed by publication.
+        self.assertIn("python scripts/public_export_guard.py .", publish)
+        self.assertIn("python scripts/validate_repository.py", publish)
+        self.assertIn("python -m unittest discover -s tests", publish)
         self.assertIn('test "$current_sha" = "$TARGET_SHA"', publish)
         self.assertIn("gh pr create", publish)
         self.assertIn("--draft", publish)
