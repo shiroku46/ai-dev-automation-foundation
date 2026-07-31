@@ -51,6 +51,14 @@ def job_block(text: str, job: str, next_job: str | None = None) -> str:
     return block
 
 
+def function_block(text: str, name: str, next_name: str) -> str:
+    marker = f"def {name}("
+    boundary = f"\ndef {next_name}("
+    if marker not in text or boundary not in text.split(marker, 1)[1]:
+        fail(f"runtime function boundary missing: {name} -> {next_name}")
+    return text.split(marker, 1)[1].split(boundary, 1)[0]
+
+
 def main() -> int:
     missing = sorted(path for path in REQUIRED if not (ROOT / path).is_file())
     if missing:
@@ -115,7 +123,6 @@ def main() -> int:
     authorize = job_block(trusted, "authorize", "validate_target")
     validate = job_block(trusted, "validate_target", "test_target")
     test = job_block(trusted, "test_target")
-
     for required in ("contents: read", "pull-requests: read"):
         if required not in authorize:
             fail(f"trusted authorize job is missing {required}")
@@ -177,6 +184,11 @@ def main() -> int:
         fail("write-capable supervisor must checkout the default branch explicitly")
     if '"Trusted Exact-SHA Checks"' not in supervisor:
         fail("supervisor must reconcile immediately after trusted checks complete")
+    supervisor_job = job_block(supervisor, "supervise")
+    if "contents: write" not in supervisor_job:
+        fail("supervisor lacks bounded contents write for the fixed internal-stop branch")
+    if "persist-credentials: false" not in supervisor_job:
+        fail("supervisor checkout must not persist credentials")
 
     runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
     for required in (
@@ -190,19 +202,57 @@ def main() -> int:
         "ATTESTATION_JOB_NAMES",
         "_complete_successful_job_set",
         "previous_filename",
-        "exact_codex_clean",
+        "exact_codex_evidence",
         "MAX_ATTESTATION_ATTEMPTS",
         "merge_method=squash",
         'f"sha={sha}"',
+        'INTERNAL_STOP_BRANCH = "automation-internal-stops"',
+        'INTERNAL_STOP_ROOT = "automation-stops"',
+        "internal_stop_record_path",
+        "canonical_internal_stop_record",
+        "ensure_internal_stop_branch",
+        "persist_internal_stop_record",
+        "latest_successful_attestation_timestamp",
+        "request_timestamp",
+        'f"repos/{REPO}/commits/{sha}/check-runs?per_page=100"',
+        'f"repos/{REPO}/collaborators/{AUTOMATION_OWNER}/permission"',
+        "AUDIT_WORKFLOWS",
+        "initial_and_final_head_confirmed=true",
+        "automation-stops/pr-",
+        '"notification": False',
+        '"required_human_action": None',
     ):
         if required not in runtime:
             fail(f"supervisor runtime invariant is missing: {required}")
-    for forbidden in ("/check-runs", "external_id", "run_id_from_details_url"):
+    for forbidden in ("external_id", "run_id_from_details_url", "/commits/{sha}/status"):
         if forbidden in runtime:
-            fail(f"supervisor still trusts custom check metadata: {forbidden}")
-    request_function = runtime.split("def request_codex", 1)[1].split("def supervise", 1)[0]
+            fail(f"supervisor still trusts prohibited custom metadata: {forbidden}")
+
+    request_function = function_block(runtime, "request_codex", "_evidence_anchor")
     if 'get("login") == ACTIONS_LOGIN' not in request_function:
         fail("Codex request deduplication trusts untrusted marker comments")
+    stop_function = function_block(runtime, "stop_report", "format_human_only_notice")
+    if "comment(" in stop_function or "/issues/" in stop_function or "/comments" in stop_function:
+        fail("internal stops must never post Issue or Pull Request comments")
+    if "persist_internal_stop_record" not in stop_function:
+        fail("internal stops are not persisted to the fixed branch")
+    notice_function = function_block(runtime, "human_only_notice", "discover_targets")
+    for required in (
+        "self_resolution_audit",
+        "_validated_notice_destination",
+        "ACTIONS_LOGIN",
+        'item.get("created_at") == item.get("updated_at")',
+        "marker",
+    ):
+        if required not in notice_function:
+            fail(f"human-only notice invariant is missing: {required}")
+    supervise = function_block(runtime, "supervise", "main")
+    if 'pr.get("updated_at")' in supervise or 'pr["updated_at"]' in supervise:
+        fail("no-progress must not use Pull Request-wide updated_at")
+    if "minutes_since(codex.get(\"request_timestamp\"))" not in supervise:
+        fail("Codex no-progress is not anchored to the trusted request timestamp")
+    if "latest_successful_attestation_timestamp(attempts)" not in supervise:
+        fail("merge-state no-progress is not anchored to immutable clean evidence")
 
     checklist = ROOT / "INSTALL_CHECKLIST.md"
     generated_target = (
@@ -210,7 +260,6 @@ def main() -> int:
         and GENERATED_TARGET_MARKER in checklist.read_text(encoding="utf-8")
     )
     source_checkout = SOURCE_MARKER.is_file()
-
     if generated_target:
         if SOURCE_GENERATOR.exists():
             fail("generated target unexpectedly contains bootstrap/generator.py")
@@ -218,12 +267,18 @@ def main() -> int:
         if not SOURCE_GENERATOR.is_file():
             fail("Foundation source checkout is missing bootstrap/generator.py")
         generator = SOURCE_GENERATOR.read_text(encoding="utf-8")
-        if '".github/workflows/trusted-checks.yml"' not in generator:
-            fail("Bootstrap allowlist does not include trusted exact-SHA checks")
-        if '"README.md"' not in generator or '"LICENSE"' not in generator:
-            fail("Bootstrap allowlist does not include public README and license")
-        if "GENERATED_TARGET_MARKER" not in generator:
-            fail("Bootstrap generator does not emit the generated-target identity marker")
+        for required in (
+            '".github/workflows/trusted-checks.yml"',
+            '"README.md"',
+            '"LICENSE"',
+            "GENERATED_TARGET_MARKER",
+            "automation-internal-stops",
+            "never posted as Issue or Pull Request comments",
+            "immutable trusted request timestamp",
+            "github-actions[bot]",
+        ):
+            if required not in generator:
+                fail(f"Bootstrap policy parity is missing: {required}")
     else:
         fail("repository identity is ambiguous: no source marker or generated-target marker")
 
