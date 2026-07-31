@@ -51,7 +51,7 @@ automation-stops/pr-<number>/<exact-sha>/<REASON_CODE>.json
 
 The record contains `notification: false`, no required human action, the reason, Issue, Pull Request, exact SHA, bounded detail, and the connected audit evidence. The deterministic path is the idempotency key: an existing matching record creates no duplicate commit. Internal stops are never posted as Issue or Pull Request comments. The supervisor may retain `ai-blocked`, and a deliberately disposable negative E2E Pull Request may be closed after the record is safely persisted.
 
-Codex no-progress is measured from the immutable trusted `github-actions[bot]` exact-SHA request comment, not from Pull Request-wide `updated_at`. Indeterminate mergeability no-progress is measured from the latest immutable successful trusted-check or clean exact-SHA Codex evidence timestamp, not from unrelated Pull Request activity.
+Codex no-progress is measured from the immutable trusted exact-SHA request comment authored by `github-actions[bot]`, not from Pull Request-wide `updated_at`. Indeterminate mergeability no-progress is measured from the latest immutable successful trusted-check or clean exact-SHA Codex evidence timestamp, not from unrelated Pull Request activity.
 
 ## Human-only notice boundary
 
