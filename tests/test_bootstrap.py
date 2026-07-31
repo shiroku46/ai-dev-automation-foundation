@@ -30,6 +30,11 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn(GENERATED_TARGET_MARKER, checklist)
             self.assertIn("example-owner", checklist)
             self.assertNotIn("notion", checklist.lower())
+            self.assertIn("non-notifying internal stop", checklist)
+            self.assertIn("human_action_required: false", checklist)
+            self.assertIn("account-level repository/App UI", checklist)
+            self.assertIn("credential/provider UI", checklist)
+            self.assertIn("disconnected-integration reconnection UI", checklist)
             self.assertFalse((target / "bootstrap").exists())
 
             result = run_validator(target)
