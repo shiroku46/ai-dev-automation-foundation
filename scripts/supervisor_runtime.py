@@ -13,17 +13,25 @@ import re
 import subprocess
 import sys
 from functools import lru_cache
+from typing import Any
 
-from scripts.supervisor_policy import is_protected, parse_issue_number, protected_scope_is_authorized
+from scripts.supervisor_policy import (
+    is_protected,
+    parse_issue_number,
+    protected_scope_is_authorized,
+)
 
 REPO = os.environ["REPOSITORY"]
 DEFAULT_BRANCH = os.environ["DEFAULT_BRANCH"]
 AUTOMATION_OWNER = os.environ["AUTOMATION_OWNER"]
+REPOSITORY_OWNER = REPO.split("/", 1)[0]
+TRUSTED_ISSUE_AUTHORS = {AUTOMATION_OWNER, REPOSITORY_OWNER}
 ATTESTATION_NAMES = ("CI / validate", "Unit Tests / test")
 MAX_CANDIDATES = 10
+MAX_CHANGED_FILES = 100
 MAX_ATTESTATION_ATTEMPTS = 3
 ALLOWED_PREFIXES = ("claude-issue-", "automation/", "fix/")
-ALLOWED_AUTHORS = {AUTOMATION_OWNER, "github-actions[bot]"}
+ALLOWED_AUTHORS = {*TRUSTED_ISSUE_AUTHORS, "github-actions[bot]"}
 ALLOWED_CALLER_EVENTS = {"workflow_run", "schedule", "workflow_dispatch"}
 CALLER_WORKFLOW_PATH = ".github/workflows/ci-reconcile.yml"
 REUSABLE_WORKFLOW_PATH = ".github/workflows/trusted-checks.yml"
@@ -40,11 +48,13 @@ def gh(*args: str) -> str:
     return subprocess.check_output(["gh", *args], text=True)
 
 
-def api(path: str):
-    return json.loads(gh("api", "-H", "Accept: application/vnd.github+json", path))
+def api(path: str) -> Any:
+    return json.loads(
+        gh("api", "-H", "Accept: application/vnd.github+json", path)
+    )
 
 
-def api_list(path: str) -> list[dict]:
+def api_list(path: str) -> list[dict[str, Any]]:
     pages = json.loads(
         gh(
             "api",
@@ -55,7 +65,7 @@ def api_list(path: str) -> list[dict]:
             path,
         )
     )
-    items: list[dict] = []
+    items: list[dict[str, Any]] = []
     for page in pages:
         if not isinstance(page, list):
             raise RuntimeError(f"Expected list page from {path}")
@@ -63,7 +73,7 @@ def api_list(path: str) -> list[dict]:
     return items
 
 
-def api_key_pages(path: str, key: str) -> list[dict]:
+def api_key_pages(path: str, key: str) -> list[dict[str, Any]]:
     pages = json.loads(
         gh(
             "api",
@@ -74,7 +84,7 @@ def api_key_pages(path: str, key: str) -> list[dict]:
             path,
         )
     )
-    items: list[dict] = []
+    items: list[dict[str, Any]] = []
     for page in pages:
         if not isinstance(page, dict):
             raise RuntimeError(f"Expected object page from {path}")
@@ -87,11 +97,17 @@ def api_key_pages(path: str, key: str) -> list[dict]:
 
 @lru_cache(maxsize=1)
 def current_default_sha() -> str:
-    return api(f"repos/{REPO}/commits/{DEFAULT_BRANCH}")["sha"]
+    return str(api(f"repos/{REPO}/commits/{DEFAULT_BRANCH}")["sha"])
+
+
+@lru_cache(maxsize=1)
+def caller_workflow_id() -> int:
+    workflow = api(f"repos/{REPO}/actions/workflows/ci-reconcile.yml")
+    return int(workflow["id"])
 
 
 @lru_cache(maxsize=64)
-def workflow_run(run_id: int) -> dict:
+def workflow_run(run_id: int) -> dict[str, Any]:
     return api(f"repos/{REPO}/actions/runs/{run_id}")
 
 
@@ -115,24 +131,51 @@ def ensure_label(number: int, label: str, color: str, description: str) -> None:
     gh("issue", "edit", str(number), "--repo", REPO, "--add-label", label)
 
 
-def stop_report(pr: dict, issue_number: int | None, reason: str, detail: str, close: bool = False) -> None:
-    sha = pr["head"]["sha"]
+def remove_label(number: int, label: str) -> None:
+    subprocess.run(
+        [
+            "gh",
+            "issue",
+            "edit",
+            str(number),
+            "--repo",
+            REPO,
+            "--remove-label",
+            label,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def stop_report(
+    pr: dict[str, Any],
+    issue_number: int | None,
+    reason: str,
+    detail: str,
+    close: bool = False,
+) -> None:
+    sha = str(pr["head"]["sha"])
     marker = f"{STOP_PREFIX}{reason}:{sha} -->"
-    comments = api_list(f"repos/{REPO}/issues/{pr['number']}/comments?per_page=100")
+    comments = api_list(
+        f"repos/{REPO}/issues/{pr['number']}/comments?per_page=100"
+    )
     if not any(marker in (item.get("body") or "") for item in comments):
         comment(
-            pr["number"],
+            int(pr["number"]),
             f"{marker}\n## Structured automation stop\n\n"
             f"- reason_code: `{reason}`\n"
             f"- issue: `#{issue_number or 'unknown'}`\n"
             f"- pull_request: `#{pr['number']}`\n"
             f"- exact_head_sha: `{sha}`\n"
             f"- detail: {detail}\n"
-            "- self_resolution_audit: metadata, scope, authorization, checks, review, "
-            "provenance, idempotency, and available GitHub permissions were rechecked.\n",
+            "- self_resolution_audit: metadata, changed/renamed paths, scope, "
+            "authorization, checks, review, provenance, idempotency, and available "
+            "GitHub permissions were rechecked before stopping.\n",
         )
     ensure_label(
-        pr["number"],
+        int(pr["number"]),
         "ai-blocked",
         "B60205",
         "Automation stopped after self-resolution",
@@ -173,28 +216,45 @@ def unresolved_review_threads(pr_number: int) -> bool:
             arguments.extend(["-F", f"cursor={cursor}"])
         payload = json.loads(gh(*arguments))
         threads = payload["data"]["repository"]["pullRequest"]["reviewThreads"]
-        if any(not node.get("isResolved") for node in threads.get("nodes") or []):
+        if any(
+            not node.get("isResolved")
+            for node in threads.get("nodes") or []
+        ):
             return True
         page_info = threads["pageInfo"]
         if not page_info.get("hasNextPage"):
             return False
         cursor = page_info.get("endCursor")
         if not cursor:
-            raise RuntimeError("Review-thread pagination did not return an end cursor")
+            raise RuntimeError(
+                "Review-thread pagination did not return an end cursor"
+            )
+
+
+def _codex_items(pr_number: int) -> list[dict[str, Any]]:
+    comments = api_list(
+        f"repos/{REPO}/issues/{pr_number}/comments?per_page=100"
+    )
+    reviews = api_list(
+        f"repos/{REPO}/pulls/{pr_number}/reviews?per_page=100"
+    )
+    return [*comments, *reviews]
 
 
 def exact_codex_clean(pr_number: int, sha: str) -> bool:
-    comments = api_list(f"repos/{REPO}/issues/{pr_number}/comments?per_page=100")
     short = sha[:10]
     expected_marker = f"<!-- foundation-codex-request:{sha} -->"
-    trusted_requests: list[dict] = []
+    trusted_requests: list[dict[str, Any]] = []
 
-    for item in reversed(comments):
+    for item in reversed(_codex_items(pr_number)):
         body = item.get("body") or ""
         login = (item.get("user") or {}).get("login") or ""
         if login == CODEX_LOGIN and (sha in body or short in body):
             lower = body.lower()
-            clean = "didn't find any major issues" in lower or "no major issues" in lower
+            clean = (
+                "didn't find any major issues" in lower
+                or "no major issues" in lower
+            )
             return clean and not unresolved_review_threads(pr_number)
         if (
             login == ACTIONS_LOGIN
@@ -218,27 +278,26 @@ def exact_codex_clean(pr_number: int, sha: str) -> bool:
     return False
 
 
-def trusted_candidate(pr: dict) -> bool:
+def trusted_candidate(pr: dict[str, Any]) -> bool:
     head = pr.get("head") or {}
     base = pr.get("base") or {}
     author = (pr.get("user") or {}).get("login") or ""
-    return (
+    return bool(
         ((head.get("repo") or {}).get("full_name") == REPO)
         and ((base.get("repo") or {}).get("full_name") == REPO)
         and base.get("ref") == DEFAULT_BRANCH
         and author in ALLOWED_AUTHORS
         and (head.get("ref") or "").startswith(ALLOWED_PREFIXES)
         and not any(
-            label.get("name") == "ai-no-merge" for label in pr.get("labels") or []
+            label.get("name") == "ai-no-merge"
+            for label in pr.get("labels") or []
         )
     )
 
 
-def trusted_source_issue(issue: dict) -> bool:
-    return (
-        not issue.get("pull_request")
-        and (issue.get("user") or {}).get("login") == AUTOMATION_OWNER
-    )
+def trusted_source_issue(issue: dict[str, Any]) -> bool:
+    login = (issue.get("user") or {}).get("login") or ""
+    return not issue.get("pull_request") and login in TRUSTED_ISSUE_AUTHORS
 
 
 def run_id_from_details_url(details_url: str) -> int | None:
@@ -246,35 +305,67 @@ def run_id_from_details_url(details_url: str) -> int | None:
     return int(match.group("run_id")) if match else None
 
 
-def trusted_attestation_workflow_run(run_id: int, *, allow_active: bool) -> dict | None:
+def _referenced_workflow_is_trusted(run: dict[str, Any]) -> bool:
+    """Validate reusable-workflow metadata when GitHub returns it.
+
+    The caller workflow ID and immutable default-branch SHA remain the primary
+    identity. `referenced_workflows` is an additional fail-closed check whenever
+    the REST payload includes that field.
+    """
+
+    referenced_workflows = run.get("referenced_workflows")
+    if referenced_workflows is None:
+        return True
+    if not isinstance(referenced_workflows, list):
+        return False
+    matches = []
+    for item in referenced_workflows:
+        path = str(item.get("path") or "")
+        ref = str(item.get("ref") or "")
+        sha = str(item.get("sha") or "")
+        if REUSABLE_WORKFLOW_PATH not in path:
+            continue
+        if ref not in {
+            DEFAULT_BRANCH,
+            f"refs/heads/{DEFAULT_BRANCH}",
+        }:
+            continue
+        if sha != run.get("head_sha"):
+            continue
+        matches.append(item)
+    return len(matches) == 1
+
+
+def trusted_attestation_workflow_run(
+    run_id: int, *, allow_active: bool
+) -> dict[str, Any] | None:
     run = workflow_run(run_id)
     repository = run.get("repository") or {}
     actor = (run.get("actor") or {}).get("login") or ""
-    expected_caller = f"{CALLER_WORKFLOW_PATH}@{DEFAULT_BRANCH}"
-    expected_reusable = f"{REPO}/{REUSABLE_WORKFLOW_PATH}@{DEFAULT_BRANCH}"
     if repository.get("full_name") != REPO:
+        return None
+    if int(run.get("workflow_id") or 0) != caller_workflow_id():
         return None
     if run.get("head_branch") != DEFAULT_BRANCH:
         return None
     if run.get("head_sha") != current_default_sha():
         return None
-    if run.get("path") != expected_caller:
-        return None
     if run.get("event") not in ALLOWED_CALLER_EVENTS:
         return None
     if actor not in ALLOWED_AUTHORS:
         return None
-    reusable = [
-        item
-        for item in run.get("referenced_workflows") or []
-        if item.get("path") == expected_reusable
-        and item.get("ref") == f"refs/heads/{DEFAULT_BRANCH}"
-        and item.get("sha") == run.get("head_sha")
-    ]
-    if len(reusable) != 1:
+    path = str(run.get("path") or "")
+    if path and CALLER_WORKFLOW_PATH not in path:
+        return None
+    if not _referenced_workflow_is_trusted(run):
         return None
     status = run.get("status")
-    if allow_active and status in {"queued", "in_progress", "waiting", "pending"}:
+    if allow_active and status in {
+        "queued",
+        "in_progress",
+        "waiting",
+        "pending",
+    }:
         return run
     if status == "completed" and run.get("conclusion") in {
         "success",
@@ -287,20 +378,21 @@ def trusted_attestation_workflow_run(run_id: int, *, allow_active: bool) -> dict
     return None
 
 
-def attestation_attempts(sha: str) -> list[dict]:
+def attestation_attempts(sha: str) -> list[dict[str, Any]]:
     check_runs = api_key_pages(
-        f"repos/{REPO}/commits/{sha}/check-runs?per_page=100", "check_runs"
+        f"repos/{REPO}/commits/{sha}/check-runs?per_page=100",
+        "check_runs",
     )
-    grouped: dict[int, dict[str, dict]] = {}
+    grouped: dict[int, dict[str, dict[str, Any]]] = {}
     for check in check_runs:
-        name = check.get("name") or ""
+        name = str(check.get("name") or "")
         if name not in ATTESTATION_NAMES:
             continue
         if check.get("head_sha") != sha:
             continue
         if ((check.get("app") or {}).get("slug") != "github-actions"):
             continue
-        run_id = run_id_from_details_url(check.get("details_url") or "")
+        run_id = run_id_from_details_url(str(check.get("details_url") or ""))
         if not run_id:
             continue
         expected_external_id = f"foundation:{run_id}:{name}:{sha}"
@@ -308,7 +400,7 @@ def attestation_attempts(sha: str) -> list[dict]:
             continue
         grouped.setdefault(run_id, {})[name] = check
 
-    attempts: list[dict] = []
+    attempts: list[dict[str, Any]] = []
     for run_id, checks in grouped.items():
         run = trusted_attestation_workflow_run(run_id, allow_active=True)
         if not run:
@@ -317,7 +409,7 @@ def attestation_attempts(sha: str) -> list[dict]:
         active = run.get("status") != "completed" and any(
             check.get("status") != "completed" for check in checks.values()
         )
-        success = (
+        success = bool(
             complete_set
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
@@ -335,18 +427,41 @@ def attestation_attempts(sha: str) -> list[dict]:
                 "complete": complete_set,
             }
         )
-    return sorted(attempts, key=lambda item: item["run_id"])
+    return sorted(attempts, key=lambda item: int(item["run_id"]))
 
 
-def source_and_scope(pr: dict) -> tuple[int | None, dict | None, list[str], str | None]:
+def changed_paths(pr: dict[str, Any]) -> list[str] | None:
+    expected = int(pr.get("changed_files") or 0)
+    if expected > MAX_CHANGED_FILES:
+        return None
+    files = api_list(
+        f"repos/{REPO}/pulls/{pr['number']}/files?per_page={MAX_CHANGED_FILES}"
+    )
+    if len(files) != expected:
+        return None
+    paths: set[str] = set()
+    for item in files:
+        filename = item.get("filename")
+        previous = item.get("previous_filename")
+        if filename:
+            paths.add(str(filename))
+        if previous:
+            paths.add(str(previous))
+    return sorted(paths)
+
+
+def source_and_scope(
+    pr: dict[str, Any],
+) -> tuple[int | None, dict[str, Any] | None, list[str], str | None]:
     issue_number = parse_issue_number(pr.get("body") or "")
     if not issue_number:
         return None, None, [], "MISSING_TRUSTED_SOURCE_ISSUE"
     issue = api(f"repos/{REPO}/issues/{issue_number}")
     if not trusted_source_issue(issue):
         return issue_number, issue, [], "UNTRUSTED_SOURCE_ISSUE"
-    files = api_list(f"repos/{REPO}/pulls/{pr['number']}/files?per_page=100")
-    changed = [item["filename"] for item in files]
+    changed = changed_paths(pr)
+    if changed is None:
+        return issue_number, issue, [], "INCOMPLETE_CHANGED_FILE_EVIDENCE"
     if any(is_protected(path) for path in changed) and not protected_scope_is_authorized(
         changed, issue.get("body") or ""
     ):
@@ -354,7 +469,7 @@ def source_and_scope(pr: dict) -> tuple[int | None, dict | None, list[str], str 
     return issue_number, issue, changed, None
 
 
-def candidate_pulls() -> list[dict]:
+def candidate_pulls() -> list[dict[str, Any]]:
     pulls = api(f"repos/{REPO}/pulls?state=open&per_page=50")
     return [
         pr
@@ -367,24 +482,41 @@ def discover_targets() -> list[str]:
     targets: list[str] = []
     for observed in candidate_pulls():
         pr = api(f"repos/{REPO}/pulls/{observed['number']}")
-        if pr["head"]["sha"] != observed["head"]["sha"] or not trusted_candidate(pr):
+        if (
+            pr["head"]["sha"] != observed["head"]["sha"]
+            or not trusted_candidate(pr)
+        ):
             continue
         _, _, _, scope_error = source_and_scope(pr)
         if scope_error:
             continue
-        attempts = attestation_attempts(pr["head"]["sha"])
+        attempts = attestation_attempts(str(pr["head"]["sha"]))
         if any(item["success"] or item["active"] for item in attempts):
             continue
         if len({item["run_id"] for item in attempts}) >= MAX_ATTESTATION_ATTEMPTS:
             continue
-        targets.append(pr["head"]["sha"])
+        targets.append(str(pr["head"]["sha"]))
     return targets
+
+
+def request_codex(pr_number: int, sha: str) -> None:
+    marker = f"<!-- foundation-codex-request:{sha} -->"
+    comments = api_list(
+        f"repos/{REPO}/issues/{pr_number}/comments?per_page=100"
+    )
+    if any(marker in (item.get("body") or "") for item in comments):
+        return
+    comment(
+        pr_number,
+        f"{marker}\n@codex review\n\n"
+        f"Review exact head `{sha}`. Report blocking findings only.",
+    )
 
 
 def supervise() -> None:
     for observed in candidate_pulls():
         pr = api(f"repos/{REPO}/pulls/{observed['number']}")
-        sha = pr["head"]["sha"]
+        sha = str(pr["head"]["sha"])
         if sha != observed["head"]["sha"] or not trusted_candidate(pr):
             continue
 
@@ -402,12 +534,20 @@ def supervise() -> None:
                 pr,
                 issue_number,
                 scope_error,
-                "The referenced source is not an owner-authored repository Issue.",
+                "The referenced source is not a trusted owner-authored repository Issue.",
+            )
+            continue
+        if scope_error == "INCOMPLETE_CHANGED_FILE_EVIDENCE":
+            stop_report(
+                pr,
+                issue_number,
+                scope_error,
+                f"Changed/renamed path evidence exceeded or did not match the bounded {MAX_CHANGED_FILES}-file snapshot.",
             )
             continue
         if scope_error == "UNAUTHORIZED_PROTECTED_PATH":
             issue_body = (issue or {}).get("body") or ""
-            auto_close = (
+            auto_close = bool(
                 E2E_AUTO_CLOSE_MARKER in issue_body
                 or any(
                     label.get("name") == "e2e-auto-close"
@@ -418,7 +558,7 @@ def supervise() -> None:
                 pr,
                 issue_number,
                 scope_error,
-                "Protected paths are not covered by Issue authorization.",
+                "Protected changed or renamed paths are not covered by Issue authorization.",
                 close=auto_close,
             )
             continue
@@ -438,26 +578,18 @@ def supervise() -> None:
                 )
             continue
 
-        if not exact_codex_clean(pr["number"], sha):
-            marker = f"<!-- foundation-codex-request:{sha} -->"
-            comments = api_list(
-                f"repos/{REPO}/issues/{pr['number']}/comments?per_page=100"
-            )
-            if not any(marker in (item.get("body") or "") for item in comments):
-                comment(
-                    pr["number"],
-                    f"{marker}\n@codex review\n\n"
-                    f"Review exact head `{sha}`. Report blocking findings only.",
-                )
+        if not exact_codex_clean(int(pr["number"]), sha):
+            request_codex(int(pr["number"]), sha)
             continue
 
         current = api(f"repos/{REPO}/pulls/{pr['number']}")
         if current["head"]["sha"] != sha or not trusted_candidate(current):
             continue
+        remove_label(int(pr["number"]), "ai-blocked")
         if current.get("draft"):
             gh("pr", "ready", str(pr["number"]), "--repo", REPO)
             current = api(f"repos/{REPO}/pulls/{pr['number']}")
-            if current["head"]["sha"] != sha:
+            if current["head"]["sha"] != sha or not trusted_candidate(current):
                 continue
         if current.get("mergeable") is not True:
             continue
