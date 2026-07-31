@@ -33,6 +33,13 @@ def fail(message: str) -> None:
     raise AssertionError(message)
 
 
+def job_block(workflow: str, start: str, end: str | None = None) -> str:
+    block = workflow.split(f"  {start}:\n", 1)[1]
+    if end:
+        block = block.split(f"  {end}:\n", 1)[0]
+    return block
+
+
 def main() -> int:
     missing = sorted(path for path in REQUIRED if not (ROOT / path).is_file())
     if missing:
@@ -80,12 +87,16 @@ def main() -> int:
     ):
         if required not in trusted:
             fail(f"trusted-checks.yml: missing invariant {required!r}")
-    authorize_block = trusted.split("  authorize:\n", 1)[1].split("  validate_target:\n", 1)[0]
-    finalize_block = trusted.split("  finalize:\n", 1)[1]
+    authorize_block = job_block(trusted, "authorize", "validate_target")
+    validate_block = job_block(trusted, "validate_target", "test_target")
+    test_block = job_block(trusted, "test_target", "finalize")
+    finalize_block = job_block(trusted, "finalize")
     if "actions/checkout" in authorize_block or "actions/checkout" in finalize_block:
         fail("write-capable attestation jobs must not check out proposed code")
-    for job_name in ("validate_target", "test_target"):
-        block = trusted.split(f"  {job_name}:\n", 1)[1].split("\n  ", 1)[0]
+    for job_name, block in (
+        ("validate_target", validate_block),
+        ("test_target", test_block),
+    ):
         if "permissions:\n      contents: read" not in block:
             fail(f"{job_name}: proposed-code job must be contents-read-only")
         if "checks: write" in block or "id-token: write" in block or "secrets." in block:
