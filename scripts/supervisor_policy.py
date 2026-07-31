@@ -2,7 +2,6 @@
 """Small policy helpers shared by tests and trusted runtime."""
 from __future__ import annotations
 
-from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 import re
 
@@ -78,7 +77,13 @@ def protected_authorized_paths(issue_body: str) -> set[str]:
 
 
 def declared_paths(issue_body: str) -> set[str]:
-    paths = set(protected_authorized_paths(issue_body))
+    """Return only paths from ordinary allowlist headings.
+
+    Protected-authorization paths are intentionally excluded so protected changes
+    must be independently present in both the ordinary allowlist and the stricter
+    protected contract.
+    """
+    paths: set[str] = set()
     in_scope = False
     for raw in (issue_body or "").splitlines():
         line = raw.strip()
@@ -98,8 +103,12 @@ def _matches(path: str, pattern: str) -> bool:
     authorized = normalize_path(pattern)
     if authorized.endswith("/**"):
         prefix = authorized[:-3].rstrip("/")
-        return normalized == prefix or normalized.startswith(f"{prefix}/")
-    return fnmatchcase(normalized, authorized)
+        return bool(prefix) and (
+            normalized == prefix or normalized.startswith(f"{prefix}/")
+        )
+    if any(character in authorized for character in "*?["):
+        return False
+    return normalized == authorized
 
 
 def scope_is_authorized(changed_paths, issue_body: str) -> bool:
