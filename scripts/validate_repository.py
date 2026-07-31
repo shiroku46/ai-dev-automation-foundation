@@ -192,6 +192,13 @@ def main() -> int:
         "previous_filename",
         "exact_codex_clean",
         "MAX_ATTESTATION_ATTEMPTS",
+        "internal_stop_body",
+        "human_only_notice_body",
+        "HUMAN_ONLY_REASON_VALUES",
+        "notification: `none`",
+        "human_action_required: `false`",
+        "NO_PROGRESS_AFTER_CODEX_REQUEST",
+        "NO_PROGRESS_MERGE_STATE",
         "merge_method=squash",
         'f"sha={sha}"',
     ):
@@ -200,9 +207,11 @@ def main() -> int:
     for forbidden in ("/check-runs", "external_id", "run_id_from_details_url"):
         if forbidden in runtime:
             fail(f"supervisor still trusts custom check metadata: {forbidden}")
-    request_function = runtime.split("def request_codex", 1)[1].split("def supervise", 1)[0]
-    if 'get("login") == ACTIONS_LOGIN' not in request_function:
+    codex_request_section = runtime.split("def _codex_request_exists", 1)[1].split("def supervise", 1)[0]
+    if 'get("login") == ACTIONS_LOGIN' not in codex_request_section:
         fail("Codex request deduplication trusts untrusted marker comments")
+    if runtime.count("post_human_only_notice(") != 1:
+        fail("ordinary supervisor flow invokes or duplicates the human-only notice path")
 
     checklist = ROOT / "INSTALL_CHECKLIST.md"
     generated_target = (
