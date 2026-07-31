@@ -8,6 +8,7 @@ import re
 PROTECTED_PREFIXES = (".github/", "bootstrap/")
 PROTECTED_EXACT = {
     "SECURITY.md",
+    "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
     "scripts/ai_recovery_supervisor.py",
 }
