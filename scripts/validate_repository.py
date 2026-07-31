@@ -102,15 +102,28 @@ def main() -> int:
         fail("trusted checks use unsupported job context keys")
     if "CI / validate" not in trusted or "Unit Tests / test" not in trusted:
         fail("trusted exact-SHA check names are missing")
+
     authorize = job_block(trusted, "authorize", "validate_target")
     validate = job_block(trusted, "validate_target", "test_target")
     test = job_block(trusted, "test_target", "finalize")
     finalize = job_block(trusted, "finalize")
-    for name, block in (("authorize", authorize), ("finalize", finalize)):
-        if "checks: write" not in block:
-            fail(f"trusted {name} metadata job needs checks: write")
-        if "actions/checkout@" in block or "python scripts/" in block or "unittest" in block:
-            fail(f"trusted {name} write job must not execute candidate code")
+
+    for required in ("contents: read", "issues: write", "pull-requests: read"):
+        if required not in authorize:
+            fail(f"trusted authorize job is missing {required}")
+    if "checks: write" in authorize:
+        fail("trusted authorize job must not write check metadata")
+    if "actions/checkout@" in authorize or "python scripts/" in authorize or "unittest" in authorize:
+        fail("trusted authorize metadata job must not execute candidate code")
+    for required in (
+        "foundation-attestation-authorization",
+        "pr_number=",
+        "WORKFLOW_REF",
+        "WORKFLOW_SHA",
+    ):
+        if required not in authorize:
+            fail(f"trusted authorize diagnostics or identity invariant is missing: {required}")
+
     for name, block in (("validate", validate), ("test", test)):
         if "permissions:\n      contents: read" not in block:
             fail(f"trusted {name} execution job must be read-only")
@@ -118,6 +131,25 @@ def main() -> int:
             fail(f"trusted {name} execution job has write/secret capability")
         if "actions/checkout@" not in block or "ref: ${{ env.TARGET_SHA }}" not in block:
             fail(f"trusted {name} job is not bound to the immutable candidate")
+        if 'test "$(git rev-parse HEAD)" = "$TARGET_SHA"' not in block:
+            fail(f"trusted {name} job does not verify the checked-out SHA")
+
+    for required in ("checks: write", "issues: write", "contents: read"):
+        if required not in finalize:
+            fail(f"trusted finalize metadata job is missing {required}")
+    if "actions/checkout@" in finalize or "python scripts/" in finalize or "unittest" in finalize:
+        fail("trusted finalize metadata job must not execute candidate code")
+    for required in (
+        '"status": "completed"',
+        '"external_id"',
+        '"--input"',
+        "foundation-attestation-finalization",
+        "ATTESTATION_METADATA_PUBLICATION_FAILED",
+    ):
+        if required not in finalize:
+            fail(f"trusted finalize completed-check or diagnostic invariant is missing: {required}")
+    if "status=in_progress" in trusted or "--method PATCH" in trusted:
+        fail("trusted checks must publish completed checks directly, not patch in-progress checks")
 
     queue = workflow("claude-queue.yml")
     if "github.actor == github.repository_owner" not in queue:
@@ -150,6 +182,8 @@ def main() -> int:
         fail("write-capable supervisor must not load from a proposed Pull Request ref")
     if "ref: ${{ github.event.repository.default_branch }}" not in supervisor:
         fail("write-capable supervisor must checkout the default branch explicitly")
+    if '"Trusted Exact-SHA Checks"' not in supervisor:
+        fail("supervisor must reconcile immediately after trusted checks complete")
 
     runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
     for required in (
