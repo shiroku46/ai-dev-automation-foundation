@@ -1,11 +1,18 @@
+import importlib
+import os
+import re
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
+LOCAL_REUSABLE = "uses: ./.github/workflows/trusted-checks.yml"
 
 
 class WorkflowSecurityTest(unittest.TestCase):
-    def test_all_workflows_have_required_sections_and_no_unsafe_trigger(self):
+    def test_all_workflows_have_required_sections_and_pinned_actions(self):
         workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
         self.assertTrue(workflows)
         for path in workflows:
@@ -15,51 +22,95 @@ class WorkflowSecurityTest(unittest.TestCase):
             self.assertIn("\njobs:\n", text, path)
             self.assertNotIn("\t", text, path)
             self.assertNotIn("pull_request_target", text, path)
+            for line in text.splitlines():
+                stripped = line.strip().removeprefix("- ")
+                if stripped.startswith("uses:") and stripped != LOCAL_REUSABLE:
+                    self.assertRegex(line, PIN, path)
 
-    def test_ci_parses_complete_single_document_yaml_streams(self):
-        text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        self.assertIn('require "psych"', text)
-        self.assertIn("Psych.parse_stream", text)
-        self.assertIn("documents.length == 1", text)
-        self.assertNotIn("YAML.safe_load", text)
-        self.assertNotIn("pip install", text)
-
-    def test_fork_jobs_are_read_only(self):
+    def test_contributor_checks_are_read_only_secret_free_and_exact_sha(self):
         for name in ("ci.yml", "unit-tests.yml"):
             text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
             self.assertIn("permissions:\n  contents: read", text)
+            self.assertIn("github.event.pull_request.head.sha", text)
+            self.assertIn("persist-credentials: false", text)
             self.assertNotIn("secrets.", text)
             self.assertNotIn("id-token: write", text)
+            self.assertNotIn("checks: write", text)
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn("Psych.parse_stream", ci)
+        self.assertIn("documents.length == 1", ci)
+        self.assertNotIn("pip install", ci)
 
-    def test_queue_owner_guard_correction(self):
+    def test_trusted_attestation_separates_metadata_writes_from_proposed_code(self):
+        text = (ROOT / ".github/workflows/trusted-checks.yml").read_text(encoding="utf-8")
+        self.assertIn("workflow_call:", text)
+        self.assertIn("job.workflow_ref", text)
+        self.assertIn("job.workflow_sha", text)
+        self.assertIn("CI / validate", text)
+        self.assertIn("Unit Tests / test", text)
+        self.assertIn("head_sha=$TARGET_SHA", text)
+        self.assertIn("status=in_progress", text)
+        self.assertIn("status=completed", text)
+
+        authorize = text.split("  authorize:\n", 1)[1].split("  validate_target:\n", 1)[0]
+        validate = text.split("  validate_target:\n", 1)[1].split("  test_target:\n", 1)[0]
+        test = text.split("  test_target:\n", 1)[1].split("  finalize:\n", 1)[0]
+        finalize = text.split("  finalize:\n", 1)[1]
+        self.assertIn("checks: write", authorize)
+        self.assertIn("checks: write", finalize)
+        self.assertNotIn("actions/checkout", authorize)
+        self.assertNotIn("actions/checkout", finalize)
+        for proposed_code_job in (validate, test):
+            self.assertIn("permissions:\n      contents: read", proposed_code_job)
+            self.assertIn("actions/checkout", proposed_code_job)
+            self.assertIn('test "$(git rev-parse HEAD)" = "$TARGET_SHA"', proposed_code_job)
+            self.assertNotIn("checks: write", proposed_code_job)
+            self.assertNotIn("id-token: write", proposed_code_job)
+            self.assertNotIn("secrets.", proposed_code_job)
+
+    def test_queue_owner_and_bot_dispatch_are_default_branch_bound(self):
         text = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
         self.assertIn("github.actor == github.repository_owner", text)
         self.assertIn("github.actor == vars.AUTOMATION_OWNER", text)
-        self.assertNotIn("github.triggering_actor", text)
-        self.assertIn('body.strip() == trigger', text)
+        self.assertIn("github.actor == 'github-actions[bot]'", text)
+        self.assertIn("trusted_run_id:", text)
+        self.assertIn('expected_path = f".github/workflows/supervisor.yml@{default_branch}"', text)
         self.assertIn("github.ref_name == github.event.repository.default_branch", text)
+        self.assertIn('body.strip() == trigger', text)
+        self.assertNotIn("github.triggering_actor", text)
 
-    def test_reconciliation_uses_check_runs_and_fixed_trusted_authors(self):
+    def test_reconciliation_calls_only_fixed_local_reusable_workflow(self):
         text = (ROOT / ".github/workflows/ci-reconcile.yml").read_text(encoding="utf-8")
-        self.assertIn("checks: read", text)
-        self.assertIn("commits/{sha}/check-runs", text)
-        self.assertIn('allowed_authors = {owner, "github-actions[bot]"}', text)
-        self.assertIn('{"validate": "ci.yml", "test": "unit-tests.yml"}', text)
+        self.assertIn("workflow_run:", text)
+        self.assertIn("python -m scripts.supervisor_runtime discover", text)
+        self.assertIn(LOCAL_REUSABLE, text)
+        self.assertIn("max-parallel: 2", text)
+        self.assertIn("checks: write", text)
+        self.assertNotIn("gh workflow run", text)
         self.assertNotIn("statuses: write", text)
-        self.assertNotIn("/statuses/", text)
+        self.assertNotIn("pull_request:", text)
 
-    def test_write_supervisor_uses_default_branch_and_trusted_evidence(self):
+    def test_supervisor_requires_fixed_attestation_and_immutable_codex_evidence(self):
         workflow = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
-        self.assertIn("checks: read", workflow)
-        self.assertIn("AUTOMATION_OWNER", workflow)
-        self.assertNotIn("github.event.pull_request.head.sha", workflow)
-        self.assertIn("commits/{sha}/check-runs", runtime)
-        self.assertIn('"github-actions[bot]"', runtime)
-        self.assertIn('get("slug") != "github-actions"', runtime)
-        self.assertIn("issues/comments/{request['id']}/reactions", runtime)
-        self.assertIn("reviewThreads(first:100)", runtime)
+        self.assertIn('workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation"]', workflow)
+        self.assertNotIn("pull_request:\n", workflow)
+        for required in (
+            "referenced_workflows",
+            "current_default_sha()",
+            "expected_external_id",
+            "run.get(\"path\") != expected_caller",
+            "reviewThreads(first:100,after:$cursor)",
+            "hasNextPage",
+            "expected_marker",
+            "login == ACTIONS_LOGIN",
+            'item.get("created_at") == item.get("updated_at")',
+            "MAX_ATTESTATION_ATTEMPTS",
+            "api_key_pages",
+            "api_list",
+        ):
+            self.assertIn(required, runtime)
         self.assertNotIn("/commits/{sha}/status", runtime)
 
     def test_source_issue_and_negative_e2e_close_are_owner_trusted(self):
@@ -69,6 +120,41 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn('E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"', runtime)
         self.assertIn("E2E_AUTO_CLOSE_MARKER in issue_body", runtime)
         self.assertIn('"UNTRUSTED_SOURCE_ISSUE"', runtime)
+
+    def test_runtime_candidate_and_details_url_policy(self):
+        environment = {
+            "REPOSITORY": "example/foundation",
+            "DEFAULT_BRANCH": "main",
+            "AUTOMATION_OWNER": "owner",
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            sys.modules.pop("scripts.supervisor_runtime", None)
+            runtime = importlib.import_module("scripts.supervisor_runtime")
+
+        trusted = {
+            "head": {"ref": "automation/probe", "repo": {"full_name": "example/foundation"}},
+            "base": {"ref": "main", "repo": {"full_name": "example/foundation"}},
+            "user": {"login": "owner"},
+            "labels": [],
+        }
+        self.assertTrue(runtime.trusted_candidate(trusted))
+        forked = {**trusted, "head": {"ref": "automation/probe", "repo": {"full_name": "fork/repo"}}}
+        self.assertFalse(runtime.trusted_candidate(forked))
+        wrong_base = {**trusted, "base": {"ref": "other", "repo": {"full_name": "example/foundation"}}}
+        self.assertFalse(runtime.trusted_candidate(wrong_base))
+        untrusted_author = {**trusted, "user": {"login": "contributor"}}
+        self.assertFalse(runtime.trusted_candidate(untrusted_author))
+        self.assertEqual(
+            runtime.run_id_from_details_url(
+                "https://github.com/example/foundation/actions/runs/12345"
+            ),
+            12345,
+        )
+        self.assertIsNone(
+            runtime.run_id_from_details_url(
+                "https://github.com/example/foundation/actions/runs/12345/job/7"
+            )
+        )
 
 
 if __name__ == "__main__":
