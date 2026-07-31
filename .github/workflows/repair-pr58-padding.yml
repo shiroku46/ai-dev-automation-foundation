@@ -1,0 +1,184 @@
+name: Repair PR 58 Base64 Padding
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-58-base64-padding
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Append the single missing padding character
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: "58"
+          TARGET_BRANCH: fix/issue-57-pr44-remaining-gates
+          EXPECTED_HEAD: e3570416a911974fdc80ef18307778a7d38c8202
+          TARGET_PATH: .github/workflows/repair-pr44-remaining-gates.yml
+        run: |
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import json
+          import os
+          import re
+          import subprocess
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          pr_number = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          target_path = os.environ["TARGET_PATH"]
+
+          def gh(*args, input_value=None):
+              result = subprocess.run(
+                  ["gh", *args],
+                  input=input_value,
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  raise RuntimeError(
+                      "gh command failed: " + " ".join(args) + "\n" + result.stderr.strip()
+                  )
+              return result.stdout
+
+          def api(path):
+              return json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json", path)
+              )
+
+          def api_json(method, path, payload):
+              return json.loads(
+                  gh(
+                      "api",
+                      "--method",
+                      method,
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "--input",
+                      "-",
+                      path,
+                      input_value=json.dumps(payload),
+                  )
+              )
+
+          def require_target(snapshot):
+              head = snapshot.get("head") or {}
+              base = snapshot.get("base") or {}
+              if snapshot.get("state") != "open":
+                  print("Target Pull Request is no longer open; nothing to repair.")
+                  raise SystemExit(0)
+              if (head.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target Pull Request head is not same-repository")
+              if (base.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if head.get("ref") != target_branch:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != expected_head:
+                  print("Target head already moved; exact padding repair is no longer applicable.")
+                  raise SystemExit(0)
+
+          pull = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(pull)
+          commit = api(f"repos/{repository}/git/commits/{expected_head}")
+          tree_sha = (commit.get("tree") or {}).get("sha")
+          if not tree_sha:
+              raise RuntimeError("Expected commit has no tree")
+          tree = api(f"repos/{repository}/git/trees/{tree_sha}?recursive=1")
+          matches = [
+              item
+              for item in tree.get("tree") or []
+              if item.get("path") == target_path
+          ]
+          if len(matches) != 1:
+              raise RuntimeError("Expected tree does not contain exactly one target path")
+          entry = matches[0]
+          if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
+              raise RuntimeError("Target is not an expected regular text file")
+
+          metadata = api(f"repos/{repository}/contents/{target_path}?ref={expected_head}")
+          if metadata.get("sha") != entry.get("sha") or metadata.get("encoding") != "base64":
+              raise RuntimeError("Immutable target blob/tree binding failed")
+          content = base64.b64decode(
+              (metadata.get("content") or "").encode("ascii"), validate=True
+          ).decode("utf-8")
+
+          pattern = re.compile(
+              r"(?m)^          printf '%s' '([A-Za-z0-9+/]+)' \| base64 --decode \| gzip --decompress \| python3$"
+          )
+          found = pattern.findall(content)
+          if len(found) != 1:
+              raise RuntimeError("Expected exactly one unpadded fixed payload pipeline")
+          token = found[0]
+          if "=" in token or len(token) % 4 != 3:
+              raise RuntimeError("Payload is not the exact one-character padding case")
+          padded = token + "="
+          decoded = base64.b64decode(padded.encode("ascii"), validate=True)
+          source = gzip.decompress(decoded)
+          compile(source.decode("utf-8"), "<fixed-repair-payload>", "exec")
+          replacement = (
+              "          printf '%s' '"
+              + padded
+              + "' | base64 --decode | gzip --decompress | python3"
+          )
+          repaired, count = pattern.subn(replacement, content)
+          if count != 1 or repaired == content or repaired.count(padded) != 1:
+              raise RuntimeError("Padding transformation was not exactly one character")
+          if repaired.replace(padded, token, 1) != content:
+              raise RuntimeError("Padding transformation changed unrelated content")
+
+          blob = api_json(
+              "POST",
+              f"repos/{repository}/git/blobs",
+              {"content": repaired, "encoding": "utf-8"},
+          )
+          new_tree = api_json(
+              "POST",
+              f"repos/{repository}/git/trees",
+              {
+                  "base_tree": tree_sha,
+                  "tree": [
+                      {
+                          "path": target_path,
+                          "mode": entry["mode"],
+                          "type": "blob",
+                          "sha": blob["sha"],
+                      }
+                  ],
+              },
+          )
+          new_commit = api_json(
+              "POST",
+              f"repos/{repository}/git/commits",
+              {
+                  "message": "Restore exact Base64 padding in PR 58 repair payload",
+                  "tree": new_tree["sha"],
+                  "parents": [expected_head],
+              },
+          )
+
+          live = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(live)
+          api_json(
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{target_branch}",
+              {"sha": new_commit["sha"], "force": False},
+          )
+          print(f"Repaired PR #{pr_number} to {new_commit['sha']}.")
+          PY
