@@ -220,7 +220,7 @@ def minutes_since(value: str | None, now: datetime | None = None) -> int | None:
 
 
 def minutes_without_progress(updated_at: str, now: datetime | None = None) -> int:
-    """Compatibility helper; runtime no-progress decisions use immutable evidence timestamps."""
+    """Compatibility helper; runtime decisions use immutable evidence timestamps."""
     value = minutes_since(updated_at, now)
     return value if value is not None else 0
 
@@ -454,15 +454,15 @@ def attestation_attempts(sha: str) -> list[dict[str, Any]]:
                 and run.get("conclusion") == "success"
                 and complete
             )
-        attempts.append(
-            {
-                "run_id": run_id,
-                "active": active,
-                "success": success,
-                "complete": complete,
-                "updated_at": run.get("updated_at"),
-            }
-        )
+        attempt: dict[str, Any] = {
+            "run_id": run_id,
+            "active": active,
+            "success": success,
+            "complete": complete,
+        }
+        if run.get("updated_at"):
+            attempt["updated_at"] = run["updated_at"]
+        attempts.append(attempt)
     return sorted(attempts, key=lambda item: int(item["run_id"]))
 
 
@@ -882,7 +882,7 @@ def human_only_notice(
     if any(
         (item.get("user") or {}).get("login") == ACTIONS_LOGIN
         and item.get("created_at") == item.get("updated_at")
-        and (item.get("body") or "") == body
+        and marker in (item.get("body") or "")
         for item in comments
     ):
         return
