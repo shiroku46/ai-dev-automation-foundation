@@ -39,36 +39,44 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("documents.length == 1", ci)
         self.assertNotIn("pip install", ci)
 
-    def test_trusted_attestation_is_candidate_bound_and_separates_permissions(self):
+    def test_trusted_attestation_publishes_completed_checks_after_read_only_jobs(self):
         text = (ROOT / ".github/workflows/trusted-checks.yml").read_text(encoding="utf-8")
         self.assertIn("run-name: Trusted checks ${{ inputs.target_sha }}", text)
         self.assertIn("workflow_dispatch:", text)
         self.assertNotIn("workflow_call:", text)
         self.assertIn("WORKFLOW_REF: ${{ github.workflow_ref }}", text)
         self.assertIn("WORKFLOW_SHA: ${{ github.workflow_sha }}", text)
-        self.assertNotIn("job.workflow_ref", text)
-        self.assertNotIn("job.workflow_sha", text)
         self.assertIn("CI / validate", text)
         self.assertIn("Unit Tests / test", text)
-        self.assertIn("head_sha=$TARGET_SHA", text)
-        self.assertIn("status=in_progress", text)
-        self.assertIn("status=completed", text)
-        self.assertIn('f"repos/{repository}/commits/{target_sha}/pulls?per_page=100"', text)
-        self.assertIn('head.get("sha") != target_sha', text)
-        self.assertIn('base.get("ref") != default_branch', text)
-        self.assertIn('author not in allowed_authors', text)
-        self.assertIn('"ai-no-merge" in labels', text)
+        self.assertIn('"status": "completed"', text)
+        self.assertIn('"external_id"', text)
+        self.assertIn('"--input"', text)
+        self.assertNotIn("status=in_progress", text)
+        self.assertNotIn("--method PATCH", text)
 
         authorize = text.split("  authorize:\n", 1)[1].split("  validate_target:\n", 1)[0]
         validate = text.split("  validate_target:\n", 1)[1].split("  test_target:\n", 1)[0]
         test = text.split("  test_target:\n", 1)[1].split("  finalize:\n", 1)[0]
         finalize = text.split("  finalize:\n", 1)[1]
+
+        self.assertIn("contents: read", authorize)
+        self.assertIn("issues: write", authorize)
         self.assertIn("pull-requests: read", authorize)
+        self.assertNotIn("checks: write", authorize)
+        self.assertIn("foundation-attestation-authorization", authorize)
+        self.assertIn("pr_number=", authorize)
+
         for metadata_job in (authorize, finalize):
-            self.assertIn("checks: write", metadata_job)
             self.assertNotIn("actions/checkout", metadata_job)
             self.assertNotIn("python scripts/", metadata_job)
             self.assertNotIn("unittest", metadata_job)
+
+        self.assertIn("checks: write", finalize)
+        self.assertIn("issues: write", finalize)
+        self.assertIn("foundation-attestation-finalization", finalize)
+        self.assertIn("ATTESTATION_METADATA_PUBLICATION_FAILED", finalize)
+        self.assertIn('f"foundation:{run_id}:{name}:{target_sha}"', finalize)
+
         for proposed_code_job in (validate, test):
             self.assertIn("permissions:\n      contents: read", proposed_code_job)
             self.assertIn("actions/checkout", proposed_code_job)
@@ -101,11 +109,11 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn("pull_request:\n", text)
         self.assertNotIn("uses: ./.github/workflows/", text)
 
-    def test_supervisor_requires_fixed_candidate_bound_run_and_codex_evidence(self):
+    def test_supervisor_runs_after_trusted_checks_and_keeps_provenance_gates(self):
         workflow = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
-        self.assertIn('workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation"]', workflow)
+        self.assertIn("Trusted Exact-SHA Checks", workflow)
         self.assertNotIn("pull_request:\n", workflow)
         for required in (
             "trusted_workflow_id()",
