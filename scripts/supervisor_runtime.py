@@ -27,7 +27,6 @@ AUTOMATION_OWNER = os.environ["AUTOMATION_OWNER"]
 REPOSITORY_OWNER = REPO.split("/", 1)[0]
 TRUSTED_ISSUE_AUTHORS = {AUTOMATION_OWNER, REPOSITORY_OWNER}
 ATTESTATION_JOB_NAMES = ("CI / validate", "Unit Tests / test")
-# Compatibility alias for policy/tests that refer to the required attestation set.
 ATTESTATION_NAMES = ATTESTATION_JOB_NAMES
 MAX_CANDIDATES = 10
 MAX_CHANGED_FILES = 100
@@ -92,7 +91,6 @@ def api_key_pages(path: str, key: str) -> list[dict[str, Any]]:
 
 
 def current_default_sha() -> str:
-    """Return a fresh default-branch SHA for every security decision."""
     return str(api(f"repos/{REPO}/commits/{DEFAULT_BRANCH}")["sha"])
 
 
@@ -307,7 +305,6 @@ def trusted_runs_for_sha(sha: str) -> list[dict[str, Any]]:
 
 
 def trusted_run_jobs(run_id: int) -> list[dict[str, Any]]:
-    """Return immutable GitHub-owned jobs for one recognized workflow run."""
     return api_key_pages(
         f"repos/{REPO}/actions/runs/{run_id}/jobs?filter=all&per_page=100",
         "jobs",
@@ -315,9 +312,9 @@ def trusted_run_jobs(run_id: int) -> list[dict[str, Any]]:
 
 
 def _complete_successful_job_set(
-    jobs: list[dict[str, Any]], run_id: int, sha: str
+    jobs: list[dict[str, Any]], run_id: int, trusted_workflow_sha: str
 ) -> bool:
-    """Require one and only one successful exact-SHA job for every required name."""
+    """Require one successful required job bound to the recognized run/ref SHA."""
     by_name: dict[str, list[dict[str, Any]]] = {
         name: [] for name in ATTESTATION_JOB_NAMES
     }
@@ -327,7 +324,7 @@ def _complete_successful_job_set(
             continue
         if int(job.get("run_id") or 0) != run_id:
             return False
-        if job.get("head_sha") != sha:
+        if job.get("head_sha") != trusted_workflow_sha:
             return False
         by_name[name].append(job)
 
@@ -341,24 +338,23 @@ def _complete_successful_job_set(
 
 
 def attestation_attempts(sha: str) -> list[dict[str, Any]]:
-    """Classify every recognized trusted run as active, successful, or failed.
-
-    Every recognized run consumes one bounded attempt, including authorization-only,
-    cancelled, incomplete, missing-job, duplicate-job, and failed runs. A run can
-    succeed only through GitHub-owned run and job metadata; custom checks/statuses are
-    intentionally ignored.
-    """
+    """Classify each recognized run using GitHub-owned run/job evidence."""
     attempts: list[dict[str, Any]] = []
     for run in trusted_runs_for_sha(sha):
         run_id = int(run["id"])
         status = str(run.get("status") or "")
         active = status in ACTIVE_RUN_STATES
-        jobs: list[dict[str, Any]] = []
         complete = False
         success = False
         if not active:
+            trusted_workflow_sha = str(run.get("head_sha") or "")
             jobs = trusted_run_jobs(run_id)
-            complete = _complete_successful_job_set(jobs, run_id, sha)
+            complete = bool(
+                trusted_workflow_sha
+                and _complete_successful_job_set(
+                    jobs, run_id, trusted_workflow_sha
+                )
+            )
             success = bool(
                 status == "completed"
                 and run.get("conclusion") == "success"
