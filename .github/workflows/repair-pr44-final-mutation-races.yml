@@ -52,6 +52,44 @@ jobs:
 
           path = Path(sys.argv[1])
           text = path.read_text(encoding="utf-8")
+
+          def parse_authorized_paths(issue_body: str) -> set[str]:
+              marker = "<!-- foundation-protected-authorization"
+              if marker not in issue_body:
+                  return set()
+              remainder = issue_body.split(marker, 1)[1]
+              if "-->" not in remainder:
+                  return set()
+              block = remainder.split("-->", 1)[0]
+              paths = set()
+              in_paths = False
+              for raw in block.splitlines():
+                  line = raw.strip()
+                  if line == "paths:":
+                      in_paths = True
+                      continue
+                  if in_paths and line.startswith("- "):
+                      paths.add(line[2:].strip("` "))
+                  elif in_paths and line and not line.startswith("#"):
+                      in_paths = False
+              return paths
+
+          regression_body = '''
+          scripts/supervisor_runtime.py is mentioned outside authorization.
+          <!-- foundation-protected-authorization
+          category: regression
+          paths:
+          - tests/test_runtime_scope_and_checks.py
+          operation: regression only
+          -->
+          '''
+          if parse_authorized_paths(regression_body) != {
+              "tests/test_runtime_scope_and_checks.py"
+          }:
+              raise RuntimeError(
+                  "structured authorization regression accepted an outside mention"
+              )
+
           old_guard = '''    if fresh_scope_reason is not None:
                   raise RuntimeError(
                       f"{reason} is no longer supported because source/scope evidence changed"
