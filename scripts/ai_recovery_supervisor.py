@@ -94,8 +94,8 @@ class SelfResolutionAudit:
     Audit evidence is valid for one exact head SHA and one reason family only.
     Internal stops require a completed audit and at least one concrete attempted
     connected path. Human-only escalation additionally requires concrete
-    impossibility evidence, one minimal UI action, and an automatic-resumption
-    condition.
+    impossibility evidence, one reason-compatible UI action, and an automatic-
+    resumption condition.
     """
 
     completed: bool = False
@@ -183,6 +183,20 @@ AUTOMATABLE_OR_INTERNAL_RISKS = {
     "untrusted-evidence",
 }
 
+FORBIDDEN_HUMAN_ACTION_TERMS = (
+    "press merge",
+    "merge the pull request",
+    "approve the pull request",
+    "close the pull request",
+    "rerun the workflow",
+    "retry the job",
+    "resolve the review",
+    "change workflow permission",
+    "change repository setting",
+    "increase budget",
+    "deploy",
+)
+
 
 def _sorted_dict(value):
     if isinstance(value, dict):
@@ -237,6 +251,40 @@ def _audit_is_bound(state: State, reason: Reason) -> bool:
     )
 
 
+def _human_action_matches_reason(reason: Reason, action: str) -> bool:
+    normalized = " ".join(action.lower().split())
+    if not normalized or any(term in normalized for term in FORBIDDEN_HUMAN_ACTION_TERMS):
+        return False
+    if reason == Reason.HUMAN_REPOSITORY_UI:
+        has_object = "repository" in normalized or "github app" in normalized or "app installation" in normalized
+        has_operation = any(term in normalized for term in ("create", "connect", "reconnect"))
+        return has_object and has_operation and ("ui" in normalized or "interface" in normalized)
+    if reason == Reason.HUMAN_CREDENTIAL_UI:
+        has_object = any(
+            term in normalized
+            for term in (
+                "credential",
+                "mfa",
+                "captcha",
+                "hardware key",
+                "hardware-key",
+                "trusted device",
+                "provider verification",
+                "identity verification",
+            )
+        )
+        has_operation = any(
+            term in normalized
+            for term in ("complete", "acquire", "renew", "verify", "authenticate")
+        )
+        return has_object and has_operation and ("ui" in normalized or "interface" in normalized)
+    if reason == Reason.HUMAN_DISCONNECTED_INTEGRATION:
+        has_object = "integration" in normalized or "connection" in normalized
+        has_operation = "reconnect" in normalized or "connect" in normalized
+        return has_object and has_operation and ("ui" in normalized or "interface" in normalized)
+    return False
+
+
 def _internal_stop_after_audit(
     state: State,
     policy: Policy,
@@ -262,10 +310,11 @@ def _human_only_decision(
     reason: Reason,
 ) -> Decision:
     audit = state.self_resolution_audit
+    action = audit.minimal_human_action.strip()
     complete = bool(
         _audit_is_bound(state, reason)
         and _nonempty_entries(audit.impossibility_evidence)
-        and audit.minimal_human_action.strip()
+        and _human_action_matches_reason(reason, action)
         and audit.automatic_resume_condition.strip()
     )
     if not complete:
@@ -276,15 +325,15 @@ def _human_only_decision(
             Reason.AUDIT_REQUIRED,
             "Human-only notification is forbidden until a completed audit bound to "
             "the current exact SHA and selected reason family records concrete attempted "
-            "connected paths, concrete impossibility evidence, the minimal UI action, "
-            "and the automatic-resumption condition.",
+            "connected paths, concrete impossibility evidence, a compatible minimal "
+            "account/provider UI action, and the automatic-resumption condition.",
         )
     attempted = "; ".join(_nonempty_entries(audit.attempted_connected_paths))
     impossible = "; ".join(_nonempty_entries(audit.impossibility_evidence))
     explanation = (
         f"Issue #{state.issue_number}; PR #{state.pr_number}; exact SHA {state.head_sha}. "
         f"Attempted connected paths: {attempted}. Impossibility evidence: {impossible}. "
-        f"Minimal human UI action: {audit.minimal_human_action.strip()}. "
+        f"Minimal human UI action: {action}. "
         f"Automatic resumption condition: {audit.automatic_resume_condition.strip()}."
     )
     return _decision(state, policy, Action.ESCALATE_HUMAN, reason, explanation)
@@ -419,14 +468,18 @@ def decide(state: State, policy: Policy = Policy()) -> Decision:
 
         if state.deterministic_failure and state.bounded_fix:
             fix = state.bounded_fix
+            state_run_id = state.concrete_failure_run_id.strip()
+            state_fingerprint = state.concrete_failure_fingerprint.strip()
+            fix_run_id = fix.run_id.strip()
+            fix_fingerprint = fix.failure_fingerprint.strip()
             valid_identity = bool(
-                state.concrete_failure_run_id
-                and state.concrete_failure_fingerprint
-                and fix.run_id
-                and fix.failure_fingerprint
+                state_run_id
+                and state_fingerprint
+                and fix_run_id
+                and fix_fingerprint
                 and fix.sha == state.head_sha
-                and fix.run_id == state.concrete_failure_run_id
-                and fix.failure_fingerprint == state.concrete_failure_fingerprint
+                and fix_run_id == state_run_id
+                and fix_fingerprint == state_fingerprint
             )
             paths = set(fix.paths)
             if (
