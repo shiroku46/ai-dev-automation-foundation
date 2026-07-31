@@ -92,9 +92,10 @@ class SelfResolutionAudit:
     """Immutable evidence that connected recovery paths were exhausted.
 
     Audit evidence is valid for one exact head SHA and one reason family only.
-    Internal stops require a completed audit and at least one attempted connected
-    path. Human-only escalation additionally requires impossibility evidence, one
-    minimal UI action, and an automatic-resumption condition.
+    Internal stops require a completed audit and at least one concrete attempted
+    connected path. Human-only escalation additionally requires concrete
+    impossibility evidence, one minimal UI action, and an automatic-resumption
+    condition.
     """
 
     completed: bool = False
@@ -222,13 +223,17 @@ def _decision(
     return Decision(action, reason, explanation, key)
 
 
+def _nonempty_entries(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(value.strip() for value in values if value and value.strip())
+
+
 def _audit_is_bound(state: State, reason: Reason) -> bool:
     audit = state.self_resolution_audit
     return bool(
         audit.completed
         and audit.audited_sha == state.head_sha
         and audit.reason_family == reason.value
-        and audit.attempted_connected_paths
+        and _nonempty_entries(audit.attempted_connected_paths)
     )
 
 
@@ -259,7 +264,7 @@ def _human_only_decision(
     audit = state.self_resolution_audit
     complete = bool(
         _audit_is_bound(state, reason)
-        and audit.impossibility_evidence
+        and _nonempty_entries(audit.impossibility_evidence)
         and audit.minimal_human_action.strip()
         and audit.automatic_resume_condition.strip()
     )
@@ -270,17 +275,17 @@ def _human_only_decision(
             Action.RUN_SELF_RESOLUTION_AUDIT,
             Reason.AUDIT_REQUIRED,
             "Human-only notification is forbidden until a completed audit bound to "
-            "the current exact SHA and selected reason family records attempted connected "
-            "paths, impossibility evidence, the minimal UI action, and the automatic-"
-            "resumption condition.",
+            "the current exact SHA and selected reason family records concrete attempted "
+            "connected paths, concrete impossibility evidence, the minimal UI action, "
+            "and the automatic-resumption condition.",
         )
-    attempted = "; ".join(audit.attempted_connected_paths)
-    impossible = "; ".join(audit.impossibility_evidence)
+    attempted = "; ".join(_nonempty_entries(audit.attempted_connected_paths))
+    impossible = "; ".join(_nonempty_entries(audit.impossibility_evidence))
     explanation = (
         f"Issue #{state.issue_number}; PR #{state.pr_number}; exact SHA {state.head_sha}. "
         f"Attempted connected paths: {attempted}. Impossibility evidence: {impossible}. "
-        f"Minimal human UI action: {audit.minimal_human_action}. "
-        f"Automatic resumption condition: {audit.automatic_resume_condition}."
+        f"Minimal human UI action: {audit.minimal_human_action.strip()}. "
+        f"Automatic resumption condition: {audit.automatic_resume_condition.strip()}."
     )
     return _decision(state, policy, Action.ESCALATE_HUMAN, reason, explanation)
 
@@ -324,8 +329,26 @@ def decide(state: State, policy: Policy = Policy()) -> Decision:
             "Protected paths are not covered by trusted Issue authorization.",
         )
 
-    manifest = {check.context: check for check in state.checks if check.sha == state.head_sha}
-    missing = [name for name in policy.required_checks if name not in manifest]
+    checks_by_context: dict[str, tuple[Check, ...]] = {}
+    for context in policy.required_checks:
+        matches = tuple(
+            sorted(
+                (
+                    check
+                    for check in state.checks
+                    if check.sha == state.head_sha and check.context == context
+                ),
+                key=lambda check: (
+                    check.producer,
+                    check.run_id,
+                    check.failure_fingerprint,
+                    check.state,
+                ),
+            )
+        )
+        checks_by_context[context] = matches
+
+    missing = [name for name, checks in checks_by_context.items() if not checks]
     if missing:
         return _decision(
             state,
@@ -336,8 +359,8 @@ def decide(state: State, policy: Policy = Policy()) -> Decision:
         )
 
     for name in policy.required_checks:
-        check = manifest[name]
-        if check.producer not in policy.trusted_producers:
+        checks = checks_by_context[name]
+        if any(check.producer not in policy.trusted_producers for check in checks):
             return _decision(
                 state,
                 policy,
@@ -345,7 +368,7 @@ def decide(state: State, policy: Policy = Policy()) -> Decision:
                 Reason.UNTRUSTED_EVIDENCE,
                 f"Check {name} has an untrusted producer; replace it with fresh trusted exact-SHA evidence.",
             )
-        if check.state in {"queued", "pending", "in_progress"}:
+        if any(check.state in {"queued", "pending", "in_progress"} for check in checks):
             return _decision(
                 state,
                 policy,
@@ -355,9 +378,10 @@ def decide(state: State, policy: Policy = Policy()) -> Decision:
             )
 
     failures = [
-        manifest[name]
+        check
         for name in policy.required_checks
-        if manifest[name].state != "success"
+        for check in checks_by_context[name]
+        if check.state != "success"
     ]
     if failures:
         if state.transient_failure:
@@ -396,7 +420,11 @@ def decide(state: State, policy: Policy = Policy()) -> Decision:
         if state.deterministic_failure and state.bounded_fix:
             fix = state.bounded_fix
             valid_identity = bool(
-                fix.sha == state.head_sha
+                state.concrete_failure_run_id
+                and state.concrete_failure_fingerprint
+                and fix.run_id
+                and fix.failure_fingerprint
+                and fix.sha == state.head_sha
                 and fix.run_id == state.concrete_failure_run_id
                 and fix.failure_fingerprint == state.concrete_failure_fingerprint
             )
