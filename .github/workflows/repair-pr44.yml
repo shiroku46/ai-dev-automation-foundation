@@ -1,4 +1,4 @@
-name: Repair PR 44 Exact Scope
+name: Repair PR 44 Final Gate
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: repair-pr-44-exact-scope
+  group: repair-pr-44-final-gate
   cancel-in-progress: false
 
 jobs:
@@ -24,11 +24,170 @@ jobs:
     env:
       TARGET_BRANCH: fix/issue-36-human-notice-contract
       TARGET_PR: "44"
-      EXPECTED_HEAD: 142a2b9a4a13fa8f10737a8167321d92f6069cdb
+      EXPECTED_HEAD: 3be4d1f551116b30e937543384372649d3b7250d
     steps:
-      - name: Apply exact count-checked text repairs through Git data API
+      - name: Apply immutable exact-scope final-gate repair
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          printf '%s' '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' | base64 --decode | gzip --decompress | python3
+          import base64
+          import json
+          import os
+          import subprocess
+          import sys
+
+          REPOSITORY = os.environ["GITHUB_REPOSITORY"]
+          TARGET_BRANCH = os.environ["TARGET_BRANCH"]
+          TARGET_PR = int(os.environ["TARGET_PR"])
+          EXPECTED_HEAD = os.environ["EXPECTED_HEAD"]
+          TARGET_PATHS = (
+              "scripts/supervisor_runtime.py",
+              "tests/test_runtime_scope_and_checks.py",
+          )
+
+          OLD_RUNTIME = '        final = _live_pr(pr_number, sha)\n        if final.get("mergeable") is not True or not trusted_candidate(final):\n            continue\n        final_native_clean, _ = native_workflow_evidence(sha, pr_number)\n        if not final_native_clean or not exact_codex_clean(pr_number, sha):\n            continue\n        gh(\n'
+          NEW_RUNTIME = '        final = _live_pr(pr_number, sha)\n        if final.get("mergeable") is not True or not trusted_candidate(final):\n            continue\n        final_native_clean, _ = native_workflow_evidence(sha, pr_number)\n        if not final_native_clean or not exact_codex_clean(pr_number, sha):\n            continue\n\n        merge_candidate = _live_pr(pr_number, sha)\n        if merge_candidate.get("mergeable") is not True or not trusted_candidate(\n            merge_candidate\n        ):\n            continue\n        final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)\n        if final_issue_number != issue_number or final_scope_error:\n            continue\n        merge_candidate = _live_pr(pr_number, sha)\n        if merge_candidate.get("mergeable") is not True or not trusted_candidate(\n            merge_candidate\n        ):\n            continue\n        gh(\n'
+          TEST_INSERT = '\n\nclass FinalMergeGateRevalidationTest(unittest.TestCase):\n    def setUp(self):\n        self.runtime = load_runtime()\n\n    def _candidate(self, *, labels=None):\n        return {\n            "number": PR_NUMBER,\n            "state": "open",\n            "draft": False,\n            "mergeable": True,\n            "mergeable_state": "clean",\n            "head": {\n                "sha": SHA,\n                "ref": "fix/probe",\n                "repo": {"full_name": "example/foundation"},\n            },\n            "base": {\n                "ref": "main",\n                "repo": {"full_name": "example/foundation"},\n            },\n            "user": {"login": "owner"},\n            "labels": labels or [],\n            "body": "Closes #9",\n        }\n\n    def _run_final_gate(self, snapshots, source_result):\n        with (\n            patch.object(self.runtime, "candidate_pulls", return_value=[snapshots[0]]),\n            patch.object(self.runtime, "api", side_effect=snapshots),\n            patch.object(\n                self.runtime,\n                "source_and_scope",\n                side_effect=[\n                    (9, {"number": 9}, ["docs/probe.md"], None),\n                    source_result,\n                ],\n            ),\n            patch.object(\n                self.runtime,\n                "attestation_attempts",\n                return_value=[{"success": True, "active": False, "run_id": 1}],\n            ),\n            patch.object(\n                self.runtime,\n                "native_workflow_evidence",\n                return_value=(True, []),\n            ),\n            patch.object(\n                self.runtime,\n                "exact_codex_evidence",\n                return_value={\n                    "state": "clean",\n                    "timestamp": "2026-07-31T12:00:00Z",\n                    "request_timestamp": "2026-07-31T11:00:00Z",\n                },\n            ),\n            patch.object(self.runtime, "exact_codex_clean", return_value=True),\n            patch.object(self.runtime, "gh") as gh,\n        ):\n            self.runtime.supervise()\n        return gh\n\n    def test_new_ai_no_merge_label_blocks_final_merge(self):\n        clean = self._candidate()\n        held = self._candidate(labels=[{"name": "ai-no-merge"}])\n        gh = self._run_final_gate(\n            [clean, clean, clean, held],\n            (9, {"number": 9}, ["docs/probe.md"], None),\n        )\n        self.assertFalse(\n            any(\n                len(call.args) >= 4\n                and call.args[0:3] == ("api", "--method", "PUT")\n                and call.args[3].endswith("/merge")\n                for call in gh.call_args_list\n            )\n        )\n\n    def test_changed_issue_authorization_blocks_final_merge(self):\n        clean = self._candidate()\n        gh = self._run_final_gate(\n            [clean, clean, clean, clean],\n            (9, {"number": 9}, ["docs/probe.md"], "UNAUTHORIZED_CHANGED_PATH"),\n        )\n        self.assertFalse(\n            any(\n                len(call.args) >= 4\n                and call.args[0:3] == ("api", "--method", "PUT")\n                and call.args[3].endswith("/merge")\n                for call in gh.call_args_list\n            )\n        )\n\n    def test_clean_revalidated_scope_reaches_expected_sha_merge(self):\n        clean = self._candidate()\n        gh = self._run_final_gate(\n            [clean, clean, clean, clean, clean],\n            (9, {"number": 9}, ["docs/probe.md"], None),\n        )\n        merge_calls = [\n            call\n            for call in gh.call_args_list\n            if len(call.args) >= 4\n            and call.args[0:3] == ("api", "--method", "PUT")\n            and call.args[3].endswith("/merge")\n        ]\n        self.assertEqual(len(merge_calls), 1)\n        self.assertIn(f"sha={SHA}", merge_calls[0].args)\n'
+          TEST_MARKER = "\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+
+
+          def gh(*args, input_value=None):
+              result = subprocess.run(
+                  ["gh", *args],
+                  input=input_value,
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  raise RuntimeError(
+                      "gh command failed: "
+                      + " ".join(args)
+                      + "\n"
+                      + result.stderr.strip()
+                  )
+              return result.stdout
+
+
+          def api(path):
+              return json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json", path)
+              )
+
+
+          def api_json(method, path, payload):
+              return json.loads(
+                  gh(
+                      "api",
+                      "--method",
+                      method,
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "--input",
+                      "-",
+                      path,
+                      input_value=json.dumps(payload),
+                  )
+              )
+
+
+          pr = api(f"repos/{REPOSITORY}/pulls/{TARGET_PR}")
+          head = pr.get("head") or {}
+          base = pr.get("base") or {}
+          if pr.get("state") != "open":
+              print("Target Pull Request is no longer open; nothing to repair.")
+              raise SystemExit(0)
+          if (head.get("repo") or {}).get("full_name") != REPOSITORY:
+              raise RuntimeError("Target Pull Request is not same-repository")
+          if (base.get("repo") or {}).get("full_name") != REPOSITORY:
+              raise RuntimeError("Target Pull Request base is not same-repository")
+          if head.get("ref") != TARGET_BRANCH:
+              raise RuntimeError("Target Pull Request branch changed")
+          if head.get("sha") != EXPECTED_HEAD:
+              print("Target head already moved; exact repair is no longer applicable.")
+              raise SystemExit(0)
+
+          commit = api(f"repos/{REPOSITORY}/git/commits/{EXPECTED_HEAD}")
+          tree_sha = (commit.get("tree") or {}).get("sha")
+          if not tree_sha:
+              raise RuntimeError("Expected commit has no tree")
+          tree = api(f"repos/{REPOSITORY}/git/trees/{tree_sha}?recursive=1")
+          entries = {
+              item.get("path"): item
+              for item in tree.get("tree") or []
+              if item.get("path") in TARGET_PATHS
+          }
+          if set(entries) != set(TARGET_PATHS):
+              raise RuntimeError("Immutable expected tree does not contain exact target paths")
+
+          texts = {}
+          for path in TARGET_PATHS:
+              metadata = api(f"repos/{REPOSITORY}/contents/{path}?ref={EXPECTED_HEAD}")
+              if metadata.get("sha") != entries[path].get("sha"):
+                  raise RuntimeError(f"Immutable blob/tree mismatch for {path}")
+              if metadata.get("encoding") != "base64":
+                  raise RuntimeError(f"Unexpected content encoding for {path}")
+              texts[path] = base64.b64decode(
+                  (metadata.get("content") or "").encode("ascii")
+              ).decode("utf-8")
+
+          runtime = texts["scripts/supervisor_runtime.py"]
+          if runtime.count(OLD_RUNTIME) != 1:
+              raise RuntimeError("Runtime replacement anchor count is not exactly one")
+          runtime = runtime.replace(OLD_RUNTIME, NEW_RUNTIME, 1)
+
+          tests = texts["tests/test_runtime_scope_and_checks.py"]
+          if "class FinalMergeGateRevalidationTest" in tests:
+              print("Focused final-gate tests already exist; nothing to do.")
+              raise SystemExit(0)
+          if tests.count(TEST_MARKER) != 1:
+              raise RuntimeError("Test insertion marker count is not exactly one")
+          tests = tests.replace(TEST_MARKER, TEST_INSERT + TEST_MARKER, 1)
+
+          replacements = {
+              "scripts/supervisor_runtime.py": runtime,
+              "tests/test_runtime_scope_and_checks.py": tests,
+          }
+          tree_items = []
+          for path in TARGET_PATHS:
+              blob = api_json(
+                  "POST",
+                  f"repos/{REPOSITORY}/git/blobs",
+                  {"content": replacements[path], "encoding": "utf-8"},
+              )
+              mode = entries[path].get("mode")
+              if mode not in {"100644", "100755"}:
+                  raise RuntimeError(f"Unexpected immutable mode for {path}: {mode}")
+              tree_items.append(
+                  {"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]}
+              )
+
+          new_tree = api_json(
+              "POST",
+              f"repos/{REPOSITORY}/git/trees",
+              {"base_tree": tree_sha, "tree": tree_items},
+          )
+          new_commit = api_json(
+              "POST",
+              f"repos/{REPOSITORY}/git/commits",
+              {
+                  "message": "Revalidate scope and hold label at final merge gate",
+                  "tree": new_tree["sha"],
+                  "parents": [EXPECTED_HEAD],
+              },
+          )
+
+          live = api(f"repos/{REPOSITORY}/pulls/{TARGET_PR}")
+          live_head = (live.get("head") or {}).get("sha")
+          live_ref = (live.get("head") or {}).get("ref")
+          if live_head != EXPECTED_HEAD or live_ref != TARGET_BRANCH:
+              raise RuntimeError("Target Pull Request moved before exact ref update")
+          api_json(
+              "PATCH",
+              f"repos/{REPOSITORY}/git/refs/heads/{TARGET_BRANCH}",
+              {"sha": new_commit["sha"], "force": False},
+          )
+          print(
+              f"Repaired PR #{TARGET_PR} from {EXPECTED_HEAD} "
+              f"to {new_commit['sha']}."
+          )
