@@ -158,7 +158,7 @@ def main() -> int:
         'run.get("event") != "workflow_dispatch"',
         'run.get("display_title") != f"Trusted checks {sha}"',
         "trusted_runs_for_sha",
-        "expected_external_id",
+        'f"foundation:{run_id}:{name}:{sha}"',
         "previous_filename",
         "exact_codex_clean",
         "merge_method=squash",
