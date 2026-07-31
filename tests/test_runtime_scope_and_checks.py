@@ -310,6 +310,59 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
         self.assertEqual(len(evidence), 2)
 
 
+class StopMutationRevalidationTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+        self.candidate = {
+            "number": PR_NUMBER,
+            "head": {"sha": SHA},
+            "mergeable": True,
+        }
+
+    def test_cleared_authorization_reason_fails_closed(self):
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=(9, {"number": 9}, ["docs/probe.md"], None),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no longer supported"):
+                self.runtime._revalidate_stop_reason(
+                    PR_NUMBER, SHA, 9, "UNAUTHORIZED_CHANGED_PATH"
+                )
+
+    def test_stop_report_revalidates_before_persist_and_close(self):
+        with (
+            patch.object(self.runtime, "self_resolution_audit", return_value={}),
+            patch.object(
+                self.runtime,
+                "_revalidate_stop_reason",
+                return_value=self.candidate,
+            ) as revalidate,
+            patch.object(
+                self.runtime,
+                "canonical_internal_stop_record",
+                return_value="{}\n",
+            ),
+            patch.object(self.runtime, "persist_internal_stop_record") as persist,
+            patch.object(self.runtime, "gh") as gh,
+        ):
+            self.runtime.stop_report(
+                self.candidate,
+                9,
+                "UNAUTHORIZED_CHANGED_PATH",
+                "blocked",
+                close=True,
+            )
+        self.assertEqual(revalidate.call_count, 3)
+        persist.assert_called_once()
+        gh.assert_called_once_with(
+            "pr", "close", str(PR_NUMBER), "--repo", "example/foundation"
+        )
+
+
 class FinalMergeGateRevalidationTest(unittest.TestCase):
     def setUp(self):
         self.runtime = load_runtime()
@@ -335,7 +388,10 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
             "body": "Closes #9",
         }
 
-    def _run_final_gate(self, snapshots, source_result):
+    def _run_final_gate(
+        self, snapshots, source_result, codex_clean_results=None
+    ):
+        codex_clean_results = codex_clean_results or [True, True, True]
         with (
             patch.object(self.runtime, "candidate_pulls", return_value=[snapshots[0]]),
             patch.object(self.runtime, "api", side_effect=snapshots),
@@ -366,7 +422,11 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
                     "request_timestamp": "2026-07-31T11:00:00Z",
                 },
             ),
-            patch.object(self.runtime, "exact_codex_clean", return_value=True),
+            patch.object(
+                self.runtime,
+                "exact_codex_clean",
+                side_effect=codex_clean_results,
+            ),
             patch.object(self.runtime, "gh") as gh,
         ):
             self.runtime.supervise()
@@ -406,7 +466,7 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
     def test_clean_revalidated_scope_reaches_expected_sha_merge(self):
         clean = self._candidate()
         gh = self._run_final_gate(
-            [clean, clean, clean, clean, clean],
+            [clean, clean, clean, clean, clean, clean],
             (9, {"number": 9}, ["docs/probe.md"], None),
         )
         merge_calls = [
@@ -418,6 +478,39 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
         ]
         self.assertEqual(len(merge_calls), 1)
         self.assertIn(f"sha={SHA}", merge_calls[0].args)
+
+    def test_late_source_issue_link_edit_blocks_merge(self):
+        clean = self._candidate()
+        edited = self._candidate()
+        edited["body"] = "Closes #10"
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean, edited],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
+
+    def test_late_exact_sha_codex_blocker_blocks_merge(self):
+        clean = self._candidate()
+        gh = self._run_final_gate(
+            [clean, clean, clean, clean],
+            (9, {"number": 9}, ["docs/probe.md"], None),
+            codex_clean_results=[True, False],
+        )
+        self.assertFalse(
+            any(
+                len(call.args) >= 4
+                and call.args[0:3] == ("api", "--method", "PUT")
+                and call.args[3].endswith("/merge")
+                for call in gh.call_args_list
+            )
+        )
 
 
 if __name__ == "__main__":

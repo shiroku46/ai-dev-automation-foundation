@@ -1007,6 +1007,24 @@ def persist_human_notice_record(path: str, content: str, reason: str, pr_number:
     return _persist_exact_record(path, content, reason, pr_number)
 
 
+def _revalidate_stop_reason(
+    pr_number: int,
+    sha: str,
+    issue_number: int | None,
+    reason: str,
+) -> dict[str, Any]:
+    live = _live_pr(pr_number, sha)
+    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
+        raise RuntimeError("terminal mergeability changed before stop mutation")
+    if reason in {"UNAUTHORIZED_CHANGED_PATH", "UNAUTHORIZED_PROTECTED_PATH"}:
+        fresh_issue_number, _, _, fresh_reason = source_and_scope(live)
+        if fresh_issue_number != issue_number or fresh_reason != reason:
+            raise RuntimeError(
+                f"{reason} is no longer supported immediately before stop mutation"
+            )
+    return live
+
+
 def stop_report(
     pr: dict[str, Any],
     issue_number: int | None,
@@ -1019,9 +1037,7 @@ def stop_report(
     sha = _require_exact_sha(str(pr["head"]["sha"]))
     pr_number = int(pr["number"])
     audit = self_resolution_audit(pr, issue_number, reason)
-    live = _live_pr(pr_number, sha)
-    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
-        raise RuntimeError("terminal mergeability changed before stop persistence")
+    _revalidate_stop_reason(pr_number, sha, issue_number, reason)
     path = internal_stop_record_path(pr_number, sha, reason)
     content = canonical_internal_stop_record(
         pr_number=pr_number,
@@ -1031,10 +1047,10 @@ def stop_report(
         detail=detail,
         audit=audit,
     )
-    _live_pr(pr_number, sha)
+    _revalidate_stop_reason(pr_number, sha, issue_number, reason)
     persist_internal_stop_record(path, content, reason, pr_number)
     if close:
-        _live_pr(pr_number, sha)
+        _revalidate_stop_reason(pr_number, sha, issue_number, reason)
         gh("pr", "close", str(pr_number), "--repo", REPO)
 
 
@@ -1440,9 +1456,22 @@ def supervise() -> None:
         final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)
         if final_issue_number != issue_number or final_scope_error:
             continue
+        if not exact_codex_clean(pr_number, sha):
+            continue
         merge_candidate = _live_pr(pr_number, sha)
-        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
-            merge_candidate
+        if (
+            merge_candidate.get("mergeable") is not True
+            or not trusted_candidate(merge_candidate)
+            or parse_issue_number(merge_candidate.get("body") or "") != issue_number
+        ):
+            continue
+        if not exact_codex_clean(pr_number, sha):
+            continue
+        merge_candidate = _live_pr(pr_number, sha)
+        if (
+            merge_candidate.get("mergeable") is not True
+            or not trusted_candidate(merge_candidate)
+            or parse_issue_number(merge_candidate.get("body") or "") != issue_number
         ):
             continue
         gh(
