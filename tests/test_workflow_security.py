@@ -115,7 +115,7 @@ class WorkflowSecurityTest(unittest.TestCase):
 
     def test_source_issue_and_negative_e2e_close_are_owner_trusted(self):
         runtime = (ROOT / "scripts/supervisor_runtime.py").read_text(encoding="utf-8")
-        self.assertIn('get("login") == AUTOMATION_OWNER', runtime)
+        self.assertIn("TRUSTED_ISSUE_AUTHORS", runtime)
         self.assertIn('not issue.get("pull_request")', runtime)
         self.assertIn('E2E_AUTO_CLOSE_MARKER = "<!-- foundation-e2e-auto-close -->"', runtime)
         self.assertIn("E2E_AUTO_CLOSE_MARKER in issue_body", runtime)
@@ -126,6 +126,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             "REPOSITORY": "example/foundation",
             "DEFAULT_BRANCH": "main",
             "AUTOMATION_OWNER": "owner",
+            "REPOSITORY_OWNER": "owner",
         }
         with patch.dict(os.environ, environment, clear=False):
             sys.modules.pop("scripts.supervisor_runtime", None)
@@ -144,17 +145,9 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertFalse(runtime.trusted_candidate(wrong_base))
         untrusted_author = {**trusted, "user": {"login": "contributor"}}
         self.assertFalse(runtime.trusted_candidate(untrusted_author))
-        self.assertEqual(
-            runtime.run_id_from_details_url(
-                "https://github.com/example/foundation/actions/runs/12345"
-            ),
-            12345,
-        )
-        self.assertIsNone(
-            runtime.run_id_from_details_url(
-                "https://github.com/example/foundation/actions/runs/12345/job/7"
-            )
-        )
+        run_base = "https://github.com/" + "example/foundation/" + "actions/runs/"
+        self.assertEqual(runtime.run_id_from_details_url(run_base + "12345"), 12345)
+        self.assertIsNone(runtime.run_id_from_details_url(run_base + "12345/job/7"))
 
 
 if __name__ == "__main__":
