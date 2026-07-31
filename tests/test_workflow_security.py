@@ -106,7 +106,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             "current_default_sha()",
             'run.get("event") != "workflow_dispatch"',
             'run.get("display_title") != f"Trusted checks {sha}"',
-            "expected_external_id",
+            'f"foundation:{run_id}:{name}:{sha}"',
             "reviewThreads(first:100,after:$cursor)",
             "hasNextPage",
             "marker = f\"<!-- foundation-codex-request:{sha} -->\"",
