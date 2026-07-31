@@ -49,9 +49,7 @@ operation: bounded
             )
         )
         self.assertFalse(
-            scope_is_authorized(
-                ["scripts/probe.py", "README.md"], body
-            )
+            scope_is_authorized(["scripts/probe.py", "README.md"], body)
         )
 
     def test_protected_paths_require_the_protected_contract(self):
@@ -100,7 +98,9 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             "",
         )
 
-    def run(self, workflow_id, *, status="completed", conclusion="success", sha=SHA):
+    def make_run(
+        self, workflow_id, *, status="completed", conclusion="success", sha=SHA
+    ):
         return {
             "id": workflow_id * 100,
             "workflow_id": workflow_id,
@@ -131,7 +131,11 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             patch.object(
                 self.runtime,
                 "api_key_pages",
-                side_effect=[[self.run(1)], [self.run(2)], [self.run(3)]],
+                side_effect=[
+                    [self.make_run(1)],
+                    [self.make_run(2)],
+                    [self.make_run(3)],
+                ],
             ),
         ):
             clean, evidence = self.runtime.native_workflow_evidence(SHA)
@@ -144,10 +148,14 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
     def test_missing_pending_failed_and_stale_runs_fail_closed(self):
         not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
         cases = (
-            ([], [self.run(2)], False),
-            ([self.run(1, status="in_progress", conclusion=None)], [self.run(2)], False),
-            ([self.run(1, conclusion="failure")], [self.run(2)], False),
-            ([self.run(1, sha="b" * 40)], [self.run(2)], False),
+            ([], [self.make_run(2)], False),
+            (
+                [self.make_run(1, status="in_progress", conclusion=None)],
+                [self.make_run(2)],
+                False,
+            ),
+            ([self.make_run(1, conclusion="failure")], [self.make_run(2)], False),
+            ([self.make_run(1, sha="b" * 40)], [self.make_run(2)], False),
         )
         for ci_runs, unit_runs, expected in cases:
             with self.subTest(ci_runs=ci_runs):
@@ -171,9 +179,9 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
                 self.assertEqual(clean, expected)
 
     def test_wrong_repository_or_workflow_identity_is_rejected(self):
-        wrong_repo = self.run(1)
+        wrong_repo = self.make_run(1)
         wrong_repo["repository"] = {"full_name": "attacker/fork"}
-        wrong_workflow = self.run(2)
+        wrong_workflow = self.make_run(2)
         wrong_workflow["workflow_id"] = 99
         not_found = subprocess.CompletedProcess(["gh"], 1, "", "HTTP 404 Not Found")
         with (
@@ -211,7 +219,7 @@ class NativeWorkflowEvidenceTest(unittest.TestCase):
             patch.object(
                 self.runtime,
                 "api_key_pages",
-                side_effect=[[self.run(1)], [self.run(2)]],
+                side_effect=[[self.make_run(1)], [self.make_run(2)]],
             ),
         ):
             clean, evidence = self.runtime.native_workflow_evidence(SHA)
