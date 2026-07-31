@@ -1,0 +1,197 @@
+name: Repair PR 44 Final Race Gates
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "47 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-44-final-race-gates
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      TARGET_PR: "44"
+      TARGET_BRANCH: fix/issue-36-human-notice-contract
+      EXPECTED_HEAD: b5df12e4368131b3be2ec82977bb703b459157b4
+    steps:
+      - name: Apply immutable final race-gate repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import subprocess
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          pr_number = int(os.environ["TARGET_PR"])
+          target_branch = os.environ["TARGET_BRANCH"]
+          expected_head = os.environ["EXPECTED_HEAD"]
+          target_paths = (
+              "scripts/supervisor_runtime.py",
+              "tests/test_runtime_scope_and_checks.py",
+          )
+
+          def decode(value):
+              return base64.b64decode(value).decode("utf-8")
+
+          runtime_old = decode("ICAgICAgICBtZXJnZV9jYW5kaWRhdGUgPSBfbGl2ZV9wcihwcl9udW1iZXIsIHNoYSkKICAgICAgICBpZiBtZXJnZV9jYW5kaWRhdGUuZ2V0KCJtZXJnZWFibGUiKSBpcyBub3QgVHJ1ZSBvciBub3QgdHJ1c3RlZF9jYW5kaWRhdGUoCiAgICAgICAgICAgIG1lcmdlX2NhbmRpZGF0ZQogICAgICAgICk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgZ2goCg==")
+          runtime_new = decode("ICAgICAgICBtZXJnZV9jYW5kaWRhdGUgPSBfbGl2ZV9wcihwcl9udW1iZXIsIHNoYSkKICAgICAgICBpZiBtZXJnZV9jYW5kaWRhdGUuZ2V0KCJtZXJnZWFibGUiKSBpcyBub3QgVHJ1ZSBvciBub3QgdHJ1c3RlZF9jYW5kaWRhdGUoCiAgICAgICAgICAgIG1lcmdlX2NhbmRpZGF0ZQogICAgICAgICk6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgaWYgcGFyc2VfaXNzdWVfbnVtYmVyKHN0cihtZXJnZV9jYW5kaWRhdGUuZ2V0KCJib2R5Iikgb3IgIiIpKSAhPSBpc3N1ZV9udW1iZXI6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgaWYgbm90IGV4YWN0X2NvZGV4X2NsZWFuKHByX251bWJlciwgc2hhKToKICAgICAgICAgICAgY29udGludWUKICAgICAgICBnaCgK")
+          signature_old = decode("ICAgIGRlZiBfcnVuX2ZpbmFsX2dhdGUoc2VsZiwgc25hcHNob3RzLCBzb3VyY2VfcmVzdWx0KToKICAgICAgICB3aXRoICgK")
+          signature_new = decode("ICAgIGRlZiBfcnVuX2ZpbmFsX2dhdGUoc2VsZiwgc25hcHNob3RzLCBzb3VyY2VfcmVzdWx0LCAqLCBjb2RleF9jbGVhbj1UcnVlKToKICAgICAgICBjb2RleF9wYXRjaCA9ICgKICAgICAgICAgICAgcGF0Y2gub2JqZWN0KAogICAgICAgICAgICAgICAgc2VsZi5ydW50aW1lLAogICAgICAgICAgICAgICAgImV4YWN0X2NvZGV4X2NsZWFuIiwKICAgICAgICAgICAgICAgIHNpZGVfZWZmZWN0PWNvZGV4X2NsZWFuLAogICAgICAgICAgICApCiAgICAgICAgICAgIGlmIGlzaW5zdGFuY2UoY29kZXhfY2xlYW4sIChsaXN0LCB0dXBsZSkpCiAgICAgICAgICAgIGVsc2UgcGF0Y2gub2JqZWN0KAogICAgICAgICAgICAgICAgc2VsZi5ydW50aW1lLAogICAgICAgICAgICAgICAgImV4YWN0X2NvZGV4X2NsZWFuIiwKICAgICAgICAgICAgICAgIHJldHVybl92YWx1ZT1jb2RleF9jbGVhbiwKICAgICAgICAgICAgKQogICAgICAgICkKICAgICAgICB3aXRoICgK")
+          codex_mock_old = decode("ICAgICAgICAgICAgcGF0Y2gub2JqZWN0KHNlbGYucnVudGltZSwgImV4YWN0X2NvZGV4X2NsZWFuIiwgcmV0dXJuX3ZhbHVlPVRydWUpLAo=")
+          codex_mock_new = decode("ICAgICAgICAgICAgY29kZXhfcGF0Y2gsCg==")
+          tests_anchor = decode("ICAgIGRlZiB0ZXN0X2NsZWFuX3JldmFsaWRhdGVkX3Njb3BlX3JlYWNoZXNfZXhwZWN0ZWRfc2hhX21lcmdlKHNlbGYpOgo=")
+          tests_new = decode("ICAgIGRlZiB0ZXN0X2NoYW5nZWRfc291cmNlX2xpbmtfb25fbGFzdF9zbmFwc2hvdF9ibG9ja3NfZmluYWxfbWVyZ2Uoc2VsZik6CiAgICAgICAgY2xlYW4gPSBzZWxmLl9jYW5kaWRhdGUoKQogICAgICAgIHJld2lyZWQgPSBzZWxmLl9jYW5kaWRhdGUoKQogICAgICAgIHJld2lyZWRbImJvZHkiXSA9ICJDbG9zZXMgIzEwIgogICAgICAgIGdoID0gc2VsZi5fcnVuX2ZpbmFsX2dhdGUoCiAgICAgICAgICAgIFtjbGVhbiwgY2xlYW4sIGNsZWFuLCByZXdpcmVkXSwKICAgICAgICAgICAgKDksIHsibnVtYmVyIjogOX0sIFsiZG9jcy9wcm9iZS5tZCJdLCBOb25lKSwKICAgICAgICApCiAgICAgICAgc2VsZi5hc3NlcnRGYWxzZSgKICAgICAgICAgICAgYW55KAogICAgICAgICAgICAgICAgbGVuKGNhbGwuYXJncykgPj0gNAogICAgICAgICAgICAgICAgYW5kIGNhbGwuYXJnc1swOjNdID09ICgiYXBpIiwgIi0tbWV0aG9kIiwgIlBVVCIpCiAgICAgICAgICAgICAgICBhbmQgY2FsbC5hcmdzWzNdLmVuZHN3aXRoKCIvbWVyZ2UiKQogICAgICAgICAgICAgICAgZm9yIGNhbGwgaW4gZ2guY2FsbF9hcmdzX2xpc3QKICAgICAgICAgICAgKQogICAgICAgICkKCiAgICBkZWYgdGVzdF9uZXdfY29kZXhfYmxvY2tlcl9hZnRlcl9maW5hbF9zY29wZV9hdWRpdF9ibG9ja3NfbWVyZ2Uoc2VsZik6CiAgICAgICAgY2xlYW4gPSBzZWxmLl9jYW5kaWRhdGUoKQogICAgICAgIGdoID0gc2VsZi5fcnVuX2ZpbmFsX2dhdGUoCiAgICAgICAgICAgIFtjbGVhbiwgY2xlYW4sIGNsZWFuLCBjbGVhbl0sCiAgICAgICAgICAgICg5LCB7Im51bWJlciI6IDl9LCBbImRvY3MvcHJvYmUubWQiXSwgTm9uZSksCiAgICAgICAgICAgIGNvZGV4X2NsZWFuPShUcnVlLCBGYWxzZSksCiAgICAgICAgKQogICAgICAgIHNlbGYuYXNzZXJ0RmFsc2UoCiAgICAgICAgICAgIGFueSgKICAgICAgICAgICAgICAgIGxlbihjYWxsLmFyZ3MpID49IDQKICAgICAgICAgICAgICAgIGFuZCBjYWxsLmFyZ3NbMDozXSA9PSAoImFwaSIsICItLW1ldGhvZCIsICJQVVQiKQogICAgICAgICAgICAgICAgYW5kIGNhbGwuYXJnc1szXS5lbmRzd2l0aCgiL21lcmdlIikKICAgICAgICAgICAgICAgIGZvciBjYWxsIGluIGdoLmNhbGxfYXJnc19saXN0CiAgICAgICAgICAgICkKICAgICAgICApCgogICAgZGVmIHRlc3RfY2xlYW5fcmV2YWxpZGF0ZWRfc2NvcGVfcmVhY2hlc19leHBlY3RlZF9zaGFfbWVyZ2Uoc2VsZik6Cg==")
+
+          def gh(*args, input_value=None):
+              result = subprocess.run(
+                  ["gh", *args],
+                  input=input_value,
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if result.returncode != 0:
+                  raise RuntimeError(
+                      "gh command failed: " + " ".join(args) + "\n" + result.stderr.strip()
+                  )
+              return result.stdout
+
+          def api(path):
+              return json.loads(
+                  gh("api", "-H", "Accept: application/vnd.github+json", path)
+              )
+
+          def api_json(method, path, payload):
+              return json.loads(
+                  gh(
+                      "api",
+                      "--method",
+                      method,
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "--input",
+                      "-",
+                      path,
+                      input_value=json.dumps(payload),
+                  )
+              )
+
+          def require_target(snapshot):
+              head = snapshot.get("head") or {}
+              base = snapshot.get("base") or {}
+              if snapshot.get("state") != "open":
+                  print("Target Pull Request is no longer open; nothing to repair.")
+                  raise SystemExit(0)
+              if (head.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target Pull Request head is not same-repository")
+              if (base.get("repo") or {}).get("full_name") != repository:
+                  raise RuntimeError("Target Pull Request base is not same-repository")
+              if head.get("ref") != target_branch:
+                  raise RuntimeError("Target Pull Request branch changed")
+              if head.get("sha") != expected_head:
+                  print("Target head moved; exact repair is no longer applicable.")
+                  raise SystemExit(0)
+
+          pull = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(pull)
+          commit = api(f"repos/{repository}/git/commits/{expected_head}")
+          tree_sha = (commit.get("tree") or {}).get("sha")
+          if not tree_sha:
+              raise RuntimeError("Expected commit has no tree")
+          tree = api(f"repos/{repository}/git/trees/{tree_sha}?recursive=1")
+          entries = {
+              item.get("path"): item
+              for item in tree.get("tree") or []
+              if item.get("path") in target_paths
+          }
+          if set(entries) != set(target_paths):
+              raise RuntimeError("Expected tree lacks the exact target paths")
+
+          texts = {}
+          for path in target_paths:
+              entry = entries[path]
+              if entry.get("type") != "blob" or entry.get("mode") not in {"100644", "100755"}:
+                  raise RuntimeError(f"Unexpected immutable file type or mode for {path}")
+              metadata = api(f"repos/{repository}/contents/{path}?ref={expected_head}")
+              if metadata.get("sha") != entry.get("sha") or metadata.get("encoding") != "base64":
+                  raise RuntimeError(f"Immutable blob/tree binding failed for {path}")
+              encoded = "".join((metadata.get("content") or "").split())
+              texts[path] = base64.b64decode(
+                  encoded.encode("ascii"), validate=True
+              ).decode("utf-8")
+
+          runtime = texts["scripts/supervisor_runtime.py"]
+          if runtime.count(runtime_old) != 1:
+              raise RuntimeError("Runtime final-gate anchor count is not exactly one")
+          runtime = runtime.replace(runtime_old, runtime_new, 1)
+
+          tests = texts["tests/test_runtime_scope_and_checks.py"]
+          for old, new, label in (
+              (signature_old, signature_new, "test helper signature"),
+              (codex_mock_old, codex_mock_new, "Codex mock"),
+              (tests_anchor, tests_new, "focused tests"),
+          ):
+              if tests.count(old) != 1:
+                  raise RuntimeError(f"{label} anchor count is not exactly one")
+              tests = tests.replace(old, new, 1)
+
+          compile(runtime, "scripts/supervisor_runtime.py", "exec")
+          compile(tests, "tests/test_runtime_scope_and_checks.py", "exec")
+          replacements = {
+              "scripts/supervisor_runtime.py": runtime,
+              "tests/test_runtime_scope_and_checks.py": tests,
+          }
+          tree_items = []
+          for path in target_paths:
+              blob = api_json(
+                  "POST",
+                  f"repos/{repository}/git/blobs",
+                  {"content": replacements[path], "encoding": "utf-8"},
+              )
+              tree_items.append(
+                  {
+                      "path": path,
+                      "mode": entries[path]["mode"],
+                      "type": "blob",
+                      "sha": blob["sha"],
+                  }
+              )
+          new_tree = api_json(
+              "POST",
+              f"repos/{repository}/git/trees",
+              {"base_tree": tree_sha, "tree": tree_items},
+          )
+          new_commit = api_json(
+              "POST",
+              f"repos/{repository}/git/commits",
+              {
+                  "message": "Close final source-link and Codex merge races",
+                  "tree": new_tree["sha"],
+                  "parents": [expected_head],
+              },
+          )
+
+          live = api(f"repos/{repository}/pulls/{pr_number}")
+          require_target(live)
+          api_json(
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{target_branch}",
+              {"sha": new_commit["sha"], "force": False},
+          )
+          print(f"Repaired PR #{pr_number} to {new_commit['sha']}.")
+          PY
