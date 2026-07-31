@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 HELPER = Path(__file__).with_name("repair_pr44_final.py")
@@ -11,6 +12,26 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError("Could not load the fixed base repair helper")
 BASE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BASE)
+BASE_REQUIRE_TARGET = BASE.require_target
+SOURCE_LINK = re.compile(
+    r"(?im)^\s*(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#36\.?\s*$"
+)
+
+
+def require_target(snapshot: dict) -> None:
+    BASE_REQUIRE_TARGET(snapshot)
+    if SOURCE_LINK.search(snapshot.get("body") or "") is None:
+        raise RuntimeError("Target Pull Request lacks the exact source Issue linkage")
+    issue = BASE.api(f"repos/{BASE.REPOSITORY}/issues/{BASE.SOURCE_ISSUE}")
+    if issue.get("pull_request"):
+        raise RuntimeError("Fixed source is not an Issue")
+    owner = BASE.REPOSITORY.split("/", 1)[0]
+    if (issue.get("user") or {}).get("login") != owner:
+        raise RuntimeError("Fixed source Issue is not owner-authored")
+    body = issue.get("body") or ""
+    for path in (BASE.RUNTIME_PATH, BASE.TEST_PATH):
+        if path not in body:
+            raise RuntimeError(f"Fixed source Issue no longer authorizes {path}")
 
 
 def repair_runtime(content: str) -> str:
@@ -69,6 +90,7 @@ def repair_tests(content: str) -> str:
     return BASE.replace_once(repaired, old, new, "final merge ordering regression")
 
 
+BASE.require_target = require_target
 BASE.repair_runtime = repair_runtime
 BASE.repair_tests = repair_tests
 
