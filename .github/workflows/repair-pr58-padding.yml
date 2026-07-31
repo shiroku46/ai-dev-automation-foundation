@@ -134,8 +134,9 @@ jobs:
           )
           if metadata.get("sha") != canonical_blob or metadata.get("encoding") != "base64":
               raise RuntimeError("Canonical contents are not bound to the fixed blob")
+          encoded_content = "".join((metadata.get("content") or "").split())
           canonical = base64.b64decode(
-              (metadata.get("content") or "").encode("ascii"), validate=True
+              encoded_content.encode("ascii"), validate=True
           ).decode("utf-8")
 
           pattern = re.compile(
