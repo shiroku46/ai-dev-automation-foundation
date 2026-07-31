@@ -1,0 +1,33 @@
+name: Repair PR 44 Final Three Gates
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: repair-pr-44-final-three-gates
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Check out fixed default-branch helper
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Apply exact inert repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/repair_pr44_final.py
