@@ -306,7 +306,9 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
     def test_stop_report_persists_without_comment_or_label_mutation(self):
         with (
             patch.object(self.runtime, "self_resolution_audit", return_value={"a": "1"}),
-            patch.object(self.runtime, "_live_pr", return_value=self.pr),
+            patch.object(
+                self.runtime, "_revalidate_stop_reason", return_value=self.pr
+            ),
             patch.object(
                 self.runtime, "persist_internal_stop_record", return_value=True
             ) as persist,
@@ -584,6 +586,73 @@ class RuntimeHumanNoticeTest(unittest.TestCase):
                 )
         persist.assert_not_called()
         gh.assert_not_called()
+
+
+    def test_notice_destination_is_last_network_validation_before_comment(self):
+        fields = self.valid_fields()
+        live = self.notice_pr()
+        records = {}
+        events = []
+
+        def connected(reason, targets):
+            events.append("connected")
+            return self.attempted, self.impossible
+
+        def persist(path, content, reason, number):
+            records[path] = content
+            return True
+
+        def existing(path):
+            events.append("record")
+            return records.get(path)
+
+        def destination(*args):
+            events.append("destination")
+            return live
+
+        with (
+            patch.object(
+                self.runtime,
+                "_connected_human_notice_evidence",
+                side_effect=connected,
+            ),
+            patch.object(
+                self.runtime,
+                "_validated_notice_destination",
+                side_effect=destination,
+            ),
+            patch.object(
+                self.runtime,
+                "self_resolution_audit",
+                return_value={"human_only_connected_evidence": "bound"},
+            ),
+            patch.object(
+                self.runtime,
+                "api_list",
+                side_effect=lambda path: events.append("comments") or [],
+            ),
+            patch.object(
+                self.runtime,
+                "persist_human_notice_record",
+                side_effect=persist,
+            ),
+            patch.object(
+                self.runtime,
+                "_existing_internal_record",
+                side_effect=existing,
+            ),
+            patch.object(
+                self.runtime,
+                "comment",
+                side_effect=lambda number, body: events.append("comment"),
+            ),
+        ):
+            self.runtime.human_only_notice(**fields)
+
+        self.assertEqual(events[-2:], ["destination", "comment"])
+        final_destination = len(events) - 2
+        self.assertNotIn("connected", events[final_destination + 1 : -1])
+        self.assertNotIn("record", events[final_destination + 1 : -1])
 
 
 if __name__ == "__main__":

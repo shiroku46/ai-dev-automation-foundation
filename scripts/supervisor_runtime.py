@@ -1014,15 +1014,102 @@ def _revalidate_stop_reason(
     reason: str,
 ) -> dict[str, Any]:
     live = _live_pr(pr_number, sha)
-    if reason == "MERGE_NOT_READY" and live.get("mergeable") is not False:
-        raise RuntimeError("terminal mergeability changed before stop mutation")
-    if reason in {"UNAUTHORIZED_CHANGED_PATH", "UNAUTHORIZED_PROTECTED_PATH"}:
-        fresh_issue_number, _, _, fresh_reason = source_and_scope(live)
-        if fresh_issue_number != issue_number or fresh_reason != reason:
+    fresh_issue_number, _, _, fresh_scope_reason = source_and_scope(live)
+    scope_reasons = {
+        "MISSING_TRUSTED_SOURCE_ISSUE",
+        "UNTRUSTED_SOURCE_ISSUE",
+        "INCOMPLETE_CHANGED_FILE_EVIDENCE",
+        "UNAUTHORIZED_CHANGED_PATH",
+        "UNAUTHORIZED_PROTECTED_PATH",
+    }
+    if reason in scope_reasons:
+        if fresh_issue_number != issue_number or fresh_scope_reason != reason:
             raise RuntimeError(
                 f"{reason} is no longer supported immediately before stop mutation"
             )
-    return live
+        return _live_pr(pr_number, sha)
+    if fresh_issue_number != issue_number or fresh_scope_reason is not None:
+        raise RuntimeError(
+            f"{reason} is no longer supported because source/scope evidence changed"
+        )
+
+    attempts = attestation_attempts(sha)
+    successful_attestation = any(item["success"] for item in attempts)
+    active_attestation = any(item["active"] for item in attempts)
+    attempt_count = len({item["run_id"] for item in attempts})
+
+    if reason == "TRUSTED_ATTESTATION_RETRY_EXHAUSTED":
+        if successful_attestation or active_attestation or attempt_count < MAX_ATTESTATION_ATTEMPTS:
+            raise RuntimeError(
+                "TRUSTED_ATTESTATION_RETRY_EXHAUSTED is no longer supported by fresh attestation evidence"
+            )
+        return _live_pr(pr_number, sha)
+
+    if not successful_attestation:
+        raise RuntimeError(
+            f"{reason} is no longer supported without a fresh successful trusted attestation"
+        )
+
+    native_clean, native_evidence = native_workflow_evidence(sha, pr_number)
+    if reason == "NO_MEANINGFUL_PROGRESS":
+        supported = False
+        if not native_clean:
+            anchor = max(
+                (
+                    str(item.get("updated_at") or "")
+                    for item in native_evidence
+                    if item.get("updated_at")
+                ),
+                default=None,
+            )
+            elapsed = minutes_since(anchor)
+            supported = elapsed is not None and elapsed >= NO_PROGRESS_MINUTES
+        else:
+            codex = exact_codex_evidence(pr_number, sha)
+            if codex["state"] == "pending":
+                elapsed = minutes_since(codex.get("request_timestamp"))
+                supported = elapsed is not None and elapsed >= NO_PROGRESS_MINUTES
+            elif codex["state"] == "clean":
+                final_live = _live_pr(pr_number, sha)
+                if final_live.get("mergeable") not in {True, False}:
+                    anchor = _evidence_anchor(
+                        latest_successful_attestation_timestamp(attempts),
+                        str(codex.get("timestamp") or "") or None,
+                        *(
+                            str(item.get("updated_at") or "") or None
+                            for item in native_evidence
+                        ),
+                    )
+                    elapsed = minutes_since(anchor)
+                    supported = elapsed is not None and elapsed >= NO_PROGRESS_MINUTES
+        if not supported:
+            raise RuntimeError(
+                "NO_MEANINGFUL_PROGRESS is no longer supported by fresh exact-head evidence"
+            )
+        return _live_pr(pr_number, sha)
+
+    if reason == "BLOCKING_CODEX_REVIEW":
+        codex = exact_codex_evidence(pr_number, sha)
+        if not native_clean or codex["state"] != "blocking":
+            raise RuntimeError(
+                "BLOCKING_CODEX_REVIEW is no longer supported by fresh exact-head evidence"
+            )
+        return _live_pr(pr_number, sha)
+
+    if reason == "MERGE_NOT_READY":
+        codex = exact_codex_evidence(pr_number, sha)
+        final_live = _live_pr(pr_number, sha)
+        if not native_clean or codex["state"] != "clean" or final_live.get("mergeable") is not False:
+            raise RuntimeError(
+                "MERGE_NOT_READY is no longer supported by fresh exact-head evidence"
+            )
+        return final_live
+
+    if reason in {"UNTRUSTED_EVIDENCE", "AMBIGUOUS_TECHNICAL_STATE"}:
+        raise RuntimeError(
+            f"{reason} has no deterministic current derivation and fails closed"
+        )
+    raise RuntimeError(f"Unsupported internal stop reason: {reason}")
 
 
 def stop_report(
@@ -1264,18 +1351,19 @@ def human_only_notice(
         and marker in (item.get("body") or "")
         for item in comments
     )
+    persisted_record = _existing_internal_record(record_path)
     if trusted_duplicate:
-        if _existing_internal_record(record_path) != record:
+        if persisted_record != record:
             raise RuntimeError("trusted notice comment has no matching persisted exact audit record")
         return
-    _validated_notice_destination(pr_number, issue_number, exact_head_sha)
     final_attempted, final_impossible = _connected_human_notice_evidence(
         reason, target_list
     )
     if final_attempted != connected_attempted or final_impossible != connected_impossible:
         raise RuntimeError("Connected human-only condition changed before publication")
-    if _existing_internal_record(record_path) != record:
+    if persisted_record != record:
         raise RuntimeError("human-only audit record changed before publication")
+    _validated_notice_destination(pr_number, issue_number, exact_head_sha)
     comment(pr_number, body)
 
 
@@ -1448,24 +1536,9 @@ def supervise() -> None:
         if not final_native_clean or not exact_codex_clean(pr_number, sha):
             continue
 
-        merge_candidate = _live_pr(pr_number, sha)
-        if merge_candidate.get("mergeable") is not True or not trusted_candidate(
-            merge_candidate
-        ):
-            continue
-        final_issue_number, _, _, final_scope_error = source_and_scope(merge_candidate)
+        scope_candidate = _live_pr(pr_number, sha)
+        final_issue_number, _, _, final_scope_error = source_and_scope(scope_candidate)
         if final_issue_number != issue_number or final_scope_error:
-            continue
-        if not exact_codex_clean(pr_number, sha):
-            continue
-        merge_candidate = _live_pr(pr_number, sha)
-        if (
-            merge_candidate.get("mergeable") is not True
-            or not trusted_candidate(merge_candidate)
-            or parse_issue_number(merge_candidate.get("body") or "") != issue_number
-        ):
-            continue
-        if not exact_codex_clean(pr_number, sha):
             continue
         merge_candidate = _live_pr(pr_number, sha)
         if (

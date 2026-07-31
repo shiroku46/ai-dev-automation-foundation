@@ -363,6 +363,196 @@ class StopMutationRevalidationTest(unittest.TestCase):
         )
 
 
+class CompleteStopReasonRevalidationTest(unittest.TestCase):
+    def setUp(self):
+        self.runtime = load_runtime()
+        self.candidate = {
+            "number": PR_NUMBER,
+            "state": "open",
+            "head": {"sha": SHA},
+            "mergeable": True,
+            "mergeable_state": "clean",
+        }
+        self.clean_scope = (9, {"number": 9}, ["docs/probe.md"], None)
+        self.successful_attempt = [
+            {
+                "success": True,
+                "active": False,
+                "run_id": 1,
+                "updated_at": "2026-07-31T12:00:00Z",
+            }
+        ]
+
+    def test_each_source_scope_reason_must_still_match(self):
+        reasons = (
+            "MISSING_TRUSTED_SOURCE_ISSUE",
+            "UNTRUSTED_SOURCE_ISSUE",
+            "INCOMPLETE_CHANGED_FILE_EVIDENCE",
+            "UNAUTHORIZED_CHANGED_PATH",
+            "UNAUTHORIZED_PROTECTED_PATH",
+        )
+        for reason in reasons:
+            with (
+                self.subTest(reason=reason),
+                patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+                patch.object(
+                    self.runtime,
+                    "source_and_scope",
+                    return_value=self.clean_scope,
+                ),
+                self.assertRaisesRegex(RuntimeError, "no longer supported"),
+            ):
+                self.runtime._revalidate_stop_reason(PR_NUMBER, SHA, 9, reason)
+
+    def test_non_scope_reason_rejects_changed_source_issue(self):
+        changed_source = (10, {"number": 10}, ["docs/probe.md"], None)
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(
+                self.runtime,
+                "source_and_scope",
+                return_value=changed_source,
+            ),
+            self.assertRaisesRegex(RuntimeError, "source/scope evidence changed"),
+        ):
+            self.runtime._revalidate_stop_reason(
+                PR_NUMBER,
+                SHA,
+                9,
+                "TRUSTED_ATTESTATION_RETRY_EXHAUSTED",
+            )
+
+    def test_retry_exhaustion_cleared_by_success_fails_closed(self):
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(self.runtime, "source_and_scope", return_value=self.clean_scope),
+            patch.object(
+                self.runtime,
+                "attestation_attempts",
+                return_value=self.successful_attempt,
+            ),
+            self.assertRaisesRegex(RuntimeError, "no longer supported"),
+        ):
+            self.runtime._revalidate_stop_reason(
+                PR_NUMBER, SHA, 9, "TRUSTED_ATTESTATION_RETRY_EXHAUSTED"
+            )
+
+    def test_current_retry_exhaustion_remains_supported(self):
+        exhausted = [
+            {"success": False, "active": False, "run_id": number}
+            for number in (1, 2, 3)
+        ]
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(self.runtime, "source_and_scope", return_value=self.clean_scope),
+            patch.object(self.runtime, "attestation_attempts", return_value=exhausted),
+        ):
+            live = self.runtime._revalidate_stop_reason(
+                PR_NUMBER, SHA, 9, "TRUSTED_ATTESTATION_RETRY_EXHAUSTED"
+            )
+        self.assertIs(live, self.candidate)
+
+    def test_no_progress_cleared_by_fresh_native_evidence_fails_closed(self):
+        native = [
+            {
+                "updated_at": "2026-07-31T12:00:00Z",
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        ]
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(self.runtime, "source_and_scope", return_value=self.clean_scope),
+            patch.object(
+                self.runtime,
+                "attestation_attempts",
+                return_value=self.successful_attempt,
+            ),
+            patch.object(
+                self.runtime,
+                "native_workflow_evidence",
+                return_value=(False, native),
+            ),
+            patch.object(self.runtime, "minutes_since", return_value=1),
+            self.assertRaisesRegex(RuntimeError, "no longer supported"),
+        ):
+            self.runtime._revalidate_stop_reason(
+                PR_NUMBER, SHA, 9, "NO_MEANINGFUL_PROGRESS"
+            )
+
+    def test_blocking_codex_reason_cleared_by_clean_review_fails_closed(self):
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(self.runtime, "source_and_scope", return_value=self.clean_scope),
+            patch.object(
+                self.runtime,
+                "attestation_attempts",
+                return_value=self.successful_attempt,
+            ),
+            patch.object(
+                self.runtime,
+                "native_workflow_evidence",
+                return_value=(True, []),
+            ),
+            patch.object(
+                self.runtime,
+                "exact_codex_evidence",
+                return_value={"state": "clean", "timestamp": None, "request_timestamp": None},
+            ),
+            self.assertRaisesRegex(RuntimeError, "no longer supported"),
+        ):
+            self.runtime._revalidate_stop_reason(
+                PR_NUMBER, SHA, 9, "BLOCKING_CODEX_REVIEW"
+            )
+
+    def test_merge_not_ready_cleared_by_mergeable_candidate_fails_closed(self):
+        with (
+            patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+            patch.object(self.runtime, "source_and_scope", return_value=self.clean_scope),
+            patch.object(
+                self.runtime,
+                "attestation_attempts",
+                return_value=self.successful_attempt,
+            ),
+            patch.object(
+                self.runtime,
+                "native_workflow_evidence",
+                return_value=(True, []),
+            ),
+            patch.object(
+                self.runtime,
+                "exact_codex_evidence",
+                return_value={"state": "clean", "timestamp": None, "request_timestamp": None},
+            ),
+            self.assertRaisesRegex(RuntimeError, "no longer supported"),
+        ):
+            self.runtime._revalidate_stop_reason(PR_NUMBER, SHA, 9, "MERGE_NOT_READY")
+
+    def test_reasons_without_current_derivation_fail_closed(self):
+        for reason in ("UNTRUSTED_EVIDENCE", "AMBIGUOUS_TECHNICAL_STATE"):
+            with (
+                self.subTest(reason=reason),
+                patch.object(self.runtime, "_live_pr", return_value=self.candidate),
+                patch.object(
+                    self.runtime,
+                    "source_and_scope",
+                    return_value=self.clean_scope,
+                ),
+                patch.object(
+                    self.runtime,
+                    "attestation_attempts",
+                    return_value=self.successful_attempt,
+                ),
+                patch.object(
+                    self.runtime,
+                    "native_workflow_evidence",
+                    return_value=(True, []),
+                ),
+                self.assertRaisesRegex(RuntimeError, "fails closed"),
+            ):
+                self.runtime._revalidate_stop_reason(PR_NUMBER, SHA, 9, reason)
+
+
 class FinalMergeGateRevalidationTest(unittest.TestCase):
     def setUp(self):
         self.runtime = load_runtime()
@@ -511,6 +701,19 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
                 for call in gh.call_args_list
             )
         )
+
+
+class FinalMergeOrderingSourceTest(unittest.TestCase):
+    def test_source_scope_runs_after_last_codex_query_and_before_last_live_snapshot(self):
+        runtime = open(load_runtime().__file__, encoding="utf-8").read()
+        tail = runtime.split("        final = _live_pr(pr_number, sha)", 1)[1]
+        tail = tail.split("        gh(\n", 1)[0]
+        last_codex = tail.rfind("exact_codex_clean(pr_number, sha)")
+        last_scope = tail.rfind("source_and_scope(scope_candidate)")
+        last_live = tail.rfind("merge_candidate = _live_pr(pr_number, sha)")
+        self.assertGreater(last_codex, -1)
+        self.assertGreater(last_scope, last_codex)
+        self.assertGreater(last_live, last_scope)
 
 
 if __name__ == "__main__":
