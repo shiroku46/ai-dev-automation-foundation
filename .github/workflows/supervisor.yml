@@ -1,14 +1,16 @@
 name: Trusted Recovery and Merge Supervisor
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
   workflow_run:
-    workflows: ["CI", "Unit Tests"]
+    workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation"]
     types: [completed]
   schedule:
     - cron: "41 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: foundation-supervisor
+  cancel-in-progress: false
 
 permissions: {}
 
@@ -16,11 +18,8 @@ jobs:
   supervise:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    concurrency:
-      group: foundation-supervisor
-      cancel-in-progress: false
     permissions:
-      actions: write
+      actions: read
       checks: read
       contents: read
       issues: write
