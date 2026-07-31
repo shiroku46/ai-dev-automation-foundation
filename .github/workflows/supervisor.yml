@@ -2,7 +2,7 @@ name: Trusted Recovery and Merge Supervisor
 
 on:
   workflow_run:
-    workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation"]
+    workflows: ["CI", "Unit Tests", "Trusted CI Reconciliation", "Trusted Exact-SHA Checks"]
     types: [completed]
   schedule:
     - cron: "41 * * * *"
