@@ -17,11 +17,11 @@ The trusted evidence is GitHub-owned workflow-run and workflow-job metadata. The
 - the workflow ID and path identify `.github/workflows/trusted-checks.yml`;
 - the workflow run used `workflow_dispatch` on the current default branch and its workflow SHA is the current default-branch SHA;
 - the actor is the repository owner, configured owner, or `github-actions[bot]`;
-- the display title contains the exact full candidate SHA;
-- the target is still the exact head of an eligible open same-repository Pull Request;
-- exactly one job named `CI / validate` and exactly one job named `Unit Tests / test` belong to that same run and candidate SHA;
+- the display title contains the exact full candidate SHA and the fixed authorization job proves that SHA is still an eligible same-repository Pull Request head;
+- candidate execution checks out that immutable input SHA with persisted credentials disabled and verifies `git rev-parse HEAD` before validation;
+- exactly one job named `CI / validate` and exactly one job named `Unit Tests / test` belong to the recognized run ID and carry that run's trusted default-branch `head_sha`;
 - the run and both required jobs are completed successfully.
 
-Missing, duplicate, cancelled, failed, incomplete, stale-default-branch, foreign-workflow, wrong-actor, wrong-title, or wrong-SHA records fail closed and consume the bounded attempt budget. Candidate-authored commit statuses and custom Check Runs are not merge-authorizing evidence.
+Missing, duplicate, cancelled, failed, incomplete, stale-default-branch, foreign-workflow, wrong-actor, wrong-title, wrong-run, or wrong-workflow-SHA records fail closed and consume the bounded attempt budget. Candidate-authored commit statuses and custom Check Runs are not merge-authorizing evidence.
 
 Actions are pinned to immutable commit SHAs. Candidate scans and retry attempts are bounded. Same-repository provenance and explicit protected-path authorization are mandatory. Idempotency markers prevent duplicate comments and repeated actions. Merge requires clean exact-SHA Codex evidence, mergeability, and `expected_head_sha` protection.
