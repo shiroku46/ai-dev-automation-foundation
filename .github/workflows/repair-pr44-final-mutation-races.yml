@@ -62,6 +62,26 @@ jobs:
                   gh("api", "-H", "Accept: application/vnd.github+json", path)
               )
 
+          def mutate(method: str, path: str, payload: dict):
+              result = subprocess.run(
+                  [
+                      "gh",
+                      "api",
+                      "--method",
+                      method,
+                      "-H",
+                      "Accept: application/vnd.github+json",
+                      "--input",
+                      "-",
+                      path,
+                  ],
+                  input=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              return json.loads(result.stdout)
+
           def authorized_paths(body: str) -> set[str]:
               marker = "<!-- foundation-protected-authorization"
               if marker not in body:
@@ -156,42 +176,79 @@ jobs:
           if not (0 <= last_codex < last_scope < final_live):
               raise RuntimeError("Final Codex/scope/live ordering regression")
 
-          target_snapshot()
           current = api(
               f"repos/{repository}/contents/{target_path}?ref={target_branch}"
           )
           if current.get("sha") != original_blob:
-              raise RuntimeError("Target runtime blob moved before update")
+              raise RuntimeError("Target runtime blob moved before object construction")
           current_text = base64.b64decode(
               str(current.get("content") or "").replace("\n", "")
           ).decode("utf-8")
           if current_text != original:
-              raise RuntimeError("Target runtime bytes moved before update")
+              raise RuntimeError("Target runtime bytes moved before object construction")
 
-          encoded = base64.b64encode(updated.encode("utf-8")).decode("ascii")
-          result = json.loads(
-              gh(
-                  "api",
-                  "--method",
-                  "PUT",
-                  f"repos/{repository}/contents/{target_path}",
-                  "-f",
-                  "message=Repair final exact-head merge gate ordering",
-                  "-f",
-                  f"content={encoded}",
-                  "-f",
-                  f"sha={original_blob}",
-                  "-f",
-                  f"branch={target_branch}",
-              )
+          parent = api(f"repos/{repository}/git/commits/{expected_head}")
+          base_tree = str((parent.get("tree") or {}).get("sha") or "")
+          if not re.fullmatch(r"[0-9a-f]{40}", base_tree):
+              raise RuntimeError("Expected parent tree is unavailable")
+          blob = mutate(
+              "POST",
+              f"repos/{repository}/git/blobs",
+              {"content": updated, "encoding": "utf-8"},
           )
-          commit_sha = str((result.get("commit") or {}).get("sha") or "")
+          blob_sha = str(blob.get("sha") or "")
+          tree = mutate(
+              "POST",
+              f"repos/{repository}/git/trees",
+              {
+                  "base_tree": base_tree,
+                  "tree": [
+                      {
+                          "path": target_path,
+                          "mode": "100644",
+                          "type": "blob",
+                          "sha": blob_sha,
+                      }
+                  ],
+              },
+          )
+          tree_sha = str(tree.get("sha") or "")
+          commit = mutate(
+              "POST",
+              f"repos/{repository}/git/commits",
+              {
+                  "message": "Repair final exact-head merge gate ordering",
+                  "tree": tree_sha,
+                  "parents": [expected_head],
+              },
+          )
+          commit_sha = str(commit.get("sha") or "")
           if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
-              raise RuntimeError("Contents update returned no immutable commit SHA")
+              raise RuntimeError("Git object construction returned no immutable commit SHA")
+          created = api(f"repos/{repository}/git/commits/{commit_sha}")
+          parents = [str(item.get("sha") or "") for item in created.get("parents") or []]
+          if parents != [expected_head] or str((created.get("tree") or {}).get("sha") or "") != tree_sha:
+              raise RuntimeError("Created repair commit is not bound to the expected sole parent and tree")
+
+          # This is the final network-backed provenance, source-link, authorization,
+          # base, branch, and exact-head validation before the branch mutation.
+          target_snapshot()
+          mutate(
+              "PATCH",
+              f"repos/{repository}/git/refs/heads/{target_branch}",
+              {"sha": commit_sha, "force": False},
+          )
+
           final = api(f"repos/{repository}/pulls/{target_pr}")
           if ((final.get("head") or {}).get("sha")) != commit_sha:
               raise RuntimeError("Target Pull Request did not advance to repair commit")
           if ((final.get("head") or {}).get("ref")) != target_branch:
               raise RuntimeError("Target Pull Request branch changed after update")
+          verified = api(f"repos/{repository}/git/commits/{commit_sha}")
+          verified_parents = [
+              str(item.get("sha") or "") for item in verified.get("parents") or []
+          ]
+          if verified_parents != [expected_head]:
+              raise RuntimeError("Published repair commit parent changed")
           print(f"Repaired PR #{target_pr} at {commit_sha}")
           PY
