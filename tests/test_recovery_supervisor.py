@@ -65,6 +65,30 @@ class RecoverySupervisorTest(unittest.TestCase):
         self.assertEqual(decision.action, Action.RERUN_EXACT_SHA_CHECKS)
         self.assertEqual(decision.reason, Reason.UNTRUSTED_EVIDENCE)
 
+    def test_duplicate_check_contexts_are_conservative_and_order_independent(self):
+        duplicate_checks = (
+            Check("CI / validate", "success", SHA, "github-actions[bot]", "run-1"),
+            Check("CI / validate", "failure", SHA, "github-actions[bot]", "run-2"),
+            Check("Unit Tests / test", "success", SHA, "github-actions[bot]", "run-3"),
+        )
+        first = State(
+            1,
+            2,
+            SHA,
+            duplicate_checks,
+            attempt_count=1,
+            seconds_since_last_attempt=901,
+            transient_failure=True,
+        )
+        second = State(
+            **{**first.__dict__, "checks": tuple(reversed(duplicate_checks))}
+        )
+        first_decision = decide(first)
+        second_decision = decide(second)
+        self.assertEqual(first_decision.action, Action.RETRY_TRANSIENT)
+        self.assertEqual(second_decision.action, Action.RETRY_TRANSIENT)
+        self.assertEqual(first_decision.idempotency_key, second_decision.idempotency_key)
+
     def test_unauthorized_protected_path_blocks_and_closes(self):
         state = State(1, 2, SHA, protected_paths_changed=(".github/x.yml",))
         self.assertEqual(decide(state).action, Action.BLOCK_AND_CLOSE)
@@ -113,7 +137,7 @@ class RecoverySupervisorTest(unittest.TestCase):
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
         self.assertEqual(decision.reason, Reason.EXHAUSTED)
 
-    def test_bounded_fix_binds_run_fingerprint_sha_and_paths(self):
+    def test_bounded_fix_binds_nonempty_run_fingerprint_sha_and_paths(self):
         fix = BoundedFixEvidence(SHA, "run-1", "fingerprint", ("a.py",))
         state = State(
             1,
@@ -142,6 +166,20 @@ class RecoverySupervisorTest(unittest.TestCase):
         decision = decide(stale)
         self.assertEqual(decision.action, Action.INTERNAL_STOP)
         self.assertEqual(decision.reason, Reason.AMBIGUOUS)
+
+        empty_identity = State(
+            1,
+            2,
+            SHA,
+            FAILED,
+            deterministic_failure=True,
+            bounded_fix=BoundedFixEvidence(SHA, "", "", ("a.py",)),
+            allowed_fix_paths=("a.py",),
+            self_resolution_audit=internal_audit(Reason.AMBIGUOUS),
+        )
+        empty_decision = decide(empty_identity)
+        self.assertEqual(empty_decision.action, Action.INTERNAL_STOP)
+        self.assertEqual(empty_decision.reason, Reason.AMBIGUOUS)
 
     def test_idempotency_is_order_independent(self):
         first = State(
@@ -246,7 +284,7 @@ class RecoverySupervisorTest(unittest.TestCase):
             "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
         )
 
-    def test_stale_or_wrong_reason_audit_is_rejected(self):
+    def test_stale_wrong_reason_or_empty_audit_is_rejected(self):
         exhausted = State(
             1,
             2,
@@ -272,6 +310,22 @@ class RecoverySupervisorTest(unittest.TestCase):
             decide(wrong_reason).action,
             Action.RUN_SELF_RESOLUTION_AUDIT,
         )
+        empty = State(
+            1,
+            2,
+            SHA,
+            risk_flags=("provider-ui",),
+            self_resolution_audit=SelfResolutionAudit(
+                completed=True,
+                audited_sha=SHA,
+                reason_family=Reason.HUMAN_CREDENTIAL_UI.value,
+                attempted_connected_paths=("   ",),
+                impossibility_evidence=("", "  "),
+                minimal_human_action="Open provider UI.",
+                automatic_resume_condition="Connection restored.",
+            ),
+        )
+        self.assertEqual(decide(empty).action, Action.RUN_SELF_RESOLUTION_AUDIT)
 
     def test_generic_authentication_or_ambiguity_is_not_human_only(self):
         for flag in ("authentication", "essential-ambiguity", "merge-conflict"):
