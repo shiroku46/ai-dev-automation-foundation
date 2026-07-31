@@ -689,7 +689,7 @@ class FinalMergeGateRevalidationTest(unittest.TestCase):
     def test_late_exact_sha_codex_blocker_blocks_merge(self):
         clean = self._candidate()
         gh = self._run_final_gate(
-            [clean, clean, clean],
+            [clean, clean, clean, clean, clean],
             (9, {"number": 9}, ["docs/probe.md"], None),
             codex_clean_results=[False],
         )
