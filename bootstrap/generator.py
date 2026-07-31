@@ -47,6 +47,9 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Confirm the fixed default-branch `trusted-checks.yml` workflow is present.\n"
         "- [ ] Confirm candidate jobs are read-only and publish no custom checks or statuses.\n"
         "- [ ] Confirm the supervisor validates immutable workflow-run and exact job evidence.\n"
+        "- [ ] Confirm routine technical failures produce one non-notifying internal stop with `human_action_required: false`.\n"
+        "- [ ] Confirm human-only notices accept only account-level repository/App UI, genuine credential/provider UI, or disconnected-integration reconnection UI after an exact-SHA audit.\n"
+        "- [ ] Confirm no notice asks a person to merge, approve, retry, close, change permissions/settings/billing, or deploy.\n"
         "- [ ] Configure `CLAUDE_CODE_OAUTH_TOKEN` only through GitHub/provider UI.\n"
         "- [ ] Run export guard, validator, and tests.\n"
         "- [ ] Validate in a disposable E2E repository.\n",
