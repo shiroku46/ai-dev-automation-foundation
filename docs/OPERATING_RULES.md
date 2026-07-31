@@ -53,6 +53,8 @@ The runtime captures one immutable default-branch commit for the entire native e
 
 The supervisor then requires a successful completed `pull_request` run belonging to the exact Pull Request, same repository, fixed workflow identity, and current head SHA. Missing, pending, cancelled, failed, stale-SHA, cross-Pull-Request, wrong-workflow, wrong-repository, candidate-modified-workflow, or candidate-authored status evidence cannot authorize progress. The complete gate is repeated immediately before merge.
 
+When GitHub records automation-authored Pull Request runs as `action_required` before any job starts, connected automation may create one metadata-only commit on the same authorized branch. The new exact head invalidates all prior evidence and must receive fresh native checks, trusted attestations, and Codex review; no person is asked to approve the run.
+
 ## Internal stops are durable and non-notifying
 
 Retry exhaustion, no progress, stale or incomplete evidence, blocking review, merge state, ambiguous technical conditions, all-path denial, and protected-path denial are internal automation states. They must never become routine requests for a person to merge, approve, retry, close, resolve a review, change permissions or settings, alter billing, or deploy.
