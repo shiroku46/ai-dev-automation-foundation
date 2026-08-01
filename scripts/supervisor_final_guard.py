@@ -66,13 +66,18 @@ def source_and_scope_minimum(
     return issue_number, issue, changed, None
 
 
+# Compatibility alias during the validator migration. The active implementation
+# is the unified minimum-safety contract: source_and_scope(live_pr).
+source_and_scope = source_and_scope_minimum
+
+
 def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
     live_head = str((live_pr.get("head") or {}).get("sha") or "")
     if not isinstance(live_pr.get("labels"), list):
         raise RuntimeError("Live Pull Request omitted explicit label evidence")
     if live_head != candidate_sha or not runtime.trusted_candidate(live_pr):
         raise RuntimeError("Live Pull Request no longer matches the trusted candidate")
-    issue_number, _, _, scope_error = source_and_scope_minimum(live_pr)
+    issue_number, _, _, scope_error = source_and_scope(live_pr)
     if scope_error or not isinstance(issue_number, int) or issue_number <= 0:
         raise RuntimeError("Live source and scope authorization no longer passes")
     return issue_number
