@@ -56,20 +56,30 @@ checks:
             protected_scope_is_authorized([".github/workflows/ci.yml"], body)
         )
 
-    def test_low_risk_cannot_hide_protected_change(self):
-        body = self._scope("low", ["docs/**"])
+    def test_low_risk_is_restricted_to_non_runtime_paths(self):
+        body = self._scope("low", ["docs/**", "tests/**", "README.md"])
         self.assertEqual(risk_for_changes(["docs/readme.md"], body), "low")
-        self.assertFalse(scope_is_authorized(["scripts/runtime.py"], body))
+        self.assertTrue(scope_is_authorized(["tests/test_docs.py"], body))
+        for executable in ("src/**", "app/main.py", "scripts/tool.py"):
+            with self.subTest(executable=executable):
+                with self.assertRaisesRegex(ValueError, "low-risk paths"):
+                    parse_task_scope(self._scope("low", [executable]))
 
     def test_missing_required_fields_fail_closed(self):
         for block in (
-            "<!-- foundation-task-scope\nrisk: low\npaths:\n- docs/**\nprohibited: none\n-->",
-            "<!-- foundation-task-scope\nrisk: low\npaths:\n- docs/**\noperation: docs\n-->",
-            "<!-- foundation-task-scope\nrisk: unknown\npaths:\n- docs/**\noperation: docs\nprohibited: none\n-->",
+            "<!-- foundation-task-scope\nrisk: low\npaths:\n- docs/**\nprohibited: none\nchecks:\n- CI\n-->",
+            "<!-- foundation-task-scope\nrisk: low\npaths:\n- docs/**\noperation: docs\nchecks:\n- CI\n-->",
+            "<!-- foundation-task-scope\nrisk: low\npaths:\n- docs/**\noperation: docs\nprohibited: none\n-->",
+            "<!-- foundation-task-scope\nrisk: unknown\npaths:\n- docs/**\noperation: docs\nprohibited: none\nchecks:\n- CI\n-->",
         ):
             with self.subTest(block=block):
                 with self.assertRaises(ValueError):
                     parse_task_scope(block)
+
+    def test_duplicate_checks_fail_closed(self):
+        duplicate = self._scope().replace("- product:test", "- CI")
+        with self.assertRaisesRegex(ValueError, "checks must be unique"):
+            parse_task_scope(duplicate)
 
     def test_legacy_scope_remains_temporarily_supported(self):
         legacy = """## Allowed paths
