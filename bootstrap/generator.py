@@ -18,8 +18,12 @@ ALLOWLIST = [
     "scripts/public_export_guard.py",
     "scripts/validate_repository.py",
     "scripts/ai_recovery_supervisor.py",
+    "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
+    "scripts/supervisor_queue_recovery.py",
+    "scripts/supervisor_queue_recovery_v2.py",
+    "scripts/supervisor_queue_recovery_v3.py",
     ".github/workflows/ci.yml",
     ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml",
@@ -52,6 +56,12 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Confirm all required native workflow definitions are compared against one stable default-branch commit, and that commit is rechecked after every blob and run query.\n"
         "- [ ] Confirm each candidate workflow file blob exactly equals the blob from that one stable default-branch commit before native run evidence is trusted.\n"
         "- [ ] Confirm native runs belong to the exact Pull Request and reject missing, pending, failed, stale-SHA, wrong-workflow, wrong-repository, cross-PR, candidate-modified-workflow, and candidate-authored evidence.\n"
+        "- [ ] Confirm Queue failure creates no routine Issue or Pull Request comment and no failure-state blocked/review label mutation.\n"
+        "- [ ] Confirm Queue recovery is bounded, deterministic, idempotent, non-notifying, and persists only public-safe records on the fixed internal-stop branch.\n"
+        "- [ ] Confirm the supervisor reconciles `Claude Issue Queue` completion through `supervisor_queue_recovery_v3` before the final merge guard.\n"
+        "- [ ] Confirm trusted attestation, native workflow evidence, current source/scope authorization, candidate identity, and merge use one unchanged default-branch SHA.\n"
+        "- [ ] Confirm final merge re-fetches an open, explicitly non-draft, mergeable exact-head Pull Request with explicit label evidence, no `ai-no-merge`, same-repository provenance, and the same authorized source Issue/scope.\n"
+        "- [ ] Confirm the final merge evidence gate is single-use and consumed by the first merge attempt, including a rejected attempt.\n"
         "- [ ] Confirm the supervisor has only the bounded `contents: write` needed for the fixed `automation-internal-stops` branch.\n"
         "- [ ] Confirm internal stops are sanitized canonical JSON at `automation-stops/pr-<number>/<sha>/<REASON>.json` and are never posted as Issue or Pull Request comments or represented by routine label mutations.\n"
         "- [ ] Confirm a failed audit or moved head writes no internal-stop record or close action.\n"

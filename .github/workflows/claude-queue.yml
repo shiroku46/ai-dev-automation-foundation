@@ -1,4 +1,5 @@
 name: Claude Issue Queue
+run-name: Claude Issue Queue issue-${{ inputs.issue_number || github.event.issue.number || 'event' }} request-${{ inputs.request_fingerprint || 'event' }} attempt-${{ inputs.recovery_attempt || '0' }}
 
 on:
   issues:
@@ -12,12 +13,22 @@ on:
         required: true
         type: string
       trusted_supervisor:
-        description: True only for a default-branch supervisor dispatch
+        description: True only for a fixed default-branch recovery dispatch
         required: false
         default: false
         type: boolean
       trusted_run_id:
-        description: Supervisor workflow run ID when dispatched by github-actions[bot]
+        description: Trusted reconciliation workflow run ID when dispatched by github-actions[bot]
+        required: false
+        default: ""
+        type: string
+      request_fingerprint:
+        description: Exact Queue request fingerprint for supervisor recovery
+        required: false
+        default: ""
+        type: string
+      recovery_attempt:
+        description: Positive bounded recovery attempt number
         required: false
         default: ""
         type: string
@@ -67,6 +78,8 @@ jobs:
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
           TRUSTED_SUPERVISOR: ${{ inputs.trusted_supervisor }}
           TRUSTED_RUN_ID: ${{ inputs.trusted_run_id }}
+          REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+          RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
           ACTOR: ${{ github.actor }}
           OWNER: ${{ github.repository_owner }}
           CONFIGURED_OWNER: ${{ vars.AUTOMATION_OWNER }}
@@ -122,11 +135,18 @@ jobs:
                   allowed = issue_number.isdigit()
               elif actor == "github-actions[bot]":
                   run_id = os.environ.get("TRUSTED_RUN_ID", "")
+                  fingerprint = os.environ.get("REQUEST_FINGERPRINT", "")
+                  attempt = os.environ.get("RECOVERY_ATTEMPT", "")
                   trusted = os.environ.get("TRUSTED_SUPERVISOR", "").lower() == "true"
-                  if trusted and issue_number.isdigit() and run_id.isdigit():
+                  exact_recovery = bool(
+                      re.fullmatch(r"[0-9a-f]{20}", fingerprint)
+                      and attempt.isdigit()
+                      and int(attempt) > 0
+                  )
+                  if trusted and exact_recovery and issue_number.isdigit() and run_id.isdigit():
                       snapshot = api(f"repos/{repository}/actions/runs/{run_id}")
                       default_sha = api(f"repos/{repository}/commits/{default_branch}")["sha"]
-                      expected_path = f".github/workflows/supervisor.yml@{default_branch}"
+                      expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"
                       allowed = (
                           (snapshot.get("repository") or {}).get("full_name") == repository
                           and snapshot.get("path") == expected_path
@@ -344,15 +364,12 @@ jobs:
       RESOLVE_RESULT: ${{ needs.resolve.result }}
       VERIFY_RESULT: ${{ needs.verify.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
-      PR_URL: ${{ needs.publish.outputs.pr_url }}
       TARGET_SHA: ${{ needs.resolve.outputs.branch_sha }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Publish deduplicated Queue state without branch execution
+      - name: Publish successful Queue state or retain non-notifying failure evidence
         run: |
           set -euo pipefail
           gh label create ai-review --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "Automation candidate awaits exact-SHA evidence" --force
-          gh label create ai-blocked --repo "$GITHUB_REPOSITORY" --color B60205 --description "Automation stopped after self-resolution" --force
 
           if [ "$DUPLICATE_SKIPPED" = "true" ]; then
             exit 0
@@ -363,17 +380,12 @@ jobs:
             exit 0
           fi
 
-          marker="<!-- foundation-queue-stop:${GITHUB_RUN_ID} -->"
-          if ! gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" --jq '.[].body' | grep -Fq "$marker"; then
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$marker
-          ## Structured Queue stop
-
-          - reason_code: \`QUEUE_PIPELINE_FAILED\`
-          - issue: \`#$ISSUE_NUMBER\`
-          - immutable_sha: \`${TARGET_SHA:-unavailable}\`
-          - stages: implement=$IMPLEMENT_RESULT resolve=$RESOLVE_RESULT verify=$VERIFY_RESULT publish=$PUBLISH_RESULT
-          - workflow_run: $RUN_URL
-          - self_resolution_audit: admission, source Issue, duplicate state, branch identity, exact SHA, read-only verification, and publication state were checked.
-          - no credential, Secret value, or provider diagnostic is included."
-          fi
-          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label ai-blocked --remove-label ai-review || true
+          {
+            echo "## Queue pipeline incomplete"
+            echo
+            echo "- issue: #$ISSUE_NUMBER"
+            echo "- immutable_sha: ${TARGET_SHA:-unavailable}"
+            echo "- stages: implement=$IMPLEMENT_RESULT resolve=$RESOLVE_RESULT verify=$VERIFY_RESULT publish=$PUBLISH_RESULT"
+            echo "- notification: false"
+            echo "- next: merged default-branch reconciliation performs the bounded self-resolution audit and internal-stop decision"
+          } >> "$GITHUB_STEP_SUMMARY"

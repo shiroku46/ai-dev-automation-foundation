@@ -23,8 +23,12 @@ REQUIRED = {
     "scripts/public_export_guard.py",
     "scripts/validate_repository.py",
     "scripts/ai_recovery_supervisor.py",
+    "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
+    "scripts/supervisor_queue_recovery.py",
+    "scripts/supervisor_queue_recovery_v2.py",
+    "scripts/supervisor_queue_recovery_v3.py",
     ".github/workflows/ci.yml",
     ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml",
@@ -164,26 +168,58 @@ def validate_workflows() -> None:
             'body.strip() == trigger',
             "trusted_run_id",
             "actions/runs/{run_id}",
+            'expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"',
+            "notification: false",
+            "GITHUB_STEP_SUMMARY",
         ),
         "Queue",
     )
     if "github.triggering_actor" in queue:
         fail("Queue must not depend on github.triggering_actor")
+    if 'expected_path = f".github/workflows/supervisor.yml@{default_branch}"' in queue:
+        fail("Queue bot dispatch must be bound to the reconciliation workflow")
+    finalize = job_block(queue, "finalize")
+    for forbidden in (
+        "QUEUE_PIPELINE_FAILED",
+        "gh issue comment",
+        "--add-label ai-blocked",
+        "gh label create ai-blocked",
+    ):
+        if forbidden in finalize:
+            fail(f"Queue routine failure must remain non-notifying: {forbidden}")
 
     reconcile = text(".github/workflows/ci-reconcile.yml")
     require_all(
         reconcile,
         (
-            'workflows: ["CI", "Unit Tests"]',
+            'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]',
             "python -m scripts.supervisor_runtime discover",
             "gh workflow run trusted-checks.yml",
             '--ref "$DEFAULT_BRANCH"',
             '-f "target_sha=$TARGET_SHA"',
-            "actions: write",
             "max-parallel: 2",
+            "\n  queue_recovery:\n",
+            "github.event.workflow_run.name == 'Claude Issue Queue'",
+            "python -m scripts.supervisor_queue_recovery_v3",
         ),
         "reconciliation",
     )
+    queue_recovery = job_block(reconcile, "queue_recovery")
+    require_all(
+        queue_recovery,
+        (
+            "actions: write",
+            "contents: write",
+            "issues: read",
+            "pull-requests: read",
+            "persist-credentials: false",
+            "python -m scripts.supervisor_queue_recovery_v3",
+        ),
+        "Queue recovery job",
+    )
+    for forbidden in ("secrets.", "id-token: write", "issues: write", "pull-requests: write"):
+        if forbidden in queue_recovery:
+            fail(f"Queue recovery job has forbidden capability {forbidden}")
     if "statuses: write" in reconcile or "/statuses/" in reconcile:
         fail("reconciliation must not publish custom statuses")
 
@@ -192,15 +228,37 @@ def validate_workflows() -> None:
         supervisor,
         (
             '"Trusted Exact-SHA Checks"',
+            '"Claude Issue Queue"',
             "ref: ${{ github.event.repository.default_branch }}",
             "persist-credentials: false",
+            "actions: read",
             "contents: write",
+            "python -m scripts.supervisor_final_guard",
         ),
         "supervisor",
     )
-    for forbidden in ("\n  pull_request:\n", "secrets.", "id-token: write"):
+    supervise_job = job_block(supervisor, "supervise")
+    require_all(
+        supervise_job,
+        (
+            "actions: read",
+            "checks: read",
+            "contents: write",
+            "issues: write",
+            "pull-requests: write",
+            "python -m scripts.supervisor_final_guard",
+        ),
+        "merge supervisor job",
+    )
+    for forbidden in (
+        "\n  pull_request:\n",
+        "secrets.",
+        "id-token: write",
+        "actions: write",
+        "python -m scripts.supervisor_queue_recovery_v3",
+    ):
         if forbidden in supervisor:
-            fail(f"write-capable supervisor is not fork safe: {forbidden}")
+            fail(f"merge supervisor is not least privilege: {forbidden}")
 
 
 def validate_policy_and_runtime() -> None:
@@ -216,6 +274,10 @@ def validate_policy_and_runtime() -> None:
             'any(character in authorized for character in "*?[")',
             'line.startswith("<!--")',
             '"scripts/supervisor_policy.py"',
+            '"scripts/supervisor_final_guard.py"',
+            '"scripts/supervisor_queue_recovery.py"',
+            '"scripts/supervisor_queue_recovery_v2.py"',
+            '"scripts/supervisor_queue_recovery_v3.py"',
         ),
         "source scope policy",
     )
@@ -314,6 +376,75 @@ def validate_policy_and_runtime() -> None:
         "terminal evidence gate",
     )
 
+    final_guard = text("scripts/supervisor_final_guard.py")
+    require_all(
+        final_guard,
+        (
+            "_verified_gate",
+            "_exact_live_default_sha",
+            "_require_unchanged_default",
+            "attestation_attempts",
+            "_native_workflow_evidence",
+            "_authorized_source_issue",
+            'isinstance(live_pr.get("labels"), list)',
+            "source_and_scope(live_pr)",
+            'live_pr.get("state") != "open"',
+            'live_pr.get("draft") is not False',
+            'live_pr.get("mergeable") is not True',
+            "_verified_gate = None",
+            "_original_request_codex",
+            "request_codex_exact_head",
+            "_original_request_codex(pr_number, sha)",
+        ),
+        "final merge guard",
+    )
+    if "request_codex_without_provider_mention" in final_guard:
+        fail("final merge guard must not replace the provider review dispatch with an inert marker")
+
+    recovery = text("scripts/supervisor_queue_recovery.py")
+    recovery_v2 = text("scripts/supervisor_queue_recovery_v2.py")
+    recovery_v3 = text("scripts/supervisor_queue_recovery_v3.py")
+    require_all(
+        recovery,
+        (
+            'QUEUE_WORKFLOW_NAME = "Claude Issue Queue"',
+            "MAX_QUEUE_RECOVERY_ATTEMPTS = 3",
+            'RETRY_REASON = "QUEUE_PIPELINE_RETRY_EXHAUSTED"',
+            '"notification": False',
+            "_put_exact_record",
+            "_revalidate_request",
+        ),
+        "Queue recovery",
+    )
+    require_all(
+        recovery_v2,
+        (
+            "_wait_for_queue_implementation_start",
+            "QUEUE_START_TIMEOUT_SECONDS",
+            "_connected_exhaustion_snapshot",
+            "guarded_record_exhaustion",
+            '"notification": False',
+            'actions/workflows/ci-reconcile.yml',
+            "required_reconcile",
+            'expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"',
+            "python -m scripts.supervisor_final_guard",
+            '"actions: write" in supervisor_text',
+        ),
+        "Queue recovery hardening",
+    )
+    require_all(
+        recovery_v3,
+        (
+            "content_bound_request_fingerprint",
+            "_validated_issue_scope",
+            "_trusted_alternative_candidates",
+            "complete_connected_exhaustion_snapshot",
+            "Trusted alternative candidate appeared during complete Queue audit",
+            "source_protected_authorized_paths",
+        ),
+        "Queue recovery final races",
+    )
+
 
 def validate_identity() -> None:
     checklist = ROOT / "INSTALL_CHECKLIST.md"
@@ -333,12 +464,21 @@ def validate_identity() -> None:
                 '".github/workflows/trusted-checks.yml"',
                 '"README.md"',
                 '"LICENSE"',
+                '"scripts/supervisor_final_guard.py"',
+                '"scripts/supervisor_queue_recovery.py"',
+                '"scripts/supervisor_queue_recovery_v2.py"',
+                '"scripts/supervisor_queue_recovery_v3.py"',
                 "GENERATED_TARGET_MARKER",
                 "every changed and renamed path",
                 "protected-change authorization",
                 "native pull-request workflow evidence",
                 "one stable default-branch commit",
                 "E2E Acceptance",
+                "Queue failure creates no routine Issue or Pull Request comment",
+                "Queue recovery is bounded, deterministic, idempotent, non-notifying",
+                "one unchanged default-branch SHA",
+                "explicit label evidence",
+                "single-use",
                 "automation-internal-stops",
                 "never posted as Issue or Pull Request comments",
                 "github-actions[bot]",
