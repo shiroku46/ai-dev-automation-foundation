@@ -26,24 +26,31 @@ class BootstrapTest(unittest.TestCase):
                 self.assertTrue((target / path).is_file(), path)
             self.assertTrue((target / "README.md").read_text(encoding="utf-8").strip())
             self.assertTrue((target / "LICENSE").read_text(encoding="utf-8").strip())
+            self.assertTrue((target / "docs/MINIMUM_SAFETY_PROFILE.md").is_file())
             checklist = (target / "INSTALL_CHECKLIST.md").read_text(encoding="utf-8")
             self.assertIn(GENERATED_TARGET_MARKER, checklist)
             self.assertIn("example-owner", checklist)
             self.assertNotIn("notion", checklist.lower())
-            self.assertIn("Queue failure creates no routine Issue or Pull Request comment", checklist)
-            self.assertIn("Queue recovery is bounded, deterministic, idempotent, non-notifying", checklist)
-            self.assertIn("one unchanged default-branch SHA", checklist)
-            self.assertIn("explicit label evidence", checklist)
-            self.assertIn("single-use", checklist)
-            self.assertIn("automation-internal-stops", checklist)
-            self.assertIn("automation-stops/pr-<number>/<sha>/<REASON>.json", checklist)
-            self.assertIn("never posted as Issue or Pull Request comments", checklist)
-            self.assertIn("failed audit or moved head", checklist)
-            self.assertIn("immutable trusted request timestamp", checklist)
-            self.assertIn("latest immutable clean evidence", checklist)
-            self.assertIn("three canonical account/provider UI reason codes", checklist)
-            self.assertIn("github-actions[bot]", checklist)
-            self.assertIn("automatic-resumption condition", checklist)
+
+            # Phase 0 must be the first operational section.
+            self.assertLess(checklist.index("## Phase 0"), checklist.index("## Minimum safety profile"))
+            self.assertIn("authorize this exact repository", checklist)
+            self.assertIn("Create a Codex Environment", checklist)
+            self.assertIn("claude setup-token", checklist)
+            self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", checklist)
+            self.assertIn("never paste it", checklist)
+
+            # Practical minimum-safety and tiered-review contract.
+            self.assertIn("foundation-task-scope", checklist)
+            self.assertIn("GitHub-visible remote head SHA", checklist)
+            self.assertIn("Low-risk", checklist)
+            self.assertIn("Standard-risk", checklist)
+            self.assertIn("Protected changes require clean exact-SHA Codex", checklist)
+            self.assertIn("neutral review-required state", checklist)
+            self.assertIn("does not actively mention `@codex`", checklist)
+            self.assertIn("Provider setup/error replies never count", checklist)
+            self.assertIn("one final live", checklist)
+            self.assertIn("exact expected head SHA", checklist)
             self.assertFalse((target / "bootstrap").exists())
 
             result = run_validator(target)
@@ -91,6 +98,7 @@ class BootstrapTest(unittest.TestCase):
             "README.md",
             "LICENSE",
             "SECURITY.md",
+            "docs/MINIMUM_SAFETY_PROFILE.md",
             "scripts/supervisor_final_guard.py",
             "scripts/supervisor_queue_recovery.py",
             "scripts/supervisor_queue_recovery_v2.py",
