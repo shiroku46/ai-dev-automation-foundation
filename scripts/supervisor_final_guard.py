@@ -180,23 +180,25 @@ def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
     unresolved = runtime.unresolved_review_threads(pr_number)
     codex = dict(_original_exact_codex_evidence(pr_number, sha))
     codex["review_source"] = "codex"
+    codex["risk"] = risk
+    if unresolved:
+        codex["state"] = "blocking"
+        return codex
     if risk == "low":
         return {
-            "state": "blocking" if unresolved else "clean",
+            "state": "clean",
             "timestamp": None,
             "request_timestamp": None,
             "review_source": "low-risk-checks",
             "risk": risk,
         }
     if codex.get("state") == "clean":
-        codex["risk"] = risk
         return codex
-    if risk == "standard" and not unresolved:
+    if risk == "standard":
         coordinator = _coordinator_review(pr_number, sha)
         if coordinator is not None:
             coordinator["risk"] = risk
             return coordinator
-    codex["risk"] = risk
     if codex.get("state") == "pending" and _provider_route_unavailable(pr_number):
         codex["review_route"] = "unavailable"
     return codex
