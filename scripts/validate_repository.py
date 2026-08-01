@@ -23,8 +23,12 @@ REQUIRED = {
     "scripts/public_export_guard.py",
     "scripts/validate_repository.py",
     "scripts/ai_recovery_supervisor.py",
+    "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
+    "scripts/supervisor_queue_recovery.py",
+    "scripts/supervisor_queue_recovery_v2.py",
+    "scripts/supervisor_queue_recovery_v3.py",
     ".github/workflows/ci.yml",
     ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml",
@@ -164,11 +168,22 @@ def validate_workflows() -> None:
             'body.strip() == trigger',
             "trusted_run_id",
             "actions/runs/{run_id}",
+            "notification: false",
+            "GITHUB_STEP_SUMMARY",
         ),
         "Queue",
     )
     if "github.triggering_actor" in queue:
         fail("Queue must not depend on github.triggering_actor")
+    finalize = job_block(queue, "finalize")
+    for forbidden in (
+        "QUEUE_PIPELINE_FAILED",
+        "gh issue comment",
+        "--add-label ai-blocked",
+        "gh label create ai-blocked",
+    ):
+        if forbidden in finalize:
+            fail(f"Queue routine failure must remain non-notifying: {forbidden}")
 
     reconcile = text(".github/workflows/ci-reconcile.yml")
     require_all(
@@ -192,9 +207,13 @@ def validate_workflows() -> None:
         supervisor,
         (
             '"Trusted Exact-SHA Checks"',
+            '"Claude Issue Queue"',
             "ref: ${{ github.event.repository.default_branch }}",
             "persist-credentials: false",
+            "actions: write",
             "contents: write",
+            "python -m scripts.supervisor_queue_recovery_v3",
+            "python -m scripts.supervisor_final_guard",
         ),
         "supervisor",
     )
@@ -216,6 +235,10 @@ def validate_policy_and_runtime() -> None:
             'any(character in authorized for character in "*?[")',
             'line.startswith("<!--")',
             '"scripts/supervisor_policy.py"',
+            '"scripts/supervisor_final_guard.py"',
+            '"scripts/supervisor_queue_recovery.py"',
+            '"scripts/supervisor_queue_recovery_v2.py"',
+            '"scripts/supervisor_queue_recovery_v3.py"',
         ),
         "source scope policy",
     )
@@ -314,6 +337,68 @@ def validate_policy_and_runtime() -> None:
         "terminal evidence gate",
     )
 
+    final_guard = text("scripts/supervisor_final_guard.py")
+    require_all(
+        final_guard,
+        (
+            "_verified_gate",
+            "_exact_live_default_sha",
+            "_require_unchanged_default",
+            "attestation_attempts",
+            "_native_workflow_evidence",
+            "_authorized_source_issue",
+            'isinstance(live_pr.get("labels"), list)',
+            "source_and_scope(live_pr)",
+            'live_pr.get("state") != "open"',
+            'live_pr.get("draft") is not False',
+            'live_pr.get("mergeable") is not True',
+            "_verified_gate = None",
+            "request_codex_without_provider_mention",
+            '"- notification: `false`',
+            '"- required_human_action: `null`',
+        ),
+        "final merge guard",
+    )
+
+    recovery = text("scripts/supervisor_queue_recovery.py")
+    recovery_v2 = text("scripts/supervisor_queue_recovery_v2.py")
+    recovery_v3 = text("scripts/supervisor_queue_recovery_v3.py")
+    require_all(
+        recovery,
+        (
+            'QUEUE_WORKFLOW_NAME = "Claude Issue Queue"',
+            "MAX_QUEUE_RECOVERY_ATTEMPTS = 3",
+            'RETRY_REASON = "QUEUE_PIPELINE_RETRY_EXHAUSTED"',
+            '"notification": False',
+            "_put_exact_record",
+            "_revalidate_request",
+        ),
+        "Queue recovery",
+    )
+    require_all(
+        recovery_v2,
+        (
+            "_wait_for_queue_implementation_start",
+            "QUEUE_START_TIMEOUT_SECONDS",
+            "_connected_exhaustion_snapshot",
+            "guarded_record_exhaustion",
+            '"notification": False',
+        ),
+        "Queue recovery hardening",
+    )
+    require_all(
+        recovery_v3,
+        (
+            "content_bound_request_fingerprint",
+            "_validated_issue_scope",
+            "_trusted_alternative_candidates",
+            "complete_connected_exhaustion_snapshot",
+            "Trusted alternative candidate appeared during complete Queue audit",
+            "source_protected_authorized_paths",
+        ),
+        "Queue recovery final races",
+    )
+
 
 def validate_identity() -> None:
     checklist = ROOT / "INSTALL_CHECKLIST.md"
@@ -333,12 +418,21 @@ def validate_identity() -> None:
                 '".github/workflows/trusted-checks.yml"',
                 '"README.md"',
                 '"LICENSE"',
+                '"scripts/supervisor_final_guard.py"',
+                '"scripts/supervisor_queue_recovery.py"',
+                '"scripts/supervisor_queue_recovery_v2.py"',
+                '"scripts/supervisor_queue_recovery_v3.py"',
                 "GENERATED_TARGET_MARKER",
                 "every changed and renamed path",
                 "protected-change authorization",
                 "native pull-request workflow evidence",
                 "one stable default-branch commit",
                 "E2E Acceptance",
+                "Queue failure creates no routine Issue or Pull Request comment",
+                "Queue recovery is bounded, deterministic, idempotent, non-notifying",
+                "one unchanged default-branch SHA",
+                "explicit label evidence",
+                "single-use",
                 "automation-internal-stops",
                 "never posted as Issue or Pull Request comments",
                 "github-actions[bot]",
