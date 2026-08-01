@@ -158,27 +158,39 @@ def require_no_trusted_alternative(issue_number: int) -> None:
 def intent_identity_without_alternative(
     issue_number: int, fingerprint: str, attempt: int
 ):
-    """Suppress retry persistence when authorized work already exists."""
+    """Validate current scope before retry persistence and suppress alternatives."""
+    _validated_issue_scope(issue_number)
     require_no_trusted_alternative(issue_number)
     return _original_intent_identity(issue_number, fingerprint, attempt)
 
 
 def dispatch_without_alternative(
-    issue_number: int, fingerprint: str, expected_default_sha: str
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
 ) -> None:
-    """Recheck alternative work immediately before fixed dispatch."""
+    """Revalidate current scope and alternative work immediately before dispatch."""
+    _validated_issue_scope(issue_number)
     require_no_trusted_alternative(issue_number)
-    _original_dispatch_fixed_retry(issue_number, fingerprint, expected_default_sha)
+    _original_dispatch_fixed_retry(
+        issue_number, fingerprint, attempt, expected_default_sha
+    )
 
 
 def wait_for_admitted_implementation(
-    before_ids: set[int], expected_default_sha: str
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
 ) -> int:
     """Return after implementation starts, including a fast terminal failure."""
     deadline = time.monotonic() + hardened.QUEUE_START_TIMEOUT_SECONDS
     selected_run_id: int | None = None
     while time.monotonic() < deadline:
-        matches = hardened._matching_dispatch_runs(before_ids, expected_default_sha)
+        matches = hardened._matching_dispatch_runs(
+            issue_number, fingerprint, attempt, expected_default_sha
+        )
         if len(matches) > 1:
             raise RuntimeError("Queue retry dispatch produced ambiguous workflow runs")
         if matches:
