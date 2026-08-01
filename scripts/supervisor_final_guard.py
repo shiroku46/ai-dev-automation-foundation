@@ -71,16 +71,61 @@ def source_and_scope_minimum(
 source_and_scope = source_and_scope_minimum
 
 
-def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
+def _authorized_source_snapshot(
+    live_pr: dict[str, Any], candidate_sha: str
+) -> tuple[int, dict[str, Any]]:
     live_head = str((live_pr.get("head") or {}).get("sha") or "")
     if not isinstance(live_pr.get("labels"), list):
         raise RuntimeError("Live Pull Request omitted explicit label evidence")
     if live_head != candidate_sha or not runtime.trusted_candidate(live_pr):
         raise RuntimeError("Live Pull Request no longer matches the trusted candidate")
-    issue_number, _, _, scope_error = source_and_scope(live_pr)
-    if scope_error or not isinstance(issue_number, int) or issue_number <= 0:
+    issue_number, issue, _, scope_error = source_and_scope(live_pr)
+    if (
+        scope_error
+        or not isinstance(issue_number, int)
+        or issue_number <= 0
+        or not isinstance(issue, dict)
+    ):
         raise RuntimeError("Live source and scope authorization no longer passes")
-    return issue_number
+    return issue_number, issue
+
+
+def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
+    return _authorized_source_snapshot(live_pr, candidate_sha)[0]
+
+
+def _successful_exact_head_check_names(
+    sha: str, native_evidence: list[dict[str, Any]]
+) -> set[str]:
+    if not runtime.EXACT_SHA.fullmatch(sha):
+        raise ValueError("Required checks need one exact candidate SHA")
+    names: set[str] = set()
+    for item in native_evidence:
+        for key in ("workflow", "display_name", "name"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                names.add(value)
+    check_runs = runtime.api_key_pages(
+        f"repos/{runtime.REPO}/commits/{sha}/check-runs?per_page=100",
+        "check_runs",
+    )
+    for item in check_runs:
+        if item.get("status") != "completed" or item.get("conclusion") != "success":
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _missing_required_task_checks(
+    issue_body: str, sha: str, native_evidence: list[dict[str, Any]]
+) -> list[str]:
+    scope = policy.parse_task_scope(issue_body)
+    if scope is None:
+        return []
+    successful = _successful_exact_head_check_names(sha, native_evidence)
+    return [check for check in scope.checks if check not in successful]
 
 
 def _risk_for_pr(pr_number: int, sha: str) -> tuple[str, int]:
@@ -203,7 +248,15 @@ def guarded_native_workflow_evidence(sha: str, pr_number: int):
         if not clean:
             return False, evidence
         live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
-        issue_number = _authorized_source_issue(live_pr, sha)
+        issue_number, issue = _authorized_source_snapshot(live_pr, sha)
+        missing_checks = _missing_required_task_checks(
+            issue.get("body") or "", sha, evidence
+        )
+        if missing_checks:
+            return False, [
+                *evidence,
+                {"missing_task_checks": missing_checks, "exact_head_sha": sha},
+            ]
         _require_unchanged_default(default_sha)
         _verified_gate = (sha, pr_number, default_sha, issue_number)
         return True, evidence
