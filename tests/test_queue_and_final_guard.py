@@ -24,9 +24,6 @@ class QueueAndFinalGuardTest(unittest.TestCase):
                 delattr(scripts_package, attribute)
 
     def tearDown(self):
-        # `from scripts import supervisor_runtime` can reuse the package
-        # attribute even after sys.modules is cleared. Remove both caches so
-        # later Queue recovery tests load their own repository-bound constants.
         self._clear_repository_bound_modules()
 
     @staticmethod
@@ -97,6 +94,8 @@ checks:
     def test_low_risk_is_clean_without_provider_review(self):
         guard = self._load_guard()
         with patch.object(guard, "_risk_for_pr", return_value=("low", ISSUE_NUMBER)), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=0
+        ), patch.object(
             guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
         ):
             evidence = guard.review_evidence(10, CANDIDATE_SHA)
@@ -115,11 +114,25 @@ checks:
             ),
         }
         with patch.object(guard, "_risk_for_pr", return_value=("standard", ISSUE_NUMBER)), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=0
+        ), patch.object(
             guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
         ), patch.object(guard.runtime, "api_list", return_value=[comment]):
             evidence = guard.review_evidence(10, CANDIDATE_SHA)
         self.assertEqual(evidence["state"], "clean")
         self.assertEqual(evidence["review_source"], "coordinator")
+
+    def test_unresolved_threads_block_coordinator_review(self):
+        guard = self._load_guard()
+        coordinator = Mock(return_value={"state": "clean", "review_source": "coordinator"})
+        with patch.object(guard, "_risk_for_pr", return_value=("standard", ISSUE_NUMBER)), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=1
+        ), patch.object(
+            guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
+        ), patch.object(guard, "_coordinator_review", coordinator):
+            evidence = guard.review_evidence(10, CANDIDATE_SHA)
+        self.assertNotEqual(evidence["state"], "clean")
+        coordinator.assert_not_called()
 
     def test_coordinator_marker_rejects_untrusted_edited_empty_or_stale(self):
         guard = self._load_guard()
@@ -138,6 +151,8 @@ checks:
     def test_protected_risk_requires_codex(self):
         guard = self._load_guard()
         with patch.object(guard, "_risk_for_pr", return_value=("protected", ISSUE_NUMBER)), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=0
+        ), patch.object(
             guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
         ), patch.object(guard, "_provider_route_unavailable", return_value=False):
             evidence = guard.review_evidence(10, CANDIDATE_SHA)
@@ -147,6 +162,8 @@ checks:
     def test_provider_setup_response_is_unavailable_not_review(self):
         guard = self._load_guard()
         with patch.object(guard, "_risk_for_pr", return_value=("standard", ISSUE_NUMBER)), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=0
+        ), patch.object(
             guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
         ), patch.object(guard, "_coordinator_review", return_value=None), patch.object(
             guard, "_provider_route_unavailable", return_value=True
@@ -257,6 +274,62 @@ checks:
             guard.guarded_gh(*wrong)
         self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER))
 
+    def test_final_merge_revalidates_live_issue_checks(self):
+        guard = self._load_guard()
+        guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
+        args = (
+            "api", "--method", "PUT",
+            "repos/example/foundation/pulls/20/merge",
+            "-f", "merge_method=squash",
+            "-f", f"sha={CANDIDATE_SHA}",
+        )
+        live = self._live_pr(20)
+        issue = {"body": self._task_scope()}
+        delegated = Mock(return_value="merged")
+        with patch.object(guard.runtime, "api", return_value=live), patch.object(
+            guard, "_authorized_source_snapshot", return_value=(ISSUE_NUMBER, issue)
+        ), patch.object(
+            guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
+        ), patch.object(
+            guard.runtime, "api_key_pages", return_value=[]
+        ), patch.object(
+            guard, "_original_current_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(guard, "_original_gh", delegated):
+            with self.assertRaisesRegex(RuntimeError, "missing exact-head checks"):
+                guard.guarded_gh(*args)
+        self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER))
+        delegated.assert_not_called()
+
+    def test_final_merge_revalidates_live_review_tier(self):
+        guard = self._load_guard()
+        guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
+        args = (
+            "api", "--method", "PUT",
+            "repos/example/foundation/pulls/20/merge",
+            "-f", "merge_method=squash",
+            "-f", f"sha={CANDIDATE_SHA}",
+        )
+        live = self._live_pr(20)
+        issue = {"body": self._task_scope(checks=("CI",), risk="standard", paths=("src/**",))}
+        delegated = Mock(return_value="merged")
+        with patch.object(guard.runtime, "api", return_value=live), patch.object(
+            guard, "_authorized_source_snapshot", return_value=(ISSUE_NUMBER, issue)
+        ), patch.object(
+            guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
+        ), patch.object(
+            guard.runtime, "api_key_pages", return_value=[]
+        ), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=0
+        ), patch.object(
+            guard, "review_evidence", return_value={"state": "blocking"}
+        ), patch.object(
+            guard, "_original_current_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(guard, "_original_gh", delegated):
+            with self.assertRaisesRegex(RuntimeError, "review evidence"):
+                guard.guarded_gh(*args)
+        self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER))
+        delegated.assert_not_called()
+
     def test_successful_expected_head_merge_consumes_gate(self):
         guard = self._load_guard()
         guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
@@ -269,10 +342,16 @@ checks:
         live = self._live_pr(20)
         delegated = Mock(return_value="merged")
         with patch.object(guard.runtime, "api", return_value=live), patch.object(
-            guard, "source_and_scope", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)
-        ), patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
-            guard, "_original_gh", delegated
-        ):
+            guard, "_authorized_source_snapshot", return_value=(ISSUE_NUMBER, {"body": ""})
+        ), patch.object(
+            guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
+        ), patch.object(
+            guard.runtime, "unresolved_review_threads", return_value=0
+        ), patch.object(
+            guard, "review_evidence", return_value={"state": "clean"}
+        ), patch.object(
+            guard, "_original_current_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(guard, "_original_gh", delegated):
             self.assertEqual(guard.guarded_gh(*args), "merged")
         self.assertIsNone(guard._verified_gate)
         delegated.assert_called_once_with(*args)
