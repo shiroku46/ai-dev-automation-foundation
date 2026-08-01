@@ -1,4 +1,5 @@
 name: Claude Issue Queue
+run-name: Claude Issue Queue issue-${{ inputs.issue_number || github.event.issue.number || 'event' }} request-${{ inputs.request_fingerprint || 'event' }} attempt-${{ inputs.recovery_attempt || '0' }}
 
 on:
   issues:
@@ -18,6 +19,16 @@ on:
         type: boolean
       trusted_run_id:
         description: Supervisor workflow run ID when dispatched by github-actions[bot]
+        required: false
+        default: ""
+        type: string
+      request_fingerprint:
+        description: Exact Queue request fingerprint for supervisor recovery
+        required: false
+        default: ""
+        type: string
+      recovery_attempt:
+        description: Positive bounded recovery attempt number
         required: false
         default: ""
         type: string
@@ -67,6 +78,8 @@ jobs:
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
           TRUSTED_SUPERVISOR: ${{ inputs.trusted_supervisor }}
           TRUSTED_RUN_ID: ${{ inputs.trusted_run_id }}
+          REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+          RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
           ACTOR: ${{ github.actor }}
           OWNER: ${{ github.repository_owner }}
           CONFIGURED_OWNER: ${{ vars.AUTOMATION_OWNER }}
@@ -122,8 +135,15 @@ jobs:
                   allowed = issue_number.isdigit()
               elif actor == "github-actions[bot]":
                   run_id = os.environ.get("TRUSTED_RUN_ID", "")
+                  fingerprint = os.environ.get("REQUEST_FINGERPRINT", "")
+                  attempt = os.environ.get("RECOVERY_ATTEMPT", "")
                   trusted = os.environ.get("TRUSTED_SUPERVISOR", "").lower() == "true"
-                  if trusted and issue_number.isdigit() and run_id.isdigit():
+                  exact_recovery = bool(
+                      re.fullmatch(r"[0-9a-f]{20}", fingerprint)
+                      and attempt.isdigit()
+                      and int(attempt) > 0
+                  )
+                  if trusted and exact_recovery and issue_number.isdigit() and run_id.isdigit():
                       snapshot = api(f"repos/{repository}/actions/runs/{run_id}")
                       default_sha = api(f"repos/{repository}/commits/{default_branch}")["sha"]
                       expected_path = f".github/workflows/supervisor.yml@{default_branch}"
