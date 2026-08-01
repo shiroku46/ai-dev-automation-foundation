@@ -17,6 +17,27 @@ def run_validator(target: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_generated_unit_tests_path(target: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            "if [ -d tests ]; then "
+            "python -m unittest discover -s tests; "
+            "else "
+            "python scripts/public_export_guard.py . && "
+            "python scripts/validate_repository.py; "
+            "fi",
+        ],
+        cwd=target,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 class BootstrapTest(unittest.TestCase):
     def test_rendered_allowlist_and_target_validation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -45,14 +66,33 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn("github-actions[bot]", checklist)
             self.assertIn("automatic-resumption condition", checklist)
             self.assertFalse((target / "bootstrap").exists())
+            self.assertFalse((target / "tests").exists())
 
-            result = run_validator(target)
+            unit_tests = (target / ".github/workflows/unit-tests.yml").read_text(encoding="utf-8")
+            self.assertIn("if [ -d tests ]; then", unit_tests)
+            self.assertIn("python -m unittest discover -s tests", unit_tests)
+            self.assertIn("python scripts/public_export_guard.py .", unit_tests)
+            self.assertIn("python scripts/validate_repository.py", unit_tests)
+
+            result = run_generated_unit_tests_path(target)
             self.assertEqual(
                 result.returncode,
                 0,
                 msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
             )
+            self.assertIn("public export guard: clean", result.stdout)
             self.assertIn("repository validation: clean", result.stdout)
+
+    def test_no_tests_repository_without_generated_identity_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render(target, "example-owner")
+            (target / "INSTALL_CHECKLIST.md").unlink()
+            self.assertFalse((target / "tests").exists())
+
+            result = run_generated_unit_tests_path(target)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("repository identity is ambiguous", result.stderr)
 
     def test_fresh_source_identity_requires_generator_without_bootstrap_directory(self):
         with tempfile.TemporaryDirectory() as directory:
