@@ -59,6 +59,7 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Run the public export guard, repository validator, and available tests.\n\n"
         "## Minimum safety profile\n\n"
         "- [ ] Use one owner-authored `foundation-task-scope` block with `risk`, `paths`, `operation`, `prohibited`, and required `checks`.\n"
+        "- [ ] During the bounded migration, legacy Issues may still contain a `protected-change authorization` block, but new Issues do not duplicate protected paths.\n"
         "- [ ] Never push automation changes directly to the default branch.\n"
         "- [ ] Treat the GitHub-visible remote head SHA as authoritative; local-only commits are incomplete.\n"
         "- [ ] Require every changed and renamed path to match the task scope.\n"
