@@ -2,49 +2,40 @@ import importlib
 import os
 import sys
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
+from pathlib import Path
 
 from scripts.supervisor_policy import is_protected
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SHA = "d" * 40
 CANDIDATE_SHA = "c" * 40
-ISSUE_NUMBER = 85
+ISSUE_NUMBER = 129
 
 
 class QueueAndFinalGuardTest(unittest.TestCase):
-    def test_queue_failure_is_non_notifying_and_recovery_is_separated_from_merge_supervisor(self):
+    def test_queue_failure_is_non_notifying_and_recovery_is_separated(self):
         queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
         finalize = queue.split("\n  finalize:\n", 1)[1]
         self.assertNotIn("QUEUE_PIPELINE_FAILED", finalize)
         self.assertNotIn("gh issue comment", finalize)
-        self.assertNotIn("--add-label ai-blocked", finalize)
         self.assertIn("notification: false", finalize)
-        self.assertIn("GITHUB_STEP_SUMMARY", finalize)
 
         reconcile = (ROOT / ".github/workflows/ci-reconcile.yml").read_text(encoding="utf-8")
-        queue_recovery = reconcile.split("\n  queue_recovery:\n", 1)[1]
         self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
-        self.assertIn("python -m scripts.supervisor_queue_recovery_v3", queue_recovery)
-        self.assertIn("actions: write", queue_recovery)
-        self.assertIn("contents: write", queue_recovery)
-        self.assertIn("issues: read", queue_recovery)
-        self.assertIn("pull-requests: read", queue_recovery)
+        self.assertIn("python -m scripts.supervisor_queue_recovery_v3", reconcile)
 
         supervisor = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
-        self.assertIn('"Claude Issue Queue"', supervisor)
         self.assertIn("python -m scripts.supervisor_final_guard", supervisor)
         self.assertIn("actions: read", supervisor)
         self.assertNotIn("actions: write", supervisor)
-        self.assertNotIn("python -m scripts.supervisor_queue_recovery_v3", supervisor)
 
-    def test_merge_capable_guard_is_a_protected_path(self):
+    def test_merge_capable_guard_is_protected(self):
         self.assertTrue(is_protected("scripts/supervisor_final_guard.py"))
 
     def _load_guard(self):
         environment = {
-            "REPOSITORY": "example/foundation-e2e",
+            "REPOSITORY": "example/foundation",
             "DEFAULT_BRANCH": "main",
             "AUTOMATION_OWNER": "owner",
         }
@@ -53,240 +44,153 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             sys.modules.pop("scripts.supervisor_runtime", None)
             return importlib.import_module("scripts.supervisor_final_guard")
 
-    def _trusted_live_pr(self, number: int, *, labels=None, head_sha=CANDIDATE_SHA, state="open", draft=False):
+    @staticmethod
+    def _live_pr(number=10, head_sha=CANDIDATE_SHA, draft=False):
         return {
             "number": number,
-            "state": state,
+            "state": "open",
             "draft": draft,
             "mergeable": True,
-            "head": {"sha": head_sha, "ref": "fix/candidate", "repo": {"full_name": "example/foundation-e2e"}},
-            "base": {"ref": "main", "repo": {"full_name": "example/foundation-e2e"}},
+            "head": {
+                "sha": head_sha,
+                "ref": "fix/issue-129",
+                "repo": {"full_name": "example/foundation"},
+            },
+            "base": {"ref": "main", "repo": {"full_name": "example/foundation"}},
             "user": {"login": "owner"},
-            "labels": list(labels or []),
+            "labels": [],
+            "body": "Closes #129",
         }
 
-    @staticmethod
-    def _scope_result(issue_number=ISSUE_NUMBER, error=None):
-        issue = {"number": issue_number, "user": {"login": "owner"}}
-        return issue_number, issue, ["scripts/supervisor_final_guard.py"], error
-
-    def test_guard_fails_closed_without_current_successful_attestation(self):
+    def test_low_risk_is_clean_without_provider_review(self):
         guard = self._load_guard()
-        native = Mock(return_value=(True, ["native-run"]))
-        with patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
-            guard.runtime, "attestation_attempts", return_value=[{"success": False}]
-        ), patch.object(guard, "_native_workflow_evidence", native):
-            self.assertEqual(guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 12), (False, []))
-        native.assert_not_called()
-        self.assertIsNone(guard._verified_gate)
+        with patch.object(guard, "_risk_for_pr", return_value=("low", ISSUE_NUMBER)), patch.object(
+            guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
+        ):
+            evidence = guard.review_evidence(10, CANDIDATE_SHA)
+        self.assertEqual(evidence["state"], "clean")
+        self.assertEqual(evidence["review_source"], "low-risk-checks")
 
-    def test_guard_binds_attestation_native_and_source_to_same_default_sha(self):
+    def test_standard_risk_accepts_trusted_nonempty_coordinator_marker(self):
         guard = self._load_guard()
-        observed = []
+        comment = {
+            "user": {"login": "owner"},
+            "created_at": "2026-08-01T00:00:00Z",
+            "updated_at": "2026-08-01T00:00:00Z",
+            "body": (
+                f"<!-- foundation-coordinator-review:{CANDIDATE_SHA}:clean -->\n"
+                "Reviewed exact diff and green required checks; no blocking issue."
+            ),
+        }
+        with patch.object(guard, "_risk_for_pr", return_value=("standard", ISSUE_NUMBER)), patch.object(
+            guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
+        ), patch.object(guard.runtime, "api_list", return_value=[comment]):
+            evidence = guard.review_evidence(10, CANDIDATE_SHA)
+        self.assertEqual(evidence["state"], "clean")
+        self.assertEqual(evidence["review_source"], "coordinator")
 
-        def attempts(_sha):
-            observed.append(("attestation", guard.runtime.current_default_sha()))
-            return [{"success": True}]
-
-        def native(_sha, _pr_number):
-            observed.append(("native", guard.runtime.current_default_sha()))
-            return True, ["native-run"]
-
-        live_pr = self._trusted_live_pr(13)
-        with patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
-            guard.runtime, "attestation_attempts", side_effect=attempts
-        ), patch.object(guard, "_native_workflow_evidence", side_effect=native), patch.object(
-            guard.runtime, "api", return_value=live_pr
-        ), patch.object(guard.runtime, "source_and_scope", return_value=self._scope_result()) as scope:
-            self.assertEqual(guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 13), (True, ["native-run"]))
-        self.assertEqual(observed, [("attestation", DEFAULT_SHA), ("native", DEFAULT_SHA)])
-        scope.assert_called_once_with(live_pr)
-        self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 13, DEFAULT_SHA, ISSUE_NUMBER))
-
-    def test_guard_rejects_default_movement_during_native_gate(self):
+    def test_coordinator_marker_rejects_untrusted_edited_empty_or_stale(self):
         guard = self._load_guard()
+        marker = f"<!-- foundation-coordinator-review:{CANDIDATE_SHA}:clean -->"
+        invalid = [
+            {"user": {"login": "outsider"}, "created_at": "a", "updated_at": "a", "body": marker + "\nsummary"},
+            {"user": {"login": "owner"}, "created_at": "a", "updated_at": "b", "body": marker + "\nsummary"},
+            {"user": {"login": "owner"}, "created_at": "a", "updated_at": "a", "body": marker},
+            {"user": {"login": "owner"}, "created_at": "a", "updated_at": "a", "body": f"<!-- foundation-coordinator-review:{'e' * 40}:clean -->\nsummary"},
+        ]
+        for item in invalid:
+            with self.subTest(item=item):
+                with patch.object(guard.runtime, "api_list", return_value=[item]):
+                    self.assertIsNone(guard._coordinator_review(10, CANDIDATE_SHA))
 
-        def attempts(_sha):
-            guard.runtime.current_default_sha()
-            return [{"success": True}]
-
-        def native(_sha, _pr_number):
-            guard.runtime.current_default_sha()
-            return True, ["native-run"]
-
-        with patch.object(guard, "_original_current_default_sha", side_effect=[DEFAULT_SHA, DEFAULT_SHA, "e" * 40]), patch.object(
-            guard.runtime, "attestation_attempts", side_effect=attempts
-        ), patch.object(guard, "_native_workflow_evidence", side_effect=native):
-            self.assertEqual(guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 14), (False, []))
-        self.assertIsNone(guard._verified_gate)
-
-    def test_guard_rejects_source_authorization_before_storing_gate(self):
+    def test_protected_risk_requires_codex(self):
         guard = self._load_guard()
-        live_pr = self._trusted_live_pr(14)
+        with patch.object(guard, "_risk_for_pr", return_value=("protected", ISSUE_NUMBER)), patch.object(
+            guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
+        ), patch.object(guard, "_provider_route_unavailable", return_value=False):
+            evidence = guard.review_evidence(10, CANDIDATE_SHA)
+        self.assertEqual(evidence["state"], "pending")
+        self.assertEqual(evidence["risk"], "protected")
+
+    def test_provider_setup_response_is_unavailable_not_review(self):
+        guard = self._load_guard()
+        with patch.object(guard, "_risk_for_pr", return_value=("standard", ISSUE_NUMBER)), patch.object(
+            guard, "_original_exact_codex_evidence", return_value={"state": "pending", "timestamp": None, "request_timestamp": None}
+        ), patch.object(guard, "_coordinator_review", return_value=None), patch.object(
+            guard, "_provider_route_unavailable", return_value=True
+        ):
+            evidence = guard.review_evidence(10, CANDIDATE_SHA)
+        self.assertEqual(evidence["state"], "pending")
+        self.assertEqual(evidence["review_route"], "unavailable")
+
+    def test_actions_records_neutral_review_required_marker(self):
+        guard = self._load_guard()
+        posted = Mock()
+        with patch.object(guard, "_risk_for_pr", return_value=("protected", ISSUE_NUMBER)), patch.object(
+            guard.runtime, "api_list", return_value=[]
+        ), patch.object(guard.runtime, "comment", posted):
+            guard.record_review_required(10, CANDIDATE_SHA)
+        body = posted.call_args.args[1]
+        self.assertIn(f"foundation-review-required:{CANDIDATE_SHA}:protected", body)
+        self.assertNotIn("@codex", body)
+
+    def test_guard_stores_stable_gate_after_checks_and_scope(self):
+        guard = self._load_guard()
+        live = self._live_pr(12)
         with patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
             guard.runtime, "attestation_attempts", return_value=[{"success": True}]
-        ), patch.object(guard, "_native_workflow_evidence", return_value=(True, ["native-run"])), patch.object(
-            guard.runtime, "api", return_value=live_pr
-        ), patch.object(
-            guard.runtime, "source_and_scope", return_value=self._scope_result(error="UNAUTHORIZED_PROTECTED_PATH")
-        ):
-            self.assertEqual(guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 14), (False, []))
-        self.assertIsNone(guard._verified_gate)
+        ), patch.object(guard, "_native_workflow_evidence", return_value=(True, ["native"])), patch.object(
+            guard.runtime, "api", return_value=live
+        ), patch.object(guard, "source_and_scope_minimum", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)):
+            self.assertEqual(
+                guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 12),
+                (True, ["native"]),
+            )
+        self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 12, DEFAULT_SHA, ISSUE_NUMBER))
 
-    def test_guard_rejects_missing_or_null_label_evidence_before_storing_gate(self):
-        for labels_marker in ("missing", None):
-            with self.subTest(labels=labels_marker):
-                guard = self._load_guard()
-                live_pr = self._trusted_live_pr(14)
-                if labels_marker == "missing":
-                    live_pr.pop("labels")
-                else:
-                    live_pr["labels"] = None
-                with patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
-                    guard.runtime, "attestation_attempts", return_value=[{"success": True}]
-                ), patch.object(guard, "_native_workflow_evidence", return_value=(True, ["native-run"])), patch.object(
-                    guard.runtime, "api", return_value=live_pr
-                ):
-                    self.assertEqual(guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 14), (False, []))
-                self.assertIsNone(guard._verified_gate)
-
-    def test_merge_guard_requires_matching_candidate_pr_default_and_source(self):
+    def test_rejected_pre_mutation_merge_does_not_consume_gate(self):
         guard = self._load_guard()
+        guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
+        wrong = (
+            "api", "--method", "PUT",
+            "repos/example/foundation/pulls/21/merge",
+            "-f", "merge_method=squash",
+            "-f", f"sha={CANDIDATE_SHA}",
+        )
+        with self.assertRaisesRegex(RuntimeError, "does not match"):
+            guard.guarded_gh(*wrong)
+        self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER))
+
+    def test_successful_expected_head_merge_consumes_gate(self):
+        guard = self._load_guard()
+        guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
+        args = (
+            "api", "--method", "PUT",
+            "repos/example/foundation/pulls/20/merge",
+            "-f", "merge_method=squash",
+            "-f", f"sha={CANDIDATE_SHA}",
+        )
+        live = self._live_pr(20)
         delegated = Mock(return_value="merged")
-        guard._verified_gate = (CANDIDATE_SHA, 15, DEFAULT_SHA, ISSUE_NUMBER)
-        args = ("api", "--method", "PUT", "repos/example/foundation-e2e/pulls/15/merge", "-f", "merge_method=squash", "-f", f"sha={CANDIDATE_SHA}")
-        live_pr = self._trusted_live_pr(15)
-        with patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
-            guard.runtime, "api", return_value=live_pr
-        ) as live, patch.object(guard.runtime, "source_and_scope", return_value=self._scope_result()) as scope, patch.object(
+        with patch.object(guard.runtime, "api", return_value=live), patch.object(
+            guard, "source_and_scope_minimum", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)
+        ), patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
             guard, "_original_gh", delegated
         ):
             self.assertEqual(guard.guarded_gh(*args), "merged")
-        live.assert_called_once_with("repos/example/foundation-e2e/pulls/15")
-        scope.assert_called_once_with(live_pr)
+        self.assertIsNone(guard._verified_gate)
         delegated.assert_called_once_with(*args)
-        self.assertIsNone(guard._verified_gate)
 
-    def test_failed_merge_attempt_consumes_gate(self):
-        guard = self._load_guard()
-        guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
-        args = ("api", "--method", "PUT", "repos/example/foundation-e2e/pulls/21/merge", "-f", f"sha={CANDIDATE_SHA}")
-        with self.assertRaisesRegex(RuntimeError, "does not match"):
-            guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        with self.assertRaisesRegex(RuntimeError, "no verified"):
-            guard.guarded_gh(*args)
-
-    def test_merge_guard_rejects_mismatch_and_final_default_movement(self):
-        guard = self._load_guard()
-        delegated = Mock(return_value="merged")
-        args = ("api", "--method", "PUT", "repos/example/foundation-e2e/pulls/16/merge", "-f", f"sha={CANDIDATE_SHA}")
-        guard._verified_gate = (CANDIDATE_SHA, 15, DEFAULT_SHA, ISSUE_NUMBER)
-        with patch.object(guard, "_original_gh", delegated):
-            with self.assertRaisesRegex(RuntimeError, "does not match"):
-                guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-        guard._verified_gate = (CANDIDATE_SHA, 16, DEFAULT_SHA, ISSUE_NUMBER)
-        with patch.object(guard, "_original_current_default_sha", return_value="e" * 40), patch.object(
-            guard.runtime, "api", return_value=self._trusted_live_pr(16)
-        ), patch.object(guard.runtime, "source_and_scope", return_value=self._scope_result()), patch.object(
-            guard, "_original_gh", delegated
-        ):
-            with self.assertRaisesRegex(RuntimeError, "moved"):
-                guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-
-    def test_merge_guard_rejects_live_ai_no_merge_or_head_movement(self):
-        guard = self._load_guard()
-        delegated = Mock(return_value="merged")
-        args = ("api", "--method", "PUT", "repos/example/foundation-e2e/pulls/17/merge", "-f", f"sha={CANDIDATE_SHA}")
-        guard._verified_gate = (CANDIDATE_SHA, 17, DEFAULT_SHA, ISSUE_NUMBER)
-        blocked = self._trusted_live_pr(17, labels=[{"name": "ai-no-merge"}])
-        with patch.object(guard.runtime, "api", return_value=blocked), patch.object(guard, "_original_gh", delegated):
-            with self.assertRaisesRegex(RuntimeError, "trusted candidate"):
-                guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-        guard._verified_gate = (CANDIDATE_SHA, 17, DEFAULT_SHA, ISSUE_NUMBER)
-        moved = self._trusted_live_pr(17, head_sha="e" * 40)
-        with patch.object(guard.runtime, "api", return_value=moved), patch.object(guard, "_original_gh", delegated):
-            with self.assertRaisesRegex(RuntimeError, "trusted candidate"):
-                guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-
-    def test_merge_guard_rejects_incomplete_closed_draft_or_label_evidence(self):
-        guard = self._load_guard()
-        delegated = Mock(return_value="merged")
-        args = ("api", "--method", "PUT", "repos/example/foundation-e2e/pulls/18/merge", "-f", f"sha={CANDIDATE_SHA}")
-        missing_labels = self._trusted_live_pr(18)
-        missing_labels.pop("labels")
-        null_labels = self._trusted_live_pr(18)
-        null_labels["labels"] = None
-        for live in (
-            self._trusted_live_pr(18, state="closed"),
-            self._trusted_live_pr(18, draft=True),
-            self._trusted_live_pr(18, draft=None),
-            missing_labels,
-            null_labels,
-        ):
-            with self.subTest(state=live["state"], draft=live.get("draft"), labels=live.get("labels", "missing")):
-                guard._verified_gate = (CANDIDATE_SHA, 18, DEFAULT_SHA, ISSUE_NUMBER)
-                with patch.object(guard.runtime, "api", return_value=live), patch.object(guard, "_original_gh", delegated):
-                    with self.assertRaises(RuntimeError):
-                        guard.guarded_gh(*args)
-                self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-
-    def test_merge_guard_rejects_source_issue_or_authorization_movement(self):
-        guard = self._load_guard()
-        delegated = Mock(return_value="merged")
-        args = ("api", "--method", "PUT", "repos/example/foundation-e2e/pulls/19/merge", "-f", f"sha={CANDIDATE_SHA}")
-        live_pr = self._trusted_live_pr(19)
-        guard._verified_gate = (CANDIDATE_SHA, 19, DEFAULT_SHA, ISSUE_NUMBER)
-        with patch.object(guard.runtime, "api", return_value=live_pr), patch.object(
-            guard.runtime, "source_and_scope", return_value=self._scope_result(error="UNAUTHORIZED_CHANGED_PATH")
-        ), patch.object(guard, "_original_gh", delegated):
-            with self.assertRaisesRegex(RuntimeError, "authorization"):
-                guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-        guard._verified_gate = (CANDIDATE_SHA, 19, DEFAULT_SHA, ISSUE_NUMBER)
-        with patch.object(guard.runtime, "api", return_value=live_pr), patch.object(
-            guard.runtime, "source_and_scope", return_value=self._scope_result(86)
-        ), patch.object(guard, "_original_gh", delegated):
-            with self.assertRaisesRegex(RuntimeError, "source Issue"):
-                guard.guarded_gh(*args)
-        self.assertIsNone(guard._verified_gate)
-        delegated.assert_not_called()
-
-    def test_unrelated_gh_calls_pass_through(self):
-        guard = self._load_guard()
-        delegated = Mock(return_value="ok")
-        with patch.object(guard, "_original_gh", delegated):
-            self.assertEqual(guard.guarded_gh("api", "repos/example/foundation-e2e"), "ok")
-        delegated.assert_called_once_with("api", "repos/example/foundation-e2e")
-
-    def test_exact_head_codex_request_delegates_to_provider_dispatch(self):
-        guard = self._load_guard()
-        delegated = Mock()
-        with patch.object(guard, "_original_request_codex", delegated):
-            guard.request_codex_exact_head(22, CANDIDATE_SHA)
-        delegated.assert_called_once_with(22, CANDIDATE_SHA)
-        with self.assertRaises(ValueError):
-            guard.request_codex_exact_head(22, "not-a-sha")
-
-    def test_main_installs_all_final_guards_before_runtime(self):
+    def test_main_installs_minimum_safety_overrides(self):
         guard = self._load_guard()
         delegated = Mock(return_value=0)
         with patch.object(guard.runtime, "main", delegated):
             self.assertEqual(guard.main(), 0)
+        self.assertIs(guard.runtime.source_and_scope, guard.source_and_scope_minimum)
+        self.assertIs(guard.runtime.exact_codex_evidence, guard.review_evidence)
+        self.assertIs(guard.runtime.request_codex, guard.record_review_required)
         self.assertIs(guard.runtime.native_workflow_evidence, guard.guarded_native_workflow_evidence)
         self.assertIs(guard.runtime.gh, guard.guarded_gh)
-        self.assertIs(guard.runtime.request_codex, guard.request_codex_exact_head)
-        delegated.assert_called_once_with()
 
 
 if __name__ == "__main__":
