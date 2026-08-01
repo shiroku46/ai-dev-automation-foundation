@@ -1,34 +1,51 @@
 name: AI implementation task
-description: One bounded implementation request
+description: One bounded implementation request using the minimum safety profile
 title: "[Task] "
 body:
+  - type: checkboxes
+    id: startup
+    attributes:
+      label: Repository startup acceptance
+      description: Confirm this exact repository has completed Phase 0 and the harmless Bootstrap acceptance exercise. Do not include credential values.
+      options:
+        - label: Phase 0 and Bootstrap acceptance are complete, or this Issue is the bounded Foundation/Bootstrap work needed to complete them.
+          required: true
   - type: textarea
     id: goal
     attributes:
       label: Goal
+      description: State one observable outcome.
     validations:
       required: true
   - type: textarea
     id: acceptance
     attributes:
       label: Acceptance criteria
+      description: List the behavior and evidence that prove completion.
     validations:
       required: true
   - type: textarea
-    id: scope
+    id: task_scope
     attributes:
-      label: Allowed paths
+      label: foundation-task-scope
+      description: Paste one complete block. Use protected risk for workflows, permissions, authentication/Secret interfaces, supervisor/security policy, settings, billing, deployment/production, or destructive operations.
+      value: |-
+        <!-- foundation-task-scope
+        risk: standard
+        paths:
+        - path/to/file
+        operation: describe the exact authorized operation
+        prohibited: no Secrets, deployment, production, destructive data, or unrelated changes
+        checks:
+        - CI
+        - product:test
+        -->
     validations:
       required: true
   - type: textarea
-    id: prohibited
+    id: implementation_notes
     attributes:
-      label: Prohibited effects
+      label: Implementation notes and dependencies
+      description: Include dependencies, migration constraints, rollback, or provider limitations without any Secret value.
     validations:
-      required: true
-  - type: textarea
-    id: validation
-    attributes:
-      label: Required validation
-    validations:
-      required: true
+      required: false
