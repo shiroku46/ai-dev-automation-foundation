@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Small policy helpers shared by tests and trusted runtime."""
+"""Practical scope and risk helpers shared by trusted runtime and tests."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 import re
 
@@ -24,6 +25,19 @@ ALLOWED_SCOPE_HEADINGS = frozenset(
         "exact authorized scope",
     }
 )
+TASK_SCOPE_MARKER = "<!-- foundation-task-scope"
+TASK_SCOPE_END = "-->"
+RISK_LEVELS = frozenset({"low", "standard", "protected"})
+
+
+@dataclass(frozen=True)
+class TaskScope:
+    risk: str
+    paths: tuple[str, ...]
+    operation: str
+    prohibited: str
+    checks: tuple[str, ...]
+    legacy: bool = False
 
 
 def normalize_path(path: str) -> str:
@@ -58,7 +72,76 @@ def _bullet_path(raw: str) -> str | None:
         return None
 
 
+def _block_value(lines: list[str], key: str) -> str:
+    prefix = f"{key}:"
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return ""
+
+
+def parse_task_scope(issue_body: str) -> TaskScope | None:
+    body = issue_body or ""
+    if TASK_SCOPE_MARKER not in body:
+        return None
+    remainder = body.split(TASK_SCOPE_MARKER, 1)[1]
+    if TASK_SCOPE_END not in remainder:
+        raise ValueError("foundation-task-scope block is not terminated")
+    block = remainder.split(TASK_SCOPE_END, 1)[0]
+    lines = block.splitlines()
+    risk = _block_value(lines, "risk").lower()
+    operation = _block_value(lines, "operation")
+    prohibited = _block_value(lines, "prohibited")
+    if risk not in RISK_LEVELS:
+        raise ValueError("foundation-task-scope risk must be low, standard, or protected")
+    if not operation:
+        raise ValueError("foundation-task-scope operation is required")
+    if not prohibited:
+        raise ValueError("foundation-task-scope prohibited statement is required")
+
+    paths: list[str] = []
+    checks: list[str] = []
+    active: str | None = None
+    for raw in lines:
+        line = raw.strip()
+        if line == "paths:":
+            active = "paths"
+            continue
+        if line == "checks:":
+            active = "checks"
+            continue
+        if re.match(r"^[a-z_]+:", line):
+            active = None
+            continue
+        if active == "paths":
+            path = _bullet_path(raw)
+            if path:
+                paths.append(path)
+        elif active == "checks" and line.startswith("- "):
+            check = line[2:].strip().strip("`")
+            if check:
+                checks.append(check)
+    if not paths:
+        raise ValueError("foundation-task-scope paths are required")
+    if len(paths) != len(set(paths)):
+        raise ValueError("foundation-task-scope paths must be unique")
+    if risk != "protected" and any(is_protected(path.rstrip("/**")) for path in paths):
+        raise ValueError("protected paths require risk: protected")
+    return TaskScope(
+        risk=risk,
+        paths=tuple(paths),
+        operation=operation,
+        prohibited=prohibited,
+        checks=tuple(dict.fromkeys(checks)),
+    )
+
+
 def protected_authorized_paths(issue_body: str) -> set[str]:
+    """Return protected authorization patterns, preferring the unified scope."""
+    scope = parse_task_scope(issue_body)
+    if scope is not None:
+        return set(scope.paths) if scope.risk == "protected" else set()
     marker = "<!-- foundation-protected-authorization"
     end = "-->"
     if marker not in (issue_body or ""):
@@ -81,13 +164,7 @@ def protected_authorized_paths(issue_body: str) -> set[str]:
     return paths
 
 
-def declared_paths(issue_body: str) -> set[str]:
-    """Return only paths from ordinary allowlist headings.
-
-    Protected-authorization paths are intentionally excluded so protected changes
-    must be independently present in both the ordinary allowlist and the stricter
-    protected contract.
-    """
+def _legacy_declared_paths(issue_body: str) -> set[str]:
     paths: set[str] = set()
     in_scope = False
     for raw in (issue_body or "").splitlines():
@@ -104,6 +181,14 @@ def declared_paths(issue_body: str) -> set[str]:
             if path:
                 paths.add(path)
     return paths
+
+
+def declared_paths(issue_body: str) -> set[str]:
+    """Return unified task-scope paths, with bounded legacy compatibility."""
+    scope = parse_task_scope(issue_body)
+    if scope is not None:
+        return set(scope.paths)
+    return _legacy_declared_paths(issue_body)
 
 
 def _matches(path: str, pattern: str) -> bool:
@@ -128,9 +213,25 @@ def scope_is_authorized(changed_paths, issue_body: str) -> bool:
 
 
 def protected_scope_is_authorized(changed_paths, issue_body: str) -> bool:
-    patterns = protected_authorized_paths(issue_body)
+    scope = parse_task_scope(issue_body)
     protected = {normalize_path(path) for path in changed_paths if is_protected(path)}
+    if not protected:
+        return True
+    if scope is not None:
+        return scope.risk == "protected" and all(
+            any(_matches(path, pattern) for pattern in scope.paths) for path in protected
+        )
+    patterns = protected_authorized_paths(issue_body)
     return all(any(_matches(path, pattern) for pattern in patterns) for path in protected)
+
+
+def risk_for_changes(changed_paths, issue_body: str) -> str:
+    scope = parse_task_scope(issue_body)
+    if scope is not None:
+        if any(is_protected(path) for path in changed_paths) and scope.risk != "protected":
+            raise ValueError("protected changed paths require risk: protected")
+        return scope.risk
+    return "protected" if any(is_protected(path) for path in changed_paths) else "standard"
 
 
 # Backward-compatible name used by earlier tests and consumers.
