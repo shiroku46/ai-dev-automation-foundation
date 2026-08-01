@@ -39,14 +39,19 @@ def _record_payload(path: str) -> dict[str, Any] | None:
 
 
 def started_attempt_records(root: str) -> list[str]:
-    """Expose only admitted attempts to the legacy bounded counter."""
+    """Expose only admitted or terminal-before-start attempts to the counter."""
     records = _original_list_records(root)
     record_set = set(records)
     visible: list[str] = []
     for name in records:
         match = re.fullmatch(r"retry-([1-9][0-9]*)\.json", name)
-        if match and f"retry-{match.group(1)}-started.json" not in record_set:
-            continue
+        if match:
+            attempt = match.group(1)
+            if (
+                f"retry-{attempt}-started.json" not in record_set
+                and f"retry-{attempt}-terminal.json" not in record_set
+            ):
+                continue
         visible.append(name)
     return sorted(visible)
 
@@ -260,11 +265,108 @@ def _record_started(
     )
 
 
+def _terminal_path(issue_number: int, fingerprint: str, attempt: int) -> str:
+    return f"{_retry_root(issue_number, fingerprint)}/retry-{attempt}-terminal.json"
+
+
+def _record_terminal_before_start(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
+    queue_run_id: int,
+    prepare_conclusion: str,
+) -> bool:
+    """Persist one exact failed attempt without claiming implementation started."""
+    if queue_run_id <= 0 or prepare_conclusion not in {"failure", "cancelled", "skipped"}:
+        raise RuntimeError("Queue terminal-before-start evidence is invalid")
+    recovery._revalidate_request(issue_number, fingerprint)
+    if runtime.current_default_sha() != expected_default_sha:
+        raise RuntimeError("Default branch moved before Queue terminal persistence")
+    content = recovery._canonical_record(
+        {
+            "attempt": attempt,
+            "default_sha": expected_default_sha,
+            "expected_run_title": _attempt_run_title(issue_number, fingerprint, attempt),
+            "fixed_workflow": recovery.QUEUE_WORKFLOW_FILE,
+            "issue_number": issue_number,
+            "notification": False,
+            "prepare_conclusion": prepare_conclusion,
+            "queue_run_id": queue_run_id,
+            "reason": "QUEUE_PIPELINE_RETRY_TERMINAL_BEFORE_IMPLEMENTATION_START",
+            "request_fingerprint": fingerprint,
+            "trusted_workflow_path": recovery.QUEUE_WORKFLOW_PATH,
+        }
+    )
+    return recovery._put_exact_record(
+        _terminal_path(issue_number, fingerprint, attempt),
+        content,
+        f"Record terminal Queue retry {attempt} for Issue #{issue_number}",
+    )
+
+
+def _reconcile_attempt_run(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
+) -> tuple[str, int, str | None]:
+    """Wait for the exact run to start implementation or terminate in prepare."""
+    deadline = time.monotonic() + QUEUE_START_TIMEOUT_SECONDS
+    selected_run_id: int | None = None
+    while time.monotonic() < deadline:
+        matches = _matching_dispatch_runs(
+            issue_number, fingerprint, attempt, expected_default_sha
+        )
+        if len(matches) > 1:
+            raise RuntimeError("Queue retry dispatch produced ambiguous workflow runs")
+        if matches:
+            run = matches[0]
+            selected_run_id = int(run["id"])
+            jobs = runtime.api_key_pages(
+                f"repos/{runtime.REPO}/actions/runs/{selected_run_id}/jobs?filter=all&per_page=100",
+                "jobs",
+            )
+            prepare = [job for job in jobs if job.get("name") == "prepare"]
+            implement = [job for job in jobs if job.get("name") == "implement"]
+            if len(prepare) > 1 or len(implement) > 1:
+                raise RuntimeError("Queue retry jobs are ambiguous")
+            if prepare and prepare[0].get("status") == "completed":
+                conclusion = str(prepare[0].get("conclusion") or "")
+                if conclusion in {"failure", "cancelled", "skipped"}:
+                    if run.get("status") != "completed":
+                        raise RuntimeError("Queue prepare was terminal before its run completed")
+                    return "terminal", selected_run_id, conclusion
+                if conclusion == "success" and implement:
+                    status = str(implement[0].get("status") or "")
+                    implement_conclusion = str(implement[0].get("conclusion") or "")
+                    started_at = str(implement[0].get("started_at") or "")
+                    if status == "in_progress" or (
+                        status == "completed"
+                        and (
+                            implement_conclusion == "success"
+                            or (implement_conclusion == "failure" and started_at)
+                        )
+                    ):
+                        return "started", selected_run_id, None
+            if run.get("status") == "completed":
+                raise RuntimeError("Queue retry completed without recognized attempt evidence")
+        time.sleep(QUEUE_START_POLL_SECONDS)
+    raise RuntimeError(
+        "Queue retry did not resolve while supervisor remained active: "
+        f"{selected_run_id or 'unresolved'}"
+    )
+
+
 def guarded_dispatch_retry(issue_number: int, fingerprint: str, attempt: int) -> bool:
-    default_sha, _, started_path, created = _intent_identity(
+    default_sha, _, started_path, _ = _intent_identity(
         issue_number, fingerprint, attempt
     )
     started = _record_payload(started_path)
+    terminal_path = _terminal_path(issue_number, fingerprint, attempt)
+    terminal = _record_payload(terminal_path)
+    if started is not None and terminal is not None:
+        raise RuntimeError("Queue retry has conflicting terminal and started evidence")
     if started is not None:
         if (
             started.get("issue_number") != issue_number
@@ -279,38 +381,57 @@ def guarded_dispatch_retry(issue_number: int, fingerprint: str, attempt: int) ->
             raise RuntimeError("Queue retry started record identity does not match")
         return False
 
-    if not created:
-        existing_run_id = _wait_for_existing_attempt_run(
-            issue_number, fingerprint, attempt, default_sha
-        )
-        if existing_run_id is not None:
-            queue_run_id = _wait_for_queue_implementation_start(
-                issue_number, fingerprint, attempt, default_sha
-            )
-            if queue_run_id != existing_run_id:
-                raise RuntimeError("Queue retry run identity changed during reconciliation")
-            _record_started(
-                issue_number,
-                fingerprint,
-                attempt,
-                default_sha,
-                queue_run_id,
-                started_path,
-            )
-            return True
+    if terminal is not None:
+        if (
+            terminal.get("issue_number") != issue_number
+            or terminal.get("attempt") != attempt
+            or terminal.get("request_fingerprint") != fingerprint
+            or terminal.get("default_sha") != default_sha
+            or terminal.get("expected_run_title")
+            != _attempt_run_title(issue_number, fingerprint, attempt)
+            or terminal.get("fixed_workflow") != recovery.QUEUE_WORKFLOW_FILE
+            or terminal.get("trusted_workflow_path") != recovery.QUEUE_WORKFLOW_PATH
+            or terminal.get("prepare_conclusion") not in {"failure", "cancelled", "skipped"}
+            or int(terminal.get("queue_run_id") or 0) <= 0
+            or terminal.get("notification") is not False
+        ):
+            raise RuntimeError("Queue retry terminal record identity does not match")
+        return False
 
-    _dispatch_fixed_retry(issue_number, fingerprint, attempt, default_sha)
-    queue_run_id = _wait_for_queue_implementation_start(
+    existing_run_id = _wait_for_existing_attempt_run(
         issue_number, fingerprint, attempt, default_sha
     )
-    _record_started(
-        issue_number,
-        fingerprint,
-        attempt,
-        default_sha,
-        queue_run_id,
-        started_path,
+    if existing_run_id is not None:
+        outcome, queue_run_id, prepare_conclusion = _reconcile_attempt_run(
+            issue_number, fingerprint, attempt, default_sha
+        )
+        if queue_run_id != existing_run_id:
+            raise RuntimeError("Queue retry run identity changed during reconciliation")
+        if outcome == "terminal":
+            _record_terminal_before_start(
+                issue_number, fingerprint, attempt, default_sha, queue_run_id,
+                str(prepare_conclusion),
+            )
+        else:
+            _record_started(
+                issue_number, fingerprint, attempt, default_sha, queue_run_id,
+                started_path,
+            )
+        return True
+
+    _dispatch_fixed_retry(issue_number, fingerprint, attempt, default_sha)
+    outcome, queue_run_id, prepare_conclusion = _reconcile_attempt_run(
+        issue_number, fingerprint, attempt, default_sha
     )
+    if outcome == "terminal":
+        _record_terminal_before_start(
+            issue_number, fingerprint, attempt, default_sha, queue_run_id,
+            str(prepare_conclusion),
+        )
+    else:
+        _record_started(
+            issue_number, fingerprint, attempt, default_sha, queue_run_id, started_path,
+        )
     return True
 
 
@@ -421,23 +542,25 @@ def _connected_exhaustion_snapshot(
             raise RuntimeError("Queue retry evidence name is invalid")
         attempt = int(match.group(1))
         started_name = f"retry-{attempt}-started.json"
-        if started_name not in records:
-            raise RuntimeError("Unstarted Queue intent cannot count toward exhaustion")
-        started = _record_payload(f"{root}/{started_name}")
-        if started is None:
-            raise RuntimeError("Queue start evidence disappeared during audit")
-        queue_run_id = int(started.get("queue_run_id") or 0)
+        terminal_name = f"retry-{attempt}-terminal.json"
+        if (started_name in records) == (terminal_name in records):
+            raise RuntimeError("Queue attempt must have exactly one consumed outcome")
+        outcome_name = started_name if started_name in records else terminal_name
+        outcome = _record_payload(f"{root}/{outcome_name}")
+        if outcome is None:
+            raise RuntimeError("Queue attempt evidence disappeared during audit")
+        queue_run_id = int(outcome.get("queue_run_id") or 0)
         expected_title = _attempt_run_title(issue_number, fingerprint, attempt)
         if (
-            started.get("issue_number") != issue_number
-            or started.get("attempt") != attempt
-            or started.get("request_fingerprint") != fingerprint
-            or started.get("default_sha") != expected_default_sha
-            or started.get("expected_run_title") != expected_title
-            or started.get("notification") is not False
+            outcome.get("issue_number") != issue_number
+            or outcome.get("attempt") != attempt
+            or outcome.get("request_fingerprint") != fingerprint
+            or outcome.get("default_sha") != expected_default_sha
+            or outcome.get("expected_run_title") != expected_title
+            or outcome.get("notification") is not False
             or queue_run_id <= 0
         ):
-            raise RuntimeError("Queue start evidence identity failed audit")
+            raise RuntimeError("Queue attempt evidence identity failed audit")
         run = runtime.api(f"repos/{runtime.REPO}/actions/runs/{queue_run_id}")
         run_path = str(run.get("path") or "").split("@", 1)[0]
         if (
@@ -456,9 +579,30 @@ def _connected_exhaustion_snapshot(
         )
         prepare = [job for job in jobs if job.get("name") == "prepare"]
         implement = [job for job in jobs if job.get("name") == "implement"]
+        if len(prepare) != 1:
+            raise RuntimeError("Queue run prepare evidence is incomplete")
+        if outcome_name == terminal_name:
+            prepare_conclusion = str(prepare[0].get("conclusion") or "")
+            if (
+                outcome.get("fixed_workflow") != recovery.QUEUE_WORKFLOW_FILE
+                or outcome.get("trusted_workflow_path") != recovery.QUEUE_WORKFLOW_PATH
+                or outcome.get("prepare_conclusion") != prepare_conclusion
+                or prepare[0].get("status") != "completed"
+                or prepare_conclusion not in {"failure", "cancelled", "skipped"}
+            ):
+                raise RuntimeError("Queue terminal prepare evidence failed audit")
+            run_evidence.append(
+                {
+                    "attempt": attempt,
+                    "prepare_conclusion": prepare_conclusion,
+                    "queue_run_id": queue_run_id,
+                    "run_title": expected_title,
+                    "terminal_before_implementation_start": True,
+                }
+            )
+            continue
         if (
-            len(prepare) != 1
-            or prepare[0].get("conclusion") != "success"
+            prepare[0].get("conclusion") != "success"
             or len(implement) != 1
             or implement[0].get("status") != "completed"
         ):

@@ -28,9 +28,9 @@ class QueueRecoveryHardeningTest(unittest.TestCase):
 
     def test_unstarted_retry_intent_is_not_counted(self):
         module = self._load()
-        records = ["retry-1.json", "retry-1-started.json", "retry-2.json", "other.json"]
+        records = ["retry-1.json", "retry-1-terminal.json", "retry-2.json", "other.json"]
         with patch.object(module, "_original_list_records", return_value=records):
-            self.assertEqual(module.started_attempt_records("root"), ["other.json", "retry-1-started.json", "retry-1.json"])
+            self.assertEqual(module.started_attempt_records("root"), ["other.json", "retry-1-terminal.json", "retry-1.json"])
 
     def test_dispatch_run_requires_fixed_attempt_identity_and_default_sha(self):
         module = self._load()
@@ -56,7 +56,7 @@ class QueueRecoveryHardeningTest(unittest.TestCase):
         with patch.object(module, "_intent_identity", return_value=(DEFAULT_SHA, "root/retry-1.json", started_path, False)), patch.object(
             module, "_record_payload", return_value=None
         ), patch.object(module, "_wait_for_existing_attempt_run", return_value=501), patch.object(
-            module, "_wait_for_queue_implementation_start", return_value=501
+            module, "_reconcile_attempt_run", return_value=("started", 501, None)
         ), patch.object(module, "_record_started", return_value=True) as started, patch.object(
             module, "_dispatch_fixed_retry"
         ) as dispatch:
@@ -70,8 +70,8 @@ class QueueRecoveryHardeningTest(unittest.TestCase):
         dispatch = Mock()
         with patch.object(module, "_intent_identity", return_value=(DEFAULT_SHA, "root/retry-1.json", started_path, True)), patch.object(
             module, "_record_payload", return_value=None
-        ), patch.object(module, "_dispatch_fixed_retry", dispatch), patch.object(
-            module, "_wait_for_queue_implementation_start", return_value=502
+        ), patch.object(module, "_wait_for_existing_attempt_run", return_value=None), patch.object(module, "_dispatch_fixed_retry", dispatch), patch.object(
+            module, "_reconcile_attempt_run", return_value=("started", 502, None)
         ), patch.object(module, "_record_started", return_value=True):
             self.assertTrue(module.guarded_dispatch_retry(12, FINGERPRINT, 1))
         dispatch.assert_called_once_with(12, FINGERPRINT, 1, DEFAULT_SHA)
