@@ -22,10 +22,23 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self.assertNotIn("--add-label ai-blocked", finalize)
         self.assertIn("notification: false", finalize)
         self.assertIn("GITHUB_STEP_SUMMARY", finalize)
+
+        reconcile = (ROOT / ".github/workflows/ci-reconcile.yml").read_text(encoding="utf-8")
+        self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
+        self.assertIn("\n  queue_recovery:\n", reconcile)
+        self.assertIn("python -m scripts.supervisor_queue_recovery_v3", reconcile)
+        recovery = reconcile.split("\n  queue_recovery:\n", 1)[1]
+        self.assertIn("actions: write", recovery)
+        self.assertIn("contents: write", recovery)
+        self.assertIn("issues: read", recovery)
+        self.assertIn("pull-requests: read", recovery)
+
         supervisor = (ROOT / ".github/workflows/supervisor.yml").read_text(encoding="utf-8")
         self.assertIn('"Claude Issue Queue"', supervisor)
+        self.assertIn("actions: read", supervisor)
         self.assertIn("python -m scripts.supervisor_final_guard", supervisor)
-        self.assertIn("python -m scripts.supervisor_queue_recovery_v3", supervisor)
+        self.assertNotIn("actions: write", supervisor)
+        self.assertNotIn("python -m scripts.supervisor_queue_recovery_v3", supervisor)
 
     def test_merge_capable_guard_is_a_protected_path(self):
         self.assertTrue(is_protected("scripts/supervisor_final_guard.py"))
