@@ -103,6 +103,28 @@ def _pattern_is_low_risk(pattern: str) -> bool:
     return normalized.endswith(LOW_RISK_SUFFIXES)
 
 
+def _outside_fenced_code(content: str) -> str:
+    """Remove Markdown fenced-code examples before parsing authorization blocks."""
+    output: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+    for raw in content.splitlines():
+        stripped = raw.lstrip()
+        fence = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence_character is None:
+            if fence:
+                token = fence.group(1)
+                fence_character = token[0]
+                fence_length = len(token)
+                continue
+            output.append(raw)
+            continue
+        if re.match(rf"^{re.escape(fence_character)}{{{fence_length},}}\s*$", stripped):
+            fence_character = None
+            fence_length = 0
+    return "\n".join(output)
+
+
 def parse_issue_number(pr_body: str) -> int | None:
     match = re.search(r"(?im)\b(?:closes|fixes|resolves)\s+#(\d+)\b", pr_body or "")
     return int(match.group(1)) if match else None
@@ -136,7 +158,7 @@ def _unique_block_value(lines: list[str], key: str) -> str:
 
 
 def parse_task_scope(issue_body: str) -> TaskScope | None:
-    body = issue_body or ""
+    body = _outside_fenced_code(issue_body or "")
     marker_count = body.count(TASK_SCOPE_MARKER)
     if marker_count == 0:
         return None
@@ -208,11 +230,12 @@ def protected_authorized_paths(issue_body: str) -> set[str]:
     scope = parse_task_scope(issue_body)
     if scope is not None:
         return set(scope.paths) if scope.risk == "protected" else set()
+    body = _outside_fenced_code(issue_body or "")
     marker = "<!-- foundation-protected-authorization"
     end = "-->"
-    if marker not in (issue_body or ""):
+    if marker not in body:
         return set()
-    block = issue_body.split(marker, 1)[1].split(end, 1)[0]
+    block = body.split(marker, 1)[1].split(end, 1)[0]
     paths: set[str] = set()
     in_paths = False
     for raw in block.splitlines():
@@ -233,7 +256,7 @@ def protected_authorized_paths(issue_body: str) -> set[str]:
 def _legacy_declared_paths(issue_body: str) -> set[str]:
     paths: set[str] = set()
     in_scope = False
-    for raw in (issue_body or "").splitlines():
+    for raw in _outside_fenced_code(issue_body or "").splitlines():
         line = raw.strip()
         heading = re.match(r"^#{1,6}\s+(.+?)\s*$", line)
         if heading:
