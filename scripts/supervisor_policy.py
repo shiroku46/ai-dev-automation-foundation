@@ -11,9 +11,12 @@ PROTECTED_EXACT = {
     "SECURITY.md",
     "AGENTS.md",
     "CLAUDE.md",
+    "INSTALL_CHECKLIST.md",
     "docs/MINIMUM_SAFETY_PROFILE.md",
     "docs/OPERATING_RULES.md",
     "docs/PUBLIC_SECURITY_MODEL.md",
+    "scripts/public_export_guard.py",
+    "scripts/validate_repository.py",
     "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
@@ -28,7 +31,6 @@ LOW_RISK_EXACT = {
     "LICENSE",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
-    "INSTALL_CHECKLIST.md",
     "FOUNDATION.lock.json",
 }
 LOW_RISK_SUFFIXES = (".md", ".rst", ".txt")
@@ -98,7 +100,6 @@ def _pattern_is_low_risk(pattern: str) -> bool:
         return True
     if normalized.startswith(LOW_RISK_PREFIXES):
         return True
-    # Markdown/text artifacts outside protected directories are non-runtime.
     return normalized.endswith(LOW_RISK_SUFFIXES)
 
 
@@ -122,13 +123,16 @@ def _bullet_path(raw: str) -> str | None:
         return None
 
 
-def _block_value(lines: list[str], key: str) -> str:
+def _unique_block_value(lines: list[str], key: str) -> str:
     prefix = f"{key}:"
-    for raw in lines:
-        line = raw.strip()
-        if line.startswith(prefix):
-            return line[len(prefix) :].strip()
-    return ""
+    values = [
+        line.strip()[len(prefix) :].strip()
+        for line in lines
+        if line.strip().startswith(prefix)
+    ]
+    if len(values) != 1:
+        raise ValueError(f"foundation-task-scope requires exactly one {key} declaration")
+    return values[0]
 
 
 def parse_task_scope(issue_body: str) -> TaskScope | None:
@@ -143,9 +147,13 @@ def parse_task_scope(issue_body: str) -> TaskScope | None:
         raise ValueError("foundation-task-scope block is not terminated")
     block, _ = remainder.split(TASK_SCOPE_END, 1)
     lines = block.splitlines()
-    risk = _block_value(lines, "risk").lower()
-    operation = _block_value(lines, "operation")
-    prohibited = _block_value(lines, "prohibited")
+    if sum(1 for line in lines if line.strip() == "paths:") != 1:
+        raise ValueError("foundation-task-scope requires exactly one paths section")
+    if sum(1 for line in lines if line.strip() == "checks:") != 1:
+        raise ValueError("foundation-task-scope requires exactly one checks section")
+    risk = _unique_block_value(lines, "risk").lower()
+    operation = _unique_block_value(lines, "operation")
+    prohibited = _unique_block_value(lines, "prohibited")
     if risk not in RISK_LEVELS:
         raise ValueError("foundation-task-scope risk must be low, standard, or protected")
     if not operation:
@@ -197,7 +205,6 @@ def parse_task_scope(issue_body: str) -> TaskScope | None:
 
 
 def protected_authorized_paths(issue_body: str) -> set[str]:
-    """Return protected authorization patterns, preferring the unified scope."""
     scope = parse_task_scope(issue_body)
     if scope is not None:
         return set(scope.paths) if scope.risk == "protected" else set()
@@ -243,7 +250,6 @@ def _legacy_declared_paths(issue_body: str) -> set[str]:
 
 
 def declared_paths(issue_body: str) -> set[str]:
-    """Return unified task-scope paths, with bounded legacy compatibility."""
     scope = parse_task_scope(issue_body)
     if scope is not None:
         return set(scope.paths)
@@ -293,6 +299,5 @@ def risk_for_changes(changed_paths, issue_body: str) -> str:
     return "protected" if any(is_protected(path) for path in changed_paths) else "standard"
 
 
-# Backward-compatible name used by earlier tests and consumers.
 def authorized_paths(issue_body: str) -> set[str]:
     return protected_authorized_paths(issue_body)
