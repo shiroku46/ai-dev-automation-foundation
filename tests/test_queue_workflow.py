@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -47,6 +50,58 @@ class QueueWorkflowTest(unittest.TestCase):
         self.assertIn('prefix = f"claude-issue-{issue_number}-"', prepare)
         self.assertIn("pulls?state=open&per_page=100", prepare)
         self.assertIn("foundation-queue-duplicate", prepare)
+
+    def test_issue_119_workflow_dispatch_does_not_read_empty_event_path(self):
+        prepare = job_block(self.text, "prepare", "implement")
+        script = prepare.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+        script = "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in script.splitlines()
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "output"
+            gh = root / "gh"
+            gh.write_text(
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  *issues/119*) printf '%s\\n' "
+                "'{\"number\":119,\"user\":{\"login\":\"owner\"}}' ;;\n"
+                "  *pulls*) printf '%s\\n' '[]' ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{root}:{os.environ['PATH']}",
+                "EVENT_NAME": "workflow_dispatch",
+                "EVENT_PATH": "",
+                "DISPATCH_ISSUE": "119",
+                "TRUSTED_SUPERVISOR": "false",
+                "TRUSTED_RUN_ID": "",
+                "REQUEST_FINGERPRINT": "",
+                "RECOVERY_ATTEMPT": "",
+                "ACTOR": "owner",
+                "OWNER": "owner",
+                "CONFIGURED_OWNER": "",
+                "REPOSITORY": "owner/repository",
+                "DEFAULT_BRANCH": "main",
+                "GITHUB_OUTPUT": str(output),
+            }
+            subprocess.run(["python3", "-c", script], env=env, check=True)
+
+            self.assertEqual(
+                output.read_text(encoding="utf-8").splitlines(),
+                ["issue_number=119", "should_run=true", "duplicate_skipped=false"],
+            )
+
+    def test_issue_events_fail_closed_without_event_payload(self):
+        prepare = job_block(self.text, "prepare", "implement")
+        self.assertIn('if event_name in {"issues", "issue_comment"}:', prepare)
+        self.assertIn('raise RuntimeError(f"Missing event payload for {event_name}")', prepare)
 
     def test_candidate_execution_is_confined_to_read_only_verify_job(self):
         verify = job_block(self.text, "verify", "publish")
