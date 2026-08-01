@@ -1,98 +1,113 @@
 # Operating rules
 
-## Authoritative repositories
+## Authoritative sources
 
-The public Foundation repository and its public E2E repository are the implementation and acceptance sources of truth. Private predecessor repositories are archives only.
+The public Foundation repository is the implementation source of truth. The public E2E repository validates release candidates. `docs/MINIMUM_SAFETY_PROFILE.md` is the current security and review policy. Earlier private sandboxes and superseded operational procedures are archives only.
+
+## Phase 0 before product work
+
+For every new target repository, the coordinating ChatGPT first verifies connected evidence and asks the owner only for missing UI/local-authentication steps:
+
+1. connect Codex/ChatGPT to GitHub and authorize the exact repository;
+2. create a Codex Environment for the exact repository;
+3. run `claude setup-token` on the owner's authenticated local machine;
+4. store the value only as repository Secret `CLAUDE_CODE_OAUTH_TOKEN`.
+
+The token value is never pasted into ChatGPT, Notion, an Issue, Pull Request, source, workflow, or log. After the harmless Bootstrap acceptance exercise passes, these steps are not requested again unless connected evidence proves that authorization, Environment, or credential use is missing or unavailable.
 
 ## Ordinary flow
 
-1. A trusted owner-authored Issue states the goal, acceptance criteria, every allowed changed or renamed path, prohibited effects, and validation.
-2. The owner starts the Queue with an exact standalone `/claude-run`, or the trusted default-branch supervisor dispatches it.
-3. Claude writes a dedicated branch and Draft Pull Request.
-4. Public Pull Request checks execute the exact candidate SHA with `contents: read`, no Secrets, no OIDC, and no write permission.
-5. Fixed default-branch trusted checks create GitHub-owned immutable workflow-run and exact job evidence for the same SHA.
-6. Fixed native Pull Request workflows create independent exact-head evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` exists.
-7. Codex independently reviews that exact SHA.
-8. The supervisor revalidates provenance, scope, protected authorization, complete trusted and native evidence, Codex and thread state, mergeability, and the current head.
-9. The supervisor marks an eligible Pull Request ready and merges through the Merge API with the exact expected head SHA.
-
-A separate human merge click is not required.
+1. A trusted owner-authored Issue defines the goal, acceptance criteria, one `foundation-task-scope` block, and required checks.
+2. The coordinator starts one bounded implementation task.
+3. Implementation writes a dedicated same-repository branch and Pull Request; automation never pushes directly to the default branch.
+4. GitHub-visible remote state is authoritative. Local commits are incomplete until the expected branch resolves to the reported SHA.
+5. Read-only exact-head Foundation and configured product checks run without Secrets, OIDC, or write permission.
+6. The risk tier determines review: low, standard, or protected.
+7. The coordinator performs one final live recheck of the Pull Request, head, hold state, source scope, checks, review evidence, and mergeability.
+8. An eligible Pull Request merges with the exact expected head SHA. A separate human merge click is not required.
 
 No `workflow_dispatch` or `repository_dispatch` event payload may authorize a candidate, source Issue, changed path, workflow, ref, repository, command, or merge.
 
-## Ordinary allowlist and protected authorization
+## Unified task scope
 
-Every changed and renamed path must match an ordinary allowlist declared under a trusted Issue scope heading. Only exact repository-relative paths and bounded suffix patterns such as `tests/**` are accepted. A protected authorization block does not implicitly add paths to the ordinary allowlist.
-
-Protected changes include `.github/**`, `bootstrap/**`, supervisor and security-policy code, permission changes, authentication, repository settings, billing, deployment, production, and destructive data operations. Each protected path must independently appear in both the ordinary allowlist and the protected contract:
+New Issues use exactly one block:
 
 ```text
-## Allowed paths
-- .github/workflows/example.yml
-
-<!-- foundation-protected-authorization
-category: workflow
+<!-- foundation-task-scope
+risk: standard
 paths:
-- .github/workflows/example.yml
-operation: add one reviewed workflow
-prohibited: no secrets, deployment, or repository settings
-validation: public CI, tests, exact-SHA Codex review
-rollback: revert the merge commit
+- src/**
+- tests/**
+operation: implement the bounded product change described by this Issue
+prohibited: no workflow, permission, Secret, deployment, production, or unrelated change
+checks:
+- CI
+- product:test
 -->
 ```
 
-The supervisor fails closed when any current or previous renamed path exceeds the ordinary allowlist or any protected path lacks the stricter contract.
+Every changed and previous renamed path must match an exact path or a bounded directory pattern ending in `/**`. Other glob forms are rejected. `operation` and `prohibited` are required.
 
-## Native exact-head evidence
+Protected categories include `.github/**`, `bootstrap/**`, supervisor/security-policy code, permissions, authentication or Secret interfaces, repository settings, billing, deployment, production, and destructive operations. Any protected path or operation requires `risk: protected`.
 
-Before readiness or merge, the supervisor resolves fixed active default-branch workflow identities for:
+During a bounded migration period, legacy Issues with an ordinary allowlist and a separate `foundation-protected-authorization` block remain accepted. New Issues do not duplicate the same protected path in two places.
 
-- `.github/workflows/ci.yml` / `CI`;
-- `.github/workflows/unit-tests.yml` / `Unit Tests`;
-- `.github/workflows/e2e.yml` / `E2E Acceptance`, when that fixed workflow exists.
+## Review tiers
 
-The runtime captures one immutable default-branch commit for the entire native evidence gate. Every required candidate workflow file blob is compared with the corresponding blob from that same default commit. After all workflow metadata, blob, and run queries finish, the default branch is read again; any movement invalidates the complete gate. A mixed old/new default workflow set or candidate-modified workflow can never validate itself.
+### Low risk
 
-The supervisor then requires a successful completed `pull_request` run belonging to the exact Pull Request, same repository, fixed workflow identity, and current head SHA. Missing, pending, cancelled, failed, stale-SHA, cross-Pull-Request, wrong-workflow, wrong-repository, candidate-modified-workflow, or candidate-authored status evidence cannot authorize progress. The complete gate is repeated immediately before merge.
+Documentation, formatting, generated metadata, or tests-only changes that do not alter executable runtime, workflows, permissions, authentication, or protected policy require:
 
-When GitHub records automation-authored Pull Request runs as `action_required` before any job starts, connected automation may create one metadata-only commit on the same authorized branch. The new exact head invalidates all prior evidence and must receive fresh native checks, trusted attestations, and Codex review; no person is asked to approve the run.
+- exact GitHub-visible head SHA;
+- authorized scope;
+- all required exact-head checks.
 
-## Internal stops are durable and non-notifying
+Codex is optional and provider availability cannot block completion.
 
-Retry exhaustion, no progress, stale or incomplete evidence, blocking review, merge state, ambiguous technical conditions, all-path denial, and protected-path denial are internal automation states. They must never become routine requests for a person to merge, approve, retry, close, resolve a review, change permissions or settings, alter billing, or deploy.
+### Standard risk
 
-Before persisting an internal stop, the runtime performs the mandatory self-resolution audit against the live exact SHA. It rechecks repository metadata; current Pull Request head and mergeability; complete changed and renamed paths; source Issue trust, ordinary allowlist, and protected authorization; fixed workflow identities and the one stable default snapshot; immutable trusted workflow-run/job evidence; complete native Pull Request workflow evidence; GitHub check evidence; Codex evidence and unresolved threads; collaborator permission; idempotency; and alternative connected recovery paths. It fetches the live Pull Request again after all queries and immediately before any record or disposable close. A failed query or moved head produces no effect.
+Ordinary product code without a protected category requires all checks plus either:
 
-Internal stop records are sanitized canonical JSON on the fixed non-default branch `automation-internal-stops` at:
-
-```text
-automation-stops/pr-<number>/<exact-sha>/<REASON_CODE>.json
-```
-
-The record contains `notification: false`, no required human action, the reason, Issue, Pull Request, exact SHA, bounded detail, and connected audit evidence. The canonical public contract is human_action_required: `false`. The path and exact content are the idempotency key. Routine internal stops are never posted as Issue or Pull Request comments and never create or edit routine stop labels. A deliberately disposable negative E2E Pull Request may close only after exact record persistence and another live-head check.
-
-Combined Codex comments and reviews are ordered by immutable event time. Codex no-progress is measured from the immutable trusted exact-SHA request comment authored by `github-actions[bot]`. Native-check and mergeability no-progress use relevant immutable exact-SHA evidence, never Pull Request-wide `updated_at`.
-
-## Human-only notice boundary
-
-Only these reason codes may notify a person:
-
-- `HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE`
-- `HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED`
-- `HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED`
-
-A notice requires a trusted source Issue, live open same-repository Pull Request, lowercase 40-character current head SHA, concrete connected paths already attempted, independently observed impossibility evidence, exact targets or provider, one canonical reason-compatible provider UI action, an automatic-resumption condition, and the same mandatory connected self-resolution audit.
-
-For account-level repository creation, the runtime independently queries the exact target repositories through the connected GitHub API. Caller-supplied attempted paths and impossibility assertions must exactly match the derived observations, and no notice is valid when both targets are visible. Credential and integration-reconnection reasons fail closed until a reason-specific connected provider evidence adapter can prove the UI-only condition; generic caller assertions are never sufficient.
-
-The connected condition is re-derived inside the final self-resolution audit and embedded in the persisted audit record. It is queried again after the audit and immediately before publication. A repository becoming visible, a provider state changing, or any mismatch between requested and connected evidence prevents the notice.
-
-Before publication, the runtime persists a sanitized deterministic record at:
+- clean exact-SHA Codex evidence; or
+- an unedited trusted owner/configured-owner comment containing:
 
 ```text
-automation-stops/pr-<number>/<exact-sha>/<HUMAN_ONLY_REASON>.notice.json
+<!-- foundation-coordinator-review:<40-character-sha>:clean -->
+<nonempty summary of the exact diff, checks, and residual risk>
 ```
 
-The record binds the Issue, Pull Request, exact SHA, connected attempted paths, connected impossibility evidence, exact targets/provider, canonical UI action, automatic-resumption condition, and audit. The live destination is revalidated before persistence and before publication. Deduplication requires both the exact persisted record and an immutable `github-actions[bot]` comment containing the exact reason/Issue/Pull Request/SHA marker. An untrusted or edited comment cannot suppress a valid notice, and a trusted comment without the matching record fails closed.
+Untrusted authors, edited comments, empty summaries, and different or stale SHAs do not count.
 
-Routine technical failures, retry exhaustion, no progress, missing evidence, merge state, path denial, untrusted evidence, unsupported provider assertions, or unresolved ambiguity cannot use the human-only formatter. Automation resumes automatically when the audited UI condition changes; a new owner message is not required.
+### Protected risk
+
+Workflow, permission, authentication/Secret-interface, supervisor/security-policy, repository-setting, billing, deployment, production, and destructive changes require clean exact-SHA Codex review. The actual request is posted through an owner/connector-supported identity.
+
+`github-actions[bot]` records only a neutral exact-SHA review-required marker. It does not actively invoke `@codex`. Provider responses asking to connect GitHub or create an Environment are classified as an unavailable route, not review evidence. The same failed route is not repeated indefinitely.
+
+Any head change invalidates every earlier check and review.
+
+## Validation and final merge
+
+Candidate code is never executed in a Secret/OIDC/write-capable job. Fixed read-only workflows validate the exact remote head. Required product lint, test, type-check, and build identities are part of the target contract.
+
+The coordinator may retain one stable evidence snapshot while work progresses. Immediately before mutation it performs one live recheck of:
+
+- open same-repository Pull Request and expected base;
+- exact current remote head SHA;
+- `ai-no-merge` or other hold state;
+- trusted Issue and task scope;
+- required exact-head checks;
+- review evidence required by the risk tier;
+- mergeability.
+
+The merge API call includes the expected head SHA. A rejected attempt before mutation does not permanently consume future eligibility; a successful merge does.
+
+## Status, recovery, and human boundary
+
+Routine failure produces one idempotent machine-readable status record or updatable status comment containing the phase, exact SHA, missing gate, active route, and next automatic action. It does not ask a person to press Retry, Approve, Ready, Close, or Merge and does not create repeated comments.
+
+Human action is limited to the Phase 0 provider UI/local-authentication steps or a separately authorized protected business decision. Every notice identifies the exact target, minimal action, what must not be pasted, and the automatic-resumption condition. Automation resumes without the original instruction being reposted.
+
+## Legacy migration notes
+
+Older generated targets may still contain sanitized JSON records on `automation-internal-stops`. Those records were never posted as Issue or Pull Request comments and remain readable until status migration is complete. Older no-progress logic may refer to an immutable trusted exact-SHA request comment authored by `github-actions[bot]`; new review orchestration uses the neutral review-required marker and the coordinating owner/connector route instead.
