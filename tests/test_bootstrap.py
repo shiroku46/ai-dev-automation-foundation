@@ -50,6 +50,22 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn("Provider setup/error replies never count", checklist)
             self.assertIn("one final live", checklist)
             self.assertIn("exact expected head SHA", checklist)
+
+            issue_template = (target / ".github/ISSUE_TEMPLATE/ai-task.yml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Repository startup acceptance", issue_template)
+            self.assertIn("foundation-task-scope", issue_template)
+            self.assertIn("risk: standard", issue_template)
+            self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", checklist)
+
+            pr_template = (target / ".github/pull_request_template.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("## Risk tier", pr_template)
+            self.assertIn("foundation-coordinator-review", pr_template)
+            self.assertIn("GitHub-visible exact head SHA", pr_template)
+            self.assertIn("expected head SHA", pr_template)
             self.assertFalse((target / "bootstrap").exists())
 
             result = run_validator(target)
@@ -102,6 +118,8 @@ class BootstrapTest(unittest.TestCase):
             "scripts/supervisor_queue_recovery.py",
             "scripts/supervisor_queue_recovery_v2.py",
             "scripts/supervisor_queue_recovery_v3.py",
+            ".github/ISSUE_TEMPLATE/ai-task.yml",
+            ".github/pull_request_template.md",
         ):
             with self.subTest(path=path):
                 self.assertIn(path, ALLOWLIST)
