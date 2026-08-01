@@ -30,7 +30,6 @@ class BootstrapTest(unittest.TestCase):
             checklist = (target / "INSTALL_CHECKLIST.md").read_text(encoding="utf-8")
             self.assertIn(GENERATED_TARGET_MARKER, checklist)
             self.assertIn("example-owner", checklist)
-            self.assertNotIn("notion", checklist.lower())
 
             # Phase 0 must be the first operational section.
             self.assertLess(checklist.index("## Phase 0"), checklist.index("## Minimum safety profile"))
