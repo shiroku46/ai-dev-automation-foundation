@@ -43,9 +43,11 @@ checks:
         self.assertFalse(scope_is_authorized(["docs/outside.md"], body))
 
     def test_protected_paths_require_protected_risk(self):
-        with self.assertRaisesRegex(ValueError, "protected paths"):
-            parse_task_scope(self._scope("standard", [".github/workflows/ci.yml"]))
-        body = self._scope("protected", [".github/workflows/ci.yml", "tests/**"])
+        for protected_path in (".github/workflows/ci.yml", ".github/**", "bootstrap/**"):
+            with self.subTest(protected_path=protected_path):
+                with self.assertRaisesRegex(ValueError, "protected paths"):
+                    parse_task_scope(self._scope("standard", [protected_path]))
+        body = self._scope("protected", [".github/**", "tests/**"])
         self.assertEqual(
             risk_for_changes([".github/workflows/ci.yml"], body),
             "protected",
