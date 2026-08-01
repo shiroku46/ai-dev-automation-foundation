@@ -13,12 +13,12 @@ on:
         required: true
         type: string
       trusted_supervisor:
-        description: True only for a default-branch supervisor dispatch
+        description: True only for a fixed default-branch recovery dispatch
         required: false
         default: false
         type: boolean
       trusted_run_id:
-        description: Supervisor workflow run ID when dispatched by github-actions[bot]
+        description: Trusted reconciliation workflow run ID when dispatched by github-actions[bot]
         required: false
         default: ""
         type: string
@@ -146,7 +146,7 @@ jobs:
                   if trusted and exact_recovery and issue_number.isdigit() and run_id.isdigit():
                       snapshot = api(f"repos/{repository}/actions/runs/{run_id}")
                       default_sha = api(f"repos/{repository}/commits/{default_branch}")["sha"]
-                      expected_path = f".github/workflows/supervisor.yml@{default_branch}"
+                      expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"
                       allowed = (
                           (snapshot.get("repository") or {}).get("full_name") == repository
                           and snapshot.get("path") == expected_path
@@ -387,5 +387,5 @@ jobs:
             echo "- immutable_sha: ${TARGET_SHA:-unavailable}"
             echo "- stages: implement=$IMPLEMENT_RESULT resolve=$RESOLVE_RESULT verify=$VERIFY_RESULT publish=$PUBLISH_RESULT"
             echo "- notification: false"
-            echo "- next: merged default-branch supervisor reconciliation performs the bounded self-resolution audit and internal-stop decision"
+            echo "- next: merged default-branch reconciliation performs the bounded self-resolution audit and internal-stop decision"
           } >> "$GITHUB_STEP_SUMMARY"
