@@ -81,8 +81,14 @@ class QueueWorkflowTest(unittest.TestCase):
         self.assertIn("--draft", publish)
         self.assertIn("Closes #$ISSUE_NUMBER", publish)
         self.assertIn("headRefOid", publish)
-        self.assertIn("foundation-queue-stop", finalize)
-        self.assertIn("no credential, Secret value, or provider diagnostic is included", finalize)
+        self.assertIn("notification: false", finalize)
+        self.assertIn("GITHUB_STEP_SUMMARY", finalize)
+        self.assertIn("supervisor reconciliation", finalize)
+        self.assertNotIn("foundation-queue-stop", finalize)
+        self.assertNotIn("QUEUE_PIPELINE_FAILED", finalize)
+        self.assertNotIn("gh issue comment", finalize)
+        self.assertNotIn("--add-label ai-blocked", finalize)
+        self.assertNotIn("gh label create ai-blocked", finalize)
 
     def test_generated_branch_is_resolved_once_and_all_actions_are_pinned(self):
         implement = job_block(self.text, "implement", "resolve")
