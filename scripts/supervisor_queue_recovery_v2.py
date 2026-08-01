@@ -343,17 +343,25 @@ def _connected_exhaustion_snapshot(
     queue_workflow = runtime.api(
         f"repos/{runtime.REPO}/actions/workflows/{recovery.QUEUE_WORKFLOW_FILE}"
     )
+    reconcile_workflow = runtime.api(
+        f"repos/{runtime.REPO}/actions/workflows/ci-reconcile.yml"
+    )
     supervisor_workflow = runtime.api(
         f"repos/{runtime.REPO}/actions/workflows/supervisor.yml"
     )
     if (
         queue_workflow.get("path") != recovery.QUEUE_WORKFLOW_PATH
         or queue_workflow.get("state") != "active"
+        or reconcile_workflow.get("path") != ".github/workflows/ci-reconcile.yml"
+        or reconcile_workflow.get("state") != "active"
         or supervisor_workflow.get("path") != ".github/workflows/supervisor.yml"
         or supervisor_workflow.get("state") != "active"
     ):
         raise RuntimeError("Fixed workflow identity failed Queue exhaustion audit")
     queue_text = _fetch_text(recovery.QUEUE_WORKFLOW_PATH, expected_default_sha)
+    reconcile_text = _fetch_text(
+        ".github/workflows/ci-reconcile.yml", expected_default_sha
+    )
     supervisor_text = _fetch_text(
         ".github/workflows/supervisor.yml", expected_default_sha
     )
@@ -364,17 +372,32 @@ def _connected_exhaustion_snapshot(
         "request_fingerprint:",
         "recovery_attempt:",
         "run-name: Claude Issue Queue issue-",
+        'expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"',
         "permissions:",
     )
-    required_supervisor = (
+    required_reconcile = (
+        'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]',
+        "queue_recovery:",
         "actions: write",
+        "contents: write",
+        "issues: read",
+        "pull-requests: read",
+        "python -m scripts.supervisor_queue_recovery_v3",
+    )
+    required_supervisor = (
+        "actions: read",
+        "checks: read",
         "contents: write",
         "issues: write",
         "pull-requests: write",
-        "python -m scripts.supervisor_queue_recovery_v3",
+        "python -m scripts.supervisor_final_guard",
     )
-    if not all(marker in queue_text for marker in required_queue) or not all(
-        marker in supervisor_text for marker in required_supervisor
+    if (
+        not all(marker in queue_text for marker in required_queue)
+        or not all(marker in reconcile_text for marker in required_reconcile)
+        or not all(marker in supervisor_text for marker in required_supervisor)
+        or "actions: write" in supervisor_text
+        or "python -m scripts.supervisor_queue_recovery_v3" in supervisor_text
     ):
         raise RuntimeError("Fixed workflow permission or entry identity is incomplete")
     root = _retry_root(issue_number, fingerprint)
