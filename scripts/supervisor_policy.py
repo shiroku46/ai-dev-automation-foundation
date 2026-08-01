@@ -8,8 +8,12 @@ import re
 PROTECTED_PREFIXES = (".github/", "bootstrap/")
 PROTECTED_EXACT = {
     "SECURITY.md",
+    "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
+    "scripts/supervisor_queue_recovery.py",
+    "scripts/supervisor_queue_recovery_v2.py",
+    "scripts/supervisor_queue_recovery_v3.py",
     "scripts/ai_recovery_supervisor.py",
 }
 ALLOWED_SCOPE_HEADINGS = frozenset(
