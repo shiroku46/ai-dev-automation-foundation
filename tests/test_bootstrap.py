@@ -30,6 +30,11 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn(GENERATED_TARGET_MARKER, checklist)
             self.assertIn("example-owner", checklist)
             self.assertNotIn("notion", checklist.lower())
+            self.assertIn("Queue failure creates no routine Issue or Pull Request comment", checklist)
+            self.assertIn("Queue recovery is bounded, deterministic, idempotent, non-notifying", checklist)
+            self.assertIn("one unchanged default-branch SHA", checklist)
+            self.assertIn("explicit label evidence", checklist)
+            self.assertIn("single-use", checklist)
             self.assertIn("automation-internal-stops", checklist)
             self.assertIn("automation-stops/pr-<number>/<sha>/<REASON>.json", checklist)
             self.assertIn("never posted as Issue or Pull Request comments", checklist)
@@ -82,9 +87,17 @@ class BootstrapTest(unittest.TestCase):
             )
 
     def test_public_identity_files_are_distributed(self):
-        self.assertIn("README.md", ALLOWLIST)
-        self.assertIn("LICENSE", ALLOWLIST)
-        self.assertIn("SECURITY.md", ALLOWLIST)
+        for path in (
+            "README.md",
+            "LICENSE",
+            "SECURITY.md",
+            "scripts/supervisor_final_guard.py",
+            "scripts/supervisor_queue_recovery.py",
+            "scripts/supervisor_queue_recovery_v2.py",
+            "scripts/supervisor_queue_recovery_v3.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, ALLOWLIST)
 
 
 if __name__ == "__main__":
