@@ -168,6 +168,7 @@ def validate_workflows() -> None:
             'body.strip() == trigger',
             "trusted_run_id",
             "actions/runs/{run_id}",
+            'expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"',
             "notification: false",
             "GITHUB_STEP_SUMMARY",
         ),
@@ -175,6 +176,8 @@ def validate_workflows() -> None:
     )
     if "github.triggering_actor" in queue:
         fail("Queue must not depend on github.triggering_actor")
+    if 'expected_path = f".github/workflows/supervisor.yml@{default_branch}"' in queue:
+        fail("Queue bot dispatch must be bound to the reconciliation workflow")
     finalize = job_block(queue, "finalize")
     for forbidden in (
         "QUEUE_PIPELINE_FAILED",
@@ -389,12 +392,14 @@ def validate_policy_and_runtime() -> None:
             'live_pr.get("draft") is not False',
             'live_pr.get("mergeable") is not True',
             "_verified_gate = None",
-            "request_codex_without_provider_mention",
-            '"- notification: `false`',
-            '"- required_human_action: `null`',
+            "_original_request_codex",
+            "request_codex_exact_head",
+            "_original_request_codex(pr_number, sha)",
         ),
         "final merge guard",
     )
+    if "request_codex_without_provider_mention" in final_guard:
+        fail("final merge guard must not replace the provider review dispatch with an inert marker")
 
     recovery = text("scripts/supervisor_queue_recovery.py")
     recovery_v2 = text("scripts/supervisor_queue_recovery_v2.py")
@@ -419,6 +424,11 @@ def validate_policy_and_runtime() -> None:
             "_connected_exhaustion_snapshot",
             "guarded_record_exhaustion",
             '"notification": False',
+            'actions/workflows/ci-reconcile.yml',
+            "required_reconcile",
+            'expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"',
+            "python -m scripts.supervisor_final_guard",
+            '"actions: write" in supervisor_text',
         ),
         "Queue recovery hardening",
     )
