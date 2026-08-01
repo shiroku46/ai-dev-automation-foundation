@@ -177,11 +177,12 @@ def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
     if not runtime.EXACT_SHA.fullmatch(sha):
         raise ValueError("Review evidence requires one exact candidate SHA")
     risk, _ = _risk_for_pr(pr_number, sha)
+    unresolved = runtime.unresolved_review_threads(pr_number)
     codex = dict(_original_exact_codex_evidence(pr_number, sha))
     codex["review_source"] = "codex"
     if risk == "low":
         return {
-            "state": "clean",
+            "state": "blocking" if unresolved else "clean",
             "timestamp": None,
             "request_timestamp": None,
             "review_source": "low-risk-checks",
@@ -190,7 +191,7 @@ def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
     if codex.get("state") == "clean":
         codex["risk"] = risk
         return codex
-    if risk == "standard":
+    if risk == "standard" and not unresolved:
         coordinator = _coordinator_review(pr_number, sha)
         if coordinator is not None:
             coordinator["risk"] = risk
@@ -294,7 +295,7 @@ def _merge_identity(args: tuple[str, ...]) -> tuple[str, int] | None:
 
 
 def guarded_gh(*args: str) -> str:
-    """Perform one final live recheck and clear eligibility only after a merge call succeeds."""
+    """Perform the final live recheck and clear eligibility only after merge succeeds."""
     global _verified_gate
     identity = _merge_identity(args)
     if identity is None:
@@ -313,9 +314,28 @@ def guarded_gh(*args: str) -> str:
         or live_pr.get("mergeable") is not True
     ):
         raise RuntimeError("Live Pull Request no longer matches the trusted merge gate")
-    live_issue = _authorized_source_issue(live_pr, candidate_sha)
+    live_issue, issue = _authorized_source_snapshot(live_pr, candidate_sha)
     if live_issue != verified_issue:
         raise RuntimeError("Live trusted source Issue no longer matches the verified gate")
+
+    native_clean, native_evidence = _native_workflow_evidence(
+        candidate_sha, pr_number
+    )
+    if not native_clean:
+        raise RuntimeError("Required exact-head native checks no longer pass")
+    missing_checks = _missing_required_task_checks(
+        issue.get("body") or "", candidate_sha, native_evidence
+    )
+    if missing_checks:
+        raise RuntimeError(
+            f"Live Issue requires missing exact-head checks: {missing_checks}"
+        )
+    if runtime.unresolved_review_threads(pr_number):
+        raise RuntimeError("Live Pull Request has unresolved review threads")
+    live_review = review_evidence(pr_number, candidate_sha)
+    if live_review.get("state") != "clean":
+        raise RuntimeError("Live risk-tier review evidence no longer passes")
+
     _require_unchanged_default(default_sha)
     result = _original_gh(*args)
     _verified_gate = None
