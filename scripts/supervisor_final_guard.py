@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
-"""Bind trusted attestation, authorization, native evidence, and merge."""
+"""Apply the minimum safety profile and bind the final expected-head merge."""
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from scripts import supervisor_runtime as runtime
+from scripts import supervisor_policy as policy
 
 _native_workflow_evidence = runtime.native_workflow_evidence
 _original_gh = runtime.gh
 _original_current_default_sha = runtime.current_default_sha
 _original_request_codex = runtime.request_codex
+_original_exact_codex_evidence = runtime.exact_codex_evidence
 _verified_gate: tuple[str, int, str, int] | None = None
+
+COORDINATOR_REVIEW = re.compile(
+    r"<!--\s*foundation-coordinator-review:([0-9a-f]{40}):clean\s*-->"
+)
+REVIEW_REQUIRED = "<!-- foundation-review-required:{sha}:{risk} -->"
+PROVIDER_SETUP_PHRASES = (
+    "create a codex account and connect to github",
+    "create an environment for this repo",
+    "connect to github",
+)
 
 
 def _exact_live_default_sha() -> str:
@@ -25,20 +40,142 @@ def _require_unchanged_default(expected_sha: str) -> str:
     return expected_sha
 
 
+def source_and_scope_minimum(
+    pr: dict[str, Any],
+) -> tuple[int | None, dict[str, Any] | None, list[str], str | None]:
+    issue_number = policy.parse_issue_number(pr.get("body") or "")
+    if not issue_number:
+        return None, None, [], "MISSING_TRUSTED_SOURCE_ISSUE"
+    issue = runtime.api(f"repos/{runtime.REPO}/issues/{issue_number}")
+    if not runtime.trusted_source_issue(issue):
+        return issue_number, issue, [], "UNTRUSTED_SOURCE_ISSUE"
+    changed = runtime.changed_paths(pr)
+    if changed is None:
+        return issue_number, issue, [], "INCOMPLETE_CHANGED_FILE_EVIDENCE"
+    issue_body = issue.get("body") or ""
+    try:
+        if not policy.scope_is_authorized(changed, issue_body):
+            return issue_number, issue, changed, "UNAUTHORIZED_CHANGED_PATH"
+        risk = policy.risk_for_changes(changed, issue_body)
+        if risk == "protected" and not policy.protected_scope_is_authorized(
+            changed, issue_body
+        ):
+            return issue_number, issue, changed, "UNAUTHORIZED_PROTECTED_PATH"
+    except ValueError:
+        return issue_number, issue, changed, "UNAUTHORIZED_PROTECTED_PATH"
+    return issue_number, issue, changed, None
+
+
 def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
     live_head = str((live_pr.get("head") or {}).get("sha") or "")
     if not isinstance(live_pr.get("labels"), list):
         raise RuntimeError("Live Pull Request omitted explicit label evidence")
     if live_head != candidate_sha or not runtime.trusted_candidate(live_pr):
         raise RuntimeError("Live Pull Request no longer matches the trusted candidate")
-    issue_number, _, _, scope_error = runtime.source_and_scope(live_pr)
+    issue_number, _, _, scope_error = source_and_scope_minimum(live_pr)
     if scope_error or not isinstance(issue_number, int) or issue_number <= 0:
         raise RuntimeError("Live source and scope authorization no longer passes")
     return issue_number
 
 
+def _risk_for_pr(pr_number: int, sha: str) -> tuple[str, int]:
+    live_pr = runtime._live_pr(pr_number, sha)
+    issue_number, issue, changed, scope_error = source_and_scope_minimum(live_pr)
+    if scope_error or issue is None or not isinstance(issue_number, int):
+        raise RuntimeError("Review tier requires a current trusted task scope")
+    risk = policy.risk_for_changes(changed, issue.get("body") or "")
+    return risk, issue_number
+
+
+def _provider_route_unavailable(pr_number: int) -> bool:
+    for item in reversed(runtime._codex_items(pr_number)):
+        if (item.get("user") or {}).get("login") != runtime.CODEX_LOGIN:
+            continue
+        body = str(item.get("body") or "").lower()
+        if any(phrase in body for phrase in PROVIDER_SETUP_PHRASES):
+            return True
+    return False
+
+
+def _coordinator_review(pr_number: int, sha: str) -> dict[str, str | None] | None:
+    trusted_authors = set(runtime.TRUSTED_ISSUE_AUTHORS)
+    for item in reversed(runtime.api_list(f"repos/{runtime.REPO}/issues/{pr_number}/comments?per_page=100")):
+        login = (item.get("user") or {}).get("login") or ""
+        if login not in trusted_authors:
+            continue
+        if item.get("created_at") != item.get("updated_at"):
+            continue
+        body = str(item.get("body") or "")
+        match = COORDINATOR_REVIEW.search(body)
+        if not match or match.group(1) != sha:
+            continue
+        summary = body[match.end() :].strip()
+        if not summary:
+            continue
+        return {
+            "state": "clean",
+            "timestamp": item.get("created_at"),
+            "request_timestamp": item.get("created_at"),
+            "review_source": "coordinator",
+        }
+    return None
+
+
+def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
+    if not isinstance(pr_number, int) or pr_number <= 0:
+        raise ValueError("Pull Request number must be a positive integer")
+    if not runtime.EXACT_SHA.fullmatch(sha):
+        raise ValueError("Review evidence requires one exact candidate SHA")
+    risk, _ = _risk_for_pr(pr_number, sha)
+    codex = dict(_original_exact_codex_evidence(pr_number, sha))
+    codex["review_source"] = "codex"
+    if risk == "low":
+        return {
+            "state": "clean",
+            "timestamp": None,
+            "request_timestamp": None,
+            "review_source": "low-risk-checks",
+            "risk": risk,
+        }
+    if codex.get("state") == "clean":
+        codex["risk"] = risk
+        return codex
+    if risk == "standard":
+        coordinator = _coordinator_review(pr_number, sha)
+        if coordinator is not None:
+            coordinator["risk"] = risk
+            return coordinator
+    codex["risk"] = risk
+    if codex.get("state") == "pending" and _provider_route_unavailable(pr_number):
+        codex["review_route"] = "unavailable"
+    return codex
+
+
+def record_review_required(pr_number: int, sha: str) -> None:
+    risk, _ = _risk_for_pr(pr_number, sha)
+    if risk == "low":
+        return
+    marker = REVIEW_REQUIRED.format(sha=sha, risk=risk)
+    comments = runtime.api_list(
+        f"repos/{runtime.REPO}/issues/{pr_number}/comments?per_page=100"
+    )
+    if any(
+        (item.get("user") or {}).get("login") == runtime.ACTIONS_LOGIN
+        and item.get("created_at") == item.get("updated_at")
+        and marker in str(item.get("body") or "")
+        for item in comments
+    ):
+        return
+    route = "Codex or trusted coordinator" if risk == "standard" else "owner/connector Codex"
+    runtime.comment(
+        pr_number,
+        f"{marker}\nREVIEW_REQUIRED for exact head `{sha}`. "
+        f"Risk tier: `{risk}`. Active route: {route}. This neutral marker does not invoke a provider.",
+    )
+
+
 def request_codex_exact_head(pr_number: int, sha: str) -> None:
-    """Dispatch one idempotent provider review request bound to the exact head."""
+    """Legacy callable retained for compatibility; the active runtime uses a neutral marker."""
     if not isinstance(pr_number, int) or pr_number <= 0:
         raise ValueError("Pull Request number must be a positive integer")
     if not runtime.EXACT_SHA.fullmatch(sha):
@@ -47,7 +184,7 @@ def request_codex_exact_head(pr_number: int, sha: str) -> None:
 
 
 def guarded_native_workflow_evidence(sha: str, pr_number: int):
-    """Evaluate every trust input against one immutable default SHA."""
+    """Evaluate stable checks and task authorization before the final live recheck."""
     global _verified_gate
     _verified_gate = None
     default_sha = _exact_live_default_sha()
@@ -99,7 +236,7 @@ def _merge_identity(args: tuple[str, ...]) -> tuple[str, int] | None:
 
 
 def guarded_gh(*args: str) -> str:
-    """Consume and recheck every trust-relevant input immediately before merge."""
+    """Perform one final live recheck and clear eligibility only after a merge call succeeds."""
     global _verified_gate
     identity = _merge_identity(args)
     if identity is None:
@@ -107,7 +244,6 @@ def guarded_gh(*args: str) -> str:
     if _verified_gate is None:
         raise RuntimeError("Merge call has no verified final evidence gate")
     gate = _verified_gate
-    _verified_gate = None
     candidate_sha, pr_number = identity
     verified_sha, verified_pr, default_sha, verified_issue = gate
     if (candidate_sha, pr_number) != (verified_sha, verified_pr):
@@ -123,11 +259,21 @@ def guarded_gh(*args: str) -> str:
     if live_issue != verified_issue:
         raise RuntimeError("Live trusted source Issue no longer matches the verified gate")
     _require_unchanged_default(default_sha)
-    return _original_gh(*args)
+    result = _original_gh(*args)
+    _verified_gate = None
+    return result
 
 
 def main() -> int:
-    runtime.request_codex = request_codex_exact_head
+    runtime.source_and_scope = source_and_scope_minimum
+    runtime.exact_codex_evidence = review_evidence
+    runtime.exact_codex_state = lambda pr_number, sha: str(
+        review_evidence(pr_number, sha)["state"]
+    )
+    runtime.exact_codex_clean = lambda pr_number, sha: (
+        review_evidence(pr_number, sha)["state"] == "clean"
+    )
+    runtime.request_codex = record_review_required
     runtime.native_workflow_evidence = guarded_native_workflow_evidence
     runtime.gh = guarded_gh
     return runtime.main()
