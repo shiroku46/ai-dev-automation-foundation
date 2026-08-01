@@ -17,6 +17,16 @@ PROTECTED_EXACT = {
     "scripts/supervisor_queue_recovery_v3.py",
     "scripts/ai_recovery_supervisor.py",
 }
+LOW_RISK_PREFIXES = ("docs/", "tests/")
+LOW_RISK_EXACT = {
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "INSTALL_CHECKLIST.md",
+    "FOUNDATION.lock.json",
+}
+LOW_RISK_SUFFIXES = (".md", ".rst", ".txt")
 ALLOWED_SCOPE_HEADINGS = frozenset(
     {
         "allowed paths",
@@ -52,12 +62,29 @@ def is_protected(path: str) -> bool:
     return normalized in PROTECTED_EXACT or normalized.startswith(PROTECTED_PREFIXES)
 
 
-def _pattern_is_protected(pattern: str) -> bool:
+def _pattern_base(pattern: str) -> str:
     normalized = normalize_path(pattern)
-    base = normalized[:-3].rstrip("/") if normalized.endswith("/**") else normalized
+    return normalized[:-3].rstrip("/") if normalized.endswith("/**") else normalized
+
+
+def _pattern_is_protected(pattern: str) -> bool:
+    base = _pattern_base(pattern)
     if base in {".github", "bootstrap"}:
         return True
     return is_protected(base)
+
+
+def _pattern_is_low_risk(pattern: str) -> bool:
+    normalized = normalize_path(pattern)
+    base = _pattern_base(normalized)
+    if base in {"docs", "tests"}:
+        return True
+    if normalized in LOW_RISK_EXACT:
+        return True
+    if normalized.startswith(LOW_RISK_PREFIXES):
+        return True
+    # Markdown/text artifacts outside protected directories are non-runtime.
+    return normalized.endswith(LOW_RISK_SUFFIXES) and not _pattern_is_protected(normalized)
 
 
 def parse_issue_number(pr_body: str) -> int | None:
@@ -134,14 +161,20 @@ def parse_task_scope(issue_body: str) -> TaskScope | None:
         raise ValueError("foundation-task-scope paths are required")
     if len(paths) != len(set(paths)):
         raise ValueError("foundation-task-scope paths must be unique")
+    if not checks:
+        raise ValueError("foundation-task-scope checks are required")
+    if len(checks) != len(set(checks)):
+        raise ValueError("foundation-task-scope checks must be unique")
     if risk != "protected" and any(_pattern_is_protected(path) for path in paths):
         raise ValueError("protected paths require risk: protected")
+    if risk == "low" and any(not _pattern_is_low_risk(path) for path in paths):
+        raise ValueError("low-risk paths must be documentation, tests, or generated metadata")
     return TaskScope(
         risk=risk,
         paths=tuple(paths),
         operation=operation,
         prohibited=prohibited,
-        checks=tuple(dict.fromkeys(checks)),
+        checks=tuple(checks),
     )
 
 
