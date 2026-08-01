@@ -15,6 +15,7 @@ ALLOWLIST = [
     "SECURITY.md",
     "docs/OPERATING_RULES.md",
     "docs/PUBLIC_SECURITY_MODEL.md",
+    "docs/MINIMUM_SAFETY_PROFILE.md",
     "scripts/public_export_guard.py",
     "scripts/validate_repository.py",
     "scripts/ai_recovery_supervisor.py",
@@ -45,37 +46,35 @@ def render(target: Path, owner: str) -> None:
     (target / "INSTALL_CHECKLIST.md").write_text(
         f"{GENERATED_TARGET_MARKER}\n"
         "# Installation checklist\n\n"
+        "## Phase 0 — complete before product work\n\n"
+        "- [ ] Connect Codex/ChatGPT to GitHub and authorize this exact repository.\n"
+        "- [ ] Create a Codex Environment for this exact repository.\n"
+        "- [ ] On the owner's authenticated local machine, run `claude setup-token`.\n"
+        "- [ ] Store the value only as repository Actions Secret `CLAUDE_CODE_OAUTH_TOKEN`; never paste it into chat, Notion, Issues, Pull Requests, source, workflows, or logs.\n"
+        "- [ ] Run one harmless Bootstrap acceptance Issue before product implementation.\n\n"
+        "## Repository identity\n\n"
         f"- [ ] Optionally set repository variable `AUTOMATION_OWNER` to `{owner}`; "
         "the repository owner is the fail-closed default.\n"
-        "- [ ] Require the trusted source Issue to allowlist every changed and renamed path; bounded patterns such as `tests/**` may be used.\n"
-        "- [ ] Keep the ordinary Issue allowlist independent from the protected-change authorization block; every protected path must appear in both.\n"
-        "- [ ] Confirm the fixed default-branch `trusted-checks.yml` workflow is present.\n"
-        "- [ ] Confirm candidate jobs are read-only and publish no custom checks or statuses.\n"
-        "- [ ] Confirm the supervisor validates immutable workflow-run and exact job evidence.\n"
-        "- [ ] Confirm readiness and merge require successful exact-head native pull-request workflow evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` is installed.\n"
-        "- [ ] Confirm all required native workflow definitions are compared against one stable default-branch commit, and that commit is rechecked after every blob and run query.\n"
-        "- [ ] Confirm each candidate workflow file blob exactly equals the blob from that one stable default-branch commit before native run evidence is trusted.\n"
-        "- [ ] Confirm native runs belong to the exact Pull Request and reject missing, pending, failed, stale-SHA, wrong-workflow, wrong-repository, cross-PR, candidate-modified-workflow, and candidate-authored evidence.\n"
-        "- [ ] Confirm Queue failure creates no routine Issue or Pull Request comment and no failure-state blocked/review label mutation.\n"
-        "- [ ] Confirm Queue recovery is bounded, deterministic, idempotent, non-notifying, and persists only public-safe records on the fixed internal-stop branch.\n"
-        "- [ ] Confirm the supervisor reconciles `Claude Issue Queue` completion through `supervisor_queue_recovery_v3` before the final merge guard.\n"
-        "- [ ] Confirm trusted attestation, native workflow evidence, current source/scope authorization, candidate identity, and merge use one unchanged default-branch SHA.\n"
-        "- [ ] Confirm final merge re-fetches an open, explicitly non-draft, mergeable exact-head Pull Request with explicit label evidence, no `ai-no-merge`, same-repository provenance, and the same authorized source Issue/scope.\n"
-        "- [ ] Confirm the final merge evidence gate is single-use and consumed by the first merge attempt, including a rejected attempt.\n"
-        "- [ ] Confirm the supervisor has only the bounded `contents: write` needed for the fixed `automation-internal-stops` branch.\n"
-        "- [ ] Confirm internal stops are sanitized canonical JSON at `automation-stops/pr-<number>/<sha>/<REASON>.json` and are never posted as Issue or Pull Request comments or represented by routine label mutations.\n"
-        "- [ ] Confirm a failed audit or moved head writes no internal-stop record or close action.\n"
-        "- [ ] Confirm Codex no-progress uses the immutable trusted request timestamp and merge-state no-progress uses the latest immutable clean evidence.\n"
-        "- [ ] Confirm combined Codex comments and reviews are ordered by immutable event time before the latest exact-SHA evidence is selected.\n"
-        "- [ ] Confirm only the three canonical account/provider UI reason codes can create a human-only notice.\n"
-        "- [ ] Confirm account-level repository absence is independently derived from connected GitHub API queries for the exact targets and caller assertions must match that evidence.\n"
-        "- [ ] Confirm credential and integration-reconnection notices fail closed until a reason-specific connected provider evidence adapter exists.\n"
-        "- [ ] Confirm every human-only notice re-derives the connected condition inside the final audit, persists an exact deterministic audit record, and rechecks the condition immediately before publication.\n"
-        "- [ ] Confirm the notice record binds Issue, Pull Request, SHA, attempted connected paths, impossibility evidence, canonical UI action, target/provider, and automatic-resumption condition.\n"
-        "- [ ] Confirm human-only deduplication requires both the exact persisted record and an immutable `github-actions[bot]` comment.\n"
-        "- [ ] Configure `CLAUDE_CODE_OAUTH_TOKEN` only through GitHub/provider UI.\n"
-        "- [ ] Run export guard, validator, and tests.\n"
-        "- [ ] Validate in a disposable E2E repository.\n",
+        "- [ ] Confirm all Foundation workflows are active on the default branch.\n"
+        "- [ ] Run the public export guard, repository validator, and available tests.\n\n"
+        "## Minimum safety profile\n\n"
+        "- [ ] Use one owner-authored `foundation-task-scope` block with `risk`, `paths`, `operation`, `prohibited`, and required `checks`.\n"
+        "- [ ] Never push automation changes directly to the default branch.\n"
+        "- [ ] Treat the GitHub-visible remote head SHA as authoritative; local-only commits are incomplete.\n"
+        "- [ ] Require every changed and renamed path to match the task scope.\n"
+        "- [ ] Use `risk: protected` for workflows, permissions, authentication/Secret interfaces, supervisor/security policy, settings, billing, deployment/production, or destructive operations.\n"
+        "- [ ] Keep candidate code out of jobs with Secrets, OIDC, or repository write permission.\n"
+        "- [ ] Require exact-head Foundation checks and configured product lint, test, type-check, and build checks.\n"
+        "- [ ] Low-risk documentation/tests-only changes do not require Codex.\n"
+        "- [ ] Standard-risk product changes require clean exact-SHA Codex or a trusted nonempty coordinator-review marker.\n"
+        "- [ ] Protected changes require clean exact-SHA Codex requested through an owner/connector-supported route.\n"
+        "- [ ] `github-actions[bot]` records only a neutral review-required state and does not actively mention `@codex`.\n"
+        "- [ ] Provider setup/error replies never count as review evidence and the same failed route is not retried indefinitely.\n"
+        "- [ ] A head change invalidates all prior check and review evidence.\n"
+        "- [ ] Immediately before merge, perform one final live PR/head/scope/check/review/mergeability recheck.\n"
+        "- [ ] Merge only with the exact expected head SHA.\n"
+        "- [ ] Routine failures use one idempotent status record and do not ask the owner to press Retry, approve, mark Ready, or merge.\n"
+        "- [ ] Deployment and production mutation remain separately authorized.\n",
         encoding="utf-8",
     )
 
