@@ -33,7 +33,7 @@ LOW_RISK_EXACT = {
     "CONTRIBUTING.md",
     "FOUNDATION.lock.json",
 }
-LOW_RISK_SUFFIXES = (".md", ".rst", ".txt")
+LOW_RISK_SUFFIXES = (".md", ".rst")
 ALLOWED_SCOPE_HEADINGS = frozenset(
     {
         "allowed paths",
@@ -157,6 +157,13 @@ def _unique_block_value(lines: list[str], key: str) -> str:
     return values[0]
 
 
+def _require_unique_list_section(lines: list[str], key: str) -> None:
+    prefix = f"{key}:"
+    declarations = [line.strip() for line in lines if line.strip().startswith(prefix)]
+    if declarations != [prefix]:
+        raise ValueError(f"foundation-task-scope requires exactly one {key} section")
+
+
 def parse_task_scope(issue_body: str) -> TaskScope | None:
     body = _outside_fenced_code(issue_body or "")
     marker_count = body.count(TASK_SCOPE_MARKER)
@@ -169,10 +176,8 @@ def parse_task_scope(issue_body: str) -> TaskScope | None:
         raise ValueError("foundation-task-scope block is not terminated")
     block, _ = remainder.split(TASK_SCOPE_END, 1)
     lines = block.splitlines()
-    if sum(1 for line in lines if line.strip() == "paths:") != 1:
-        raise ValueError("foundation-task-scope requires exactly one paths section")
-    if sum(1 for line in lines if line.strip() == "checks:") != 1:
-        raise ValueError("foundation-task-scope requires exactly one checks section")
+    _require_unique_list_section(lines, "paths")
+    _require_unique_list_section(lines, "checks")
     risk = _unique_block_value(lines, "risk").lower()
     operation = _unique_block_value(lines, "operation")
     prohibited = _unique_block_value(lines, "prohibited")
