@@ -189,18 +189,31 @@ def validate_workflows() -> None:
     require_all(
         reconcile,
         (
-            'workflows: ["CI", "Unit Tests"]',
+            'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]',
             "python -m scripts.supervisor_runtime discover",
             "gh workflow run trusted-checks.yml",
             '--ref "$DEFAULT_BRANCH"',
             '-f "target_sha=$TARGET_SHA"',
-            "actions: write",
             "max-parallel: 2",
+            "\n  queue_recovery:\n",
+            "python -m scripts.supervisor_queue_recovery_v3",
         ),
         "reconciliation",
     )
-    if "statuses: write" in reconcile or "/statuses/" in reconcile:
-        fail("reconciliation must not publish custom statuses")
+    queue_recovery = job_block(reconcile, "queue_recovery")
+    require_all(
+        queue_recovery,
+        (
+            "permissions:\n      actions: write\n      contents: write\n      issues: read\n      pull-requests: read",
+            "ref: ${{ github.event.repository.default_branch }}",
+            "persist-credentials: false",
+            "python -m scripts.supervisor_queue_recovery_v3",
+        ),
+        "Queue recovery reconciliation",
+    )
+    for forbidden in ("statuses: write", "/statuses/", "secrets.", "id-token: write"):
+        if forbidden in reconcile:
+            fail(f"reconciliation contains forbidden capability {forbidden}")
 
     supervisor = text(".github/workflows/supervisor.yml")
     require_all(
@@ -210,16 +223,21 @@ def validate_workflows() -> None:
             '"Claude Issue Queue"',
             "ref: ${{ github.event.repository.default_branch }}",
             "persist-credentials: false",
-            "actions: write",
+            "actions: read",
             "contents: write",
-            "python -m scripts.supervisor_queue_recovery_v3",
             "python -m scripts.supervisor_final_guard",
         ),
         "supervisor",
     )
-    for forbidden in ("\n  pull_request:\n", "secrets.", "id-token: write"):
+    for forbidden in (
+        "\n  pull_request:\n",
+        "secrets.",
+        "id-token: write",
+        "actions: write",
+        "python -m scripts.supervisor_queue_recovery_v3",
+    ):
         if forbidden in supervisor:
-            fail(f"write-capable supervisor is not fork safe: {forbidden}")
+            fail(f"least-privilege merge supervisor contains forbidden capability {forbidden}")
 
 
 def validate_policy_and_runtime() -> None:
