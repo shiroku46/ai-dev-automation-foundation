@@ -9,6 +9,11 @@ import re
 PROTECTED_PREFIXES = (".github/", "bootstrap/")
 PROTECTED_EXACT = {
     "SECURITY.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/MINIMUM_SAFETY_PROFILE.md",
+    "docs/OPERATING_RULES.md",
+    "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
     "scripts/supervisor_runtime.py",
@@ -68,14 +73,24 @@ def _pattern_base(pattern: str) -> str:
 
 
 def _pattern_is_protected(pattern: str) -> bool:
-    base = _pattern_base(pattern)
+    normalized = normalize_path(pattern)
+    base = _pattern_base(normalized)
     if base in {".github", "bootstrap"}:
         return True
-    return is_protected(base)
+    if is_protected(base):
+        return True
+    if normalized.endswith("/**"):
+        return any(
+            protected == base or protected.startswith(f"{base}/")
+            for protected in PROTECTED_EXACT
+        )
+    return False
 
 
 def _pattern_is_low_risk(pattern: str) -> bool:
     normalized = normalize_path(pattern)
+    if _pattern_is_protected(normalized):
+        return False
     base = _pattern_base(normalized)
     if base in {"docs", "tests"}:
         return True
@@ -84,7 +99,7 @@ def _pattern_is_low_risk(pattern: str) -> bool:
     if normalized.startswith(LOW_RISK_PREFIXES):
         return True
     # Markdown/text artifacts outside protected directories are non-runtime.
-    return normalized.endswith(LOW_RISK_SUFFIXES) and not _pattern_is_protected(normalized)
+    return normalized.endswith(LOW_RISK_SUFFIXES)
 
 
 def parse_issue_number(pr_body: str) -> int | None:
@@ -118,12 +133,15 @@ def _block_value(lines: list[str], key: str) -> str:
 
 def parse_task_scope(issue_body: str) -> TaskScope | None:
     body = issue_body or ""
-    if TASK_SCOPE_MARKER not in body:
+    marker_count = body.count(TASK_SCOPE_MARKER)
+    if marker_count == 0:
         return None
+    if marker_count != 1:
+        raise ValueError("exactly one foundation-task-scope block is required")
     remainder = body.split(TASK_SCOPE_MARKER, 1)[1]
     if TASK_SCOPE_END not in remainder:
         raise ValueError("foundation-task-scope block is not terminated")
-    block = remainder.split(TASK_SCOPE_END, 1)[0]
+    block, _ = remainder.split(TASK_SCOPE_END, 1)
     lines = block.splitlines()
     risk = _block_value(lines, "risk").lower()
     operation = _block_value(lines, "operation")
