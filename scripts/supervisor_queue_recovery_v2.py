@@ -14,11 +14,18 @@ from scripts import supervisor_runtime as runtime
 
 QUEUE_START_TIMEOUT_SECONDS = 720
 QUEUE_START_POLL_SECONDS = 5
+QUEUE_RECONCILE_GRACE_SECONDS = 30
 _original_list_records = recovery._list_records
 
 
 def _retry_root(issue_number: int, fingerprint: str) -> str:
     return f"{recovery.RETRY_ROOT}/issue-{issue_number}/request-{fingerprint}"
+
+
+def _attempt_run_title(issue_number: int, fingerprint: str, attempt: int) -> str:
+    if issue_number <= 0 or attempt <= 0 or not re.fullmatch(r"[0-9a-f]{20}", fingerprint):
+        raise ValueError("Queue attempt identity is invalid")
+    return f"Claude Issue Queue issue-{issue_number} request-{fingerprint} attempt-{attempt}"
 
 
 def _record_payload(path: str) -> dict[str, Any] | None:
@@ -45,8 +52,12 @@ def started_attempt_records(root: str) -> list[str]:
 
 
 def _matching_dispatch_runs(
-    before_ids: set[int], expected_default_sha: str
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
 ) -> list[dict[str, Any]]:
+    expected_title = _attempt_run_title(issue_number, fingerprint, attempt)
     matches: list[dict[str, Any]] = []
     for run in recovery._queue_runs():
         run_id = int(run.get("id") or 0)
@@ -55,25 +66,49 @@ def _matching_dispatch_runs(
         path = str(run.get("path") or "").split("@", 1)[0]
         if (
             run_id > 0
-            and run_id not in before_ids
             and repository.get("full_name") == runtime.REPO
             and path == recovery.QUEUE_WORKFLOW_PATH
             and run.get("event") == "workflow_dispatch"
             and run.get("head_branch") == runtime.DEFAULT_BRANCH
             and run.get("head_sha") == expected_default_sha
+            and run.get("display_title") == expected_title
             and actor == runtime.ACTIONS_LOGIN
         ):
             matches.append(run)
     return sorted(matches, key=lambda item: int(item.get("id") or 0))
 
 
+def _wait_for_existing_attempt_run(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
+) -> int | None:
+    deadline = time.monotonic() + QUEUE_RECONCILE_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        matches = _matching_dispatch_runs(
+            issue_number, fingerprint, attempt, expected_default_sha
+        )
+        if len(matches) > 1:
+            raise RuntimeError("Queue retry identity resolved to duplicate workflow runs")
+        if matches:
+            return int(matches[0]["id"])
+        time.sleep(QUEUE_START_POLL_SECONDS)
+    return None
+
+
 def _wait_for_queue_implementation_start(
-    before_ids: set[int], expected_default_sha: str
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    expected_default_sha: str,
 ) -> int:
     deadline = time.monotonic() + QUEUE_START_TIMEOUT_SECONDS
     selected_run_id: int | None = None
     while time.monotonic() < deadline:
-        matches = _matching_dispatch_runs(before_ids, expected_default_sha)
+        matches = _matching_dispatch_runs(
+            issue_number, fingerprint, attempt, expected_default_sha
+        )
         if len(matches) > 1:
             raise RuntimeError("Queue retry dispatch produced ambiguous workflow runs")
         if matches:
@@ -113,6 +148,7 @@ def _intent_content(
         {
             "attempt": attempt,
             "default_sha": default_sha,
+            "expected_run_title": _attempt_run_title(issue_number, fingerprint, attempt),
             "fixed_workflow": recovery.QUEUE_WORKFLOW_FILE,
             "issue_number": issue_number,
             "notification": False,
@@ -152,6 +188,8 @@ def _intent_identity(
         or payload.get("attempt") != attempt
         or payload.get("request_fingerprint") != fingerprint
         or payload.get("fixed_workflow") != recovery.QUEUE_WORKFLOW_FILE
+        or payload.get("expected_run_title")
+        != _attempt_run_title(issue_number, fingerprint, attempt)
         or payload.get("default_sha") != default_sha
         or payload.get("notification") is not False
     ):
@@ -160,7 +198,7 @@ def _intent_identity(
 
 
 def _dispatch_fixed_retry(
-    issue_number: int, fingerprint: str, expected_default_sha: str
+    issue_number: int, fingerprint: str, attempt: int, expected_default_sha: str
 ) -> None:
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     recovery._revalidate_request(issue_number, fingerprint)
@@ -182,6 +220,10 @@ def _dispatch_fixed_retry(
         "trusted_supervisor=true",
         "-f",
         f"trusted_run_id={run_id}",
+        "-f",
+        f"request_fingerprint={fingerprint}",
+        "-f",
+        f"recovery_attempt={attempt}",
     )
 
 
@@ -202,6 +244,7 @@ def _record_started(
         {
             "attempt": attempt,
             "default_sha": expected_default_sha,
+            "expected_run_title": _attempt_run_title(issue_number, fingerprint, attempt),
             "issue_number": issue_number,
             "notification": False,
             "queue_run_id": queue_run_id,
@@ -218,12 +261,7 @@ def _record_started(
 
 
 def guarded_dispatch_retry(issue_number: int, fingerprint: str, attempt: int) -> bool:
-    before_ids = {
-        int(run.get("id") or 0)
-        for run in recovery._queue_runs()
-        if int(run.get("id") or 0) > 0
-    }
-    default_sha, _, started_path, _created = _intent_identity(
+    default_sha, _, started_path, created = _intent_identity(
         issue_number, fingerprint, attempt
     )
     started = _record_payload(started_path)
@@ -233,13 +271,38 @@ def guarded_dispatch_retry(issue_number: int, fingerprint: str, attempt: int) ->
             or started.get("attempt") != attempt
             or started.get("request_fingerprint") != fingerprint
             or started.get("default_sha") != default_sha
+            or started.get("expected_run_title")
+            != _attempt_run_title(issue_number, fingerprint, attempt)
             or int(started.get("queue_run_id") or 0) <= 0
             or started.get("notification") is not False
         ):
             raise RuntimeError("Queue retry started record identity does not match")
         return False
-    _dispatch_fixed_retry(issue_number, fingerprint, default_sha)
-    queue_run_id = _wait_for_queue_implementation_start(before_ids, default_sha)
+
+    if not created:
+        existing_run_id = _wait_for_existing_attempt_run(
+            issue_number, fingerprint, attempt, default_sha
+        )
+        if existing_run_id is not None:
+            queue_run_id = _wait_for_queue_implementation_start(
+                issue_number, fingerprint, attempt, default_sha
+            )
+            if queue_run_id != existing_run_id:
+                raise RuntimeError("Queue retry run identity changed during reconciliation")
+            _record_started(
+                issue_number,
+                fingerprint,
+                attempt,
+                default_sha,
+                queue_run_id,
+                started_path,
+            )
+            return True
+
+    _dispatch_fixed_retry(issue_number, fingerprint, attempt, default_sha)
+    queue_run_id = _wait_for_queue_implementation_start(
+        issue_number, fingerprint, attempt, default_sha
+    )
     _record_started(
         issue_number,
         fingerprint,
@@ -298,6 +361,9 @@ def _connected_exhaustion_snapshot(
         "workflow_dispatch:",
         "trusted_supervisor:",
         "trusted_run_id:",
+        "request_fingerprint:",
+        "recovery_attempt:",
+        "run-name: Claude Issue Queue issue-",
         "permissions:",
     )
     required_supervisor = (
@@ -338,11 +404,13 @@ def _connected_exhaustion_snapshot(
         if started is None:
             raise RuntimeError("Queue start evidence disappeared during audit")
         queue_run_id = int(started.get("queue_run_id") or 0)
+        expected_title = _attempt_run_title(issue_number, fingerprint, attempt)
         if (
             started.get("issue_number") != issue_number
             or started.get("attempt") != attempt
             or started.get("request_fingerprint") != fingerprint
             or started.get("default_sha") != expected_default_sha
+            or started.get("expected_run_title") != expected_title
             or started.get("notification") is not False
             or queue_run_id <= 0
         ):
@@ -355,6 +423,7 @@ def _connected_exhaustion_snapshot(
             or run.get("event") != "workflow_dispatch"
             or run.get("head_branch") != runtime.DEFAULT_BRANCH
             or run.get("head_sha") != expected_default_sha
+            or run.get("display_title") != expected_title
             or run.get("status") != "completed"
         ):
             raise RuntimeError("Queue run evidence failed exact connected audit")
@@ -376,6 +445,7 @@ def _connected_exhaustion_snapshot(
                 "attempt": attempt,
                 "implement_conclusion": implement[0].get("conclusion"),
                 "queue_run_id": queue_run_id,
+                "run_title": expected_title,
             }
         )
     return {
