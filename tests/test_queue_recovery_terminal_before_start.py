@@ -26,9 +26,9 @@ class QueueRecoveryTerminalBeforeStartTest(unittest.TestCase):
                 sys.modules.pop(name, None)
             return importlib.import_module("scripts.supervisor_queue_recovery_v2")
 
-    def test_failed_cancelled_and_skipped_prepare_are_persisted_not_started(self):
+    def test_terminal_prepare_conclusions_are_persisted_not_started(self):
         module = self._load()
-        for conclusion in ("failure", "cancelled", "skipped"):
+        for conclusion in ("failure", "cancelled", "skipped", "timed_out"):
             with self.subTest(conclusion=conclusion), patch.object(
                 module,
                 "_intent_identity",
@@ -70,7 +70,7 @@ class QueueRecoveryTerminalBeforeStartTest(unittest.TestCase):
             "fixed_workflow": module.recovery.QUEUE_WORKFLOW_FILE,
             "issue_number": 12,
             "notification": False,
-            "prepare_conclusion": "failure",
+            "prepare_conclusion": "timed_out",
             "queue_run_id": 901,
             "request_fingerprint": FINGERPRINT,
             "trusted_workflow_path": module.recovery.QUEUE_WORKFLOW_PATH,

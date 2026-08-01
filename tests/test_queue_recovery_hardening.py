@@ -97,6 +97,89 @@ class QueueRecoveryHardeningTest(unittest.TestCase):
                 module.guarded_record_exhaustion(12, FINGERPRINT, ["retry-1.json", "retry-2.json", "retry-3.json"])
         record.assert_not_called()
 
+    def test_connected_exhaustion_accepts_timed_out_prepare(self):
+        module = self._load()
+        issue_number = 12
+        retry_records = ["retry-1.json", "retry-2.json", "retry-3.json"]
+        records = retry_records + [
+            "retry-1-terminal.json",
+            "retry-2-terminal.json",
+            "retry-3-terminal.json",
+        ]
+
+        def api(path):
+            if path == f"repos/{module.runtime.REPO}":
+                return {"full_name": module.runtime.REPO, "default_branch": "main"}
+            if "/actions/workflows/" in path:
+                filename = path.rsplit("/", 1)[-1]
+                workflow_paths = {
+                    module.recovery.QUEUE_WORKFLOW_FILE: module.recovery.QUEUE_WORKFLOW_PATH,
+                    "ci-reconcile.yml": ".github/workflows/ci-reconcile.yml",
+                    "supervisor.yml": ".github/workflows/supervisor.yml",
+                }
+                return {"path": workflow_paths[filename], "state": "active"}
+            run_id = int(path.rsplit("/", 1)[-1])
+            attempt = run_id - 700
+            return {
+                "repository": {"full_name": module.runtime.REPO},
+                "path": f"{module.recovery.QUEUE_WORKFLOW_PATH}@main",
+                "event": "workflow_dispatch",
+                "head_branch": "main",
+                "head_sha": DEFAULT_SHA,
+                "display_title": module._attempt_run_title(issue_number, FINGERPRINT, attempt),
+                "status": "completed",
+            }
+
+        def payload(path):
+            attempt = int(path.split("retry-")[1].split("-")[0])
+            return {
+                "attempt": attempt,
+                "default_sha": DEFAULT_SHA,
+                "expected_run_title": module._attempt_run_title(issue_number, FINGERPRINT, attempt),
+                "fixed_workflow": module.recovery.QUEUE_WORKFLOW_FILE,
+                "issue_number": issue_number,
+                "notification": False,
+                "prepare_conclusion": "timed_out",
+                "queue_run_id": 700 + attempt,
+                "request_fingerprint": FINGERPRINT,
+                "trusted_workflow_path": module.recovery.QUEUE_WORKFLOW_PATH,
+            }
+
+        queue_text = "\n".join((
+            "workflow_dispatch:", "trusted_supervisor:", "trusted_run_id:",
+            "request_fingerprint:", "recovery_attempt:",
+            "run-name: Claude Issue Queue issue-",
+            'expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"',
+            "permissions:",
+        ))
+        reconcile_text = "\n".join((
+            'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]',
+            "queue_recovery:", "actions: write", "contents: write", "issues: read",
+            "pull-requests: read", "python -m scripts.supervisor_queue_recovery_v3",
+        ))
+        supervisor_text = "\n".join((
+            "actions: read", "checks: read", "contents: write", "issues: write",
+            "pull-requests: write", "python -m scripts.supervisor_final_guard",
+        ))
+        with patch.object(module.runtime, "api", side_effect=api), patch.object(
+            module.runtime, "api_key_pages",
+            return_value=[{"name": "prepare", "status": "completed", "conclusion": "timed_out"}],
+        ), patch.object(module.runtime, "current_default_sha", return_value=DEFAULT_SHA), patch.object(
+            module.recovery, "_revalidate_request"
+        ), patch.object(module.recovery, "_active_queue_run_exists", return_value=False), patch.object(
+            module, "_fetch_text", side_effect=[queue_text, reconcile_text, supervisor_text]
+        ), patch.object(module, "_original_list_records", return_value=records), patch.object(
+            module, "_record_payload", side_effect=payload
+        ):
+            snapshot = module._connected_exhaustion_snapshot(
+                issue_number, FINGERPRINT, DEFAULT_SHA, retry_records
+            )
+        self.assertTrue(snapshot["completed"])
+        self.assertEqual(
+            [item["prepare_conclusion"] for item in snapshot["run_evidence"]],
+            ["timed_out"] * 3,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

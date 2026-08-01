@@ -15,6 +15,9 @@ from scripts import supervisor_runtime as runtime
 QUEUE_START_TIMEOUT_SECONDS = 720
 QUEUE_START_POLL_SECONDS = 5
 QUEUE_RECONCILE_GRACE_SECONDS = 30
+TERMINAL_PREPARE_CONCLUSIONS = frozenset(
+    {"failure", "cancelled", "skipped", "timed_out"}
+)
 _original_list_records = recovery._list_records
 
 
@@ -278,7 +281,7 @@ def _record_terminal_before_start(
     prepare_conclusion: str,
 ) -> bool:
     """Persist one exact failed attempt without claiming implementation started."""
-    if queue_run_id <= 0 or prepare_conclusion not in {"failure", "cancelled", "skipped"}:
+    if queue_run_id <= 0 or prepare_conclusion not in TERMINAL_PREPARE_CONCLUSIONS:
         raise RuntimeError("Queue terminal-before-start evidence is invalid")
     recovery._revalidate_request(issue_number, fingerprint)
     if runtime.current_default_sha() != expected_default_sha:
@@ -333,7 +336,7 @@ def _reconcile_attempt_run(
                 raise RuntimeError("Queue retry jobs are ambiguous")
             if prepare and prepare[0].get("status") == "completed":
                 conclusion = str(prepare[0].get("conclusion") or "")
-                if conclusion in {"failure", "cancelled", "skipped"}:
+                if conclusion in TERMINAL_PREPARE_CONCLUSIONS:
                     if run.get("status") != "completed":
                         raise RuntimeError("Queue prepare was terminal before its run completed")
                     return "terminal", selected_run_id, conclusion
@@ -391,7 +394,7 @@ def guarded_dispatch_retry(issue_number: int, fingerprint: str, attempt: int) ->
             != _attempt_run_title(issue_number, fingerprint, attempt)
             or terminal.get("fixed_workflow") != recovery.QUEUE_WORKFLOW_FILE
             or terminal.get("trusted_workflow_path") != recovery.QUEUE_WORKFLOW_PATH
-            or terminal.get("prepare_conclusion") not in {"failure", "cancelled", "skipped"}
+            or terminal.get("prepare_conclusion") not in TERMINAL_PREPARE_CONCLUSIONS
             or int(terminal.get("queue_run_id") or 0) <= 0
             or terminal.get("notification") is not False
         ):
@@ -588,7 +591,7 @@ def _connected_exhaustion_snapshot(
                 or outcome.get("trusted_workflow_path") != recovery.QUEUE_WORKFLOW_PATH
                 or outcome.get("prepare_conclusion") != prepare_conclusion
                 or prepare[0].get("status") != "completed"
-                or prepare_conclusion not in {"failure", "cancelled", "skipped"}
+                or prepare_conclusion not in TERMINAL_PREPARE_CONCLUSIONS
             ):
                 raise RuntimeError("Queue terminal prepare evidence failed audit")
             run_evidence.append(
