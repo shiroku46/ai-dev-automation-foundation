@@ -30,7 +30,11 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self._clear_repository_bound_modules()
 
     @staticmethod
-    def _task_scope(checks=("CI", "product:test"), risk="low", paths=("docs/**",)):
+    def _task_scope(
+        checks=("CI", "product:test"),
+        risk="low",
+        paths=("docs/user-guide.md",),
+    ):
         path_lines = "\n".join(f"- {path}" for path in paths)
         check_lines = "\n".join(f"- {check}" for check in checks)
         return f"""<!-- foundation-task-scope
