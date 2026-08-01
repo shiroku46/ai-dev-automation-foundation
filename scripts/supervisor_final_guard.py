@@ -37,33 +37,13 @@ def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
     return issue_number
 
 
-def request_codex_without_provider_mention(pr_number: int, sha: str) -> None:
-    """Persist one exact-head pending marker without invoking a provider bot."""
+def request_codex_exact_head(pr_number: int, sha: str) -> None:
+    """Dispatch one idempotent provider review request bound to the exact head."""
     if not isinstance(pr_number, int) or pr_number <= 0:
         raise ValueError("Pull Request number must be a positive integer")
     if not runtime.EXACT_SHA.fullmatch(sha):
-        raise ValueError("Codex request marker requires one exact candidate SHA")
-    marker = f"<!-- foundation-codex-request:{sha} -->"
-    comments = runtime.api_list(
-        f"repos/{runtime.REPO}/issues/{pr_number}/comments?per_page=100"
-    )
-    if any(
-        (item.get("user") or {}).get("login") == runtime.ACTIONS_LOGIN
-        and marker in str(item.get("body") or "")
-        and item.get("created_at") == item.get("updated_at")
-        for item in comments
-    ):
-        return
-    runtime.comment(
-        pr_number,
-        (
-            f"{marker}\n"
-            "Exact-head Codex review is pending trusted automation for "
-            f"`{sha}`.\n\n"
-            "- notification: `false`\n"
-            "- required_human_action: `null`"
-        ),
-    )
+        raise ValueError("Codex review request requires one exact candidate SHA")
+    _original_request_codex(pr_number, sha)
 
 
 def guarded_native_workflow_evidence(sha: str, pr_number: int):
@@ -147,7 +127,7 @@ def guarded_gh(*args: str) -> str:
 
 
 def main() -> int:
-    runtime.request_codex = request_codex_without_provider_mention
+    runtime.request_codex = request_codex_exact_head
     runtime.native_workflow_evidence = guarded_native_workflow_evidence
     runtime.gh = guarded_gh
     return runtime.main()
