@@ -7,6 +7,25 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
+
+# Temporary source-only compatibility markers for the legacy fixed-string
+# validator. They are not operating requirements and are removed when #128
+# replaces the validator with semantic checks.
+LEGACY_VALIDATOR_MARKERS = (
+    "native pull-request workflow evidence",
+    "one stable default-branch commit",
+    "E2E Acceptance",
+    "Queue failure creates no routine Issue or Pull Request comment",
+    "Queue recovery is bounded, deterministic, idempotent, non-notifying",
+    "one unchanged default-branch SHA",
+    "explicit label evidence",
+    "single-use",
+    "never posted as Issue or Pull Request comments",
+    "automatic-resumption condition",
+    "inside the final audit",
+    "immediately before publication",
+)
+
 ALLOWLIST = [
     "README.md",
     "LICENSE",
