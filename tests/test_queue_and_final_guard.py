@@ -29,6 +29,20 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         # later Queue recovery tests load their own repository-bound constants.
         self._clear_repository_bound_modules()
 
+    @staticmethod
+    def _task_scope(checks=("CI", "product:test"), risk="low", paths=("docs/**",)):
+        path_lines = "\n".join(f"- {path}" for path in paths)
+        check_lines = "\n".join(f"- {check}" for check in checks)
+        return f"""<!-- foundation-task-scope
+risk: {risk}
+paths:
+{path_lines}
+operation: perform the bounded task
+prohibited: no Secrets, deployment, production, or unrelated changes
+checks:
+{check_lines}
+-->"""
+
     def test_queue_failure_is_non_notifying_and_recovery_is_separated(self):
         queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
         finalize = queue.split("\n  finalize:\n", 1)[1]
@@ -147,6 +161,70 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         body = posted.call_args.args[1]
         self.assertIn(f"foundation-review-required:{CANDIDATE_SHA}:protected", body)
         self.assertNotIn("@codex", body)
+
+    def test_declared_task_checks_require_successful_exact_head_evidence(self):
+        guard = self._load_guard()
+        issue_body = self._task_scope()
+        native_evidence = [{"display_name": "CI"}]
+        successful_product_check = {
+            "name": "product:test",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        with patch.object(
+            guard.runtime,
+            "api_key_pages",
+            return_value=[successful_product_check],
+        ):
+            self.assertEqual(
+                guard._missing_required_task_checks(
+                    issue_body, CANDIDATE_SHA, native_evidence
+                ),
+                [],
+            )
+
+    def test_missing_or_failed_declared_task_check_blocks_gate(self):
+        guard = self._load_guard()
+        issue_body = self._task_scope()
+        native_evidence = [{"display_name": "CI"}]
+        failed_product_check = {
+            "name": "product:test",
+            "status": "completed",
+            "conclusion": "failure",
+        }
+        with patch.object(
+            guard.runtime,
+            "api_key_pages",
+            return_value=[failed_product_check],
+        ):
+            self.assertEqual(
+                guard._missing_required_task_checks(
+                    issue_body, CANDIDATE_SHA, native_evidence
+                ),
+                ["product:test"],
+            )
+
+    def test_guard_refuses_stable_gate_when_declared_check_is_missing(self):
+        guard = self._load_guard()
+        live = self._live_pr(12)
+        issue = {"body": self._task_scope()}
+        with patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
+            guard.runtime, "attestation_attempts", return_value=[{"success": True}]
+        ), patch.object(
+            guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
+        ), patch.object(
+            guard.runtime, "api", return_value=live
+        ), patch.object(
+            guard, "_authorized_source_snapshot", return_value=(ISSUE_NUMBER, issue)
+        ), patch.object(
+            guard.runtime, "api_key_pages", return_value=[]
+        ):
+            clean, evidence = guard.guarded_native_workflow_evidence(
+                CANDIDATE_SHA, 12
+            )
+        self.assertFalse(clean)
+        self.assertIsNone(guard._verified_gate)
+        self.assertEqual(evidence[-1]["missing_task_checks"], ["product:test"])
 
     def test_guard_stores_stable_gate_after_checks_and_scope(self):
         guard = self._load_guard()
