@@ -269,16 +269,14 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             self.assertEqual(guard.guarded_gh("api", "repos/example/foundation-e2e"), "ok")
         delegated.assert_called_once_with("api", "repos/example/foundation-e2e")
 
-    def test_machine_codex_marker_is_non_notifying(self):
+    def test_exact_head_codex_request_delegates_to_provider_dispatch(self):
         guard = self._load_guard()
-        with patch.object(guard.runtime, "api_list", return_value=[]), patch.object(
-            guard.runtime, "comment"
-        ) as comment:
-            guard.request_codex_without_provider_mention(22, CANDIDATE_SHA)
-        body = comment.call_args.args[1]
-        self.assertNotIn("@codex", body)
-        self.assertIn("notification: `false`", body)
-        self.assertIn("required_human_action: `null`", body)
+        delegated = Mock()
+        with patch.object(guard, "_original_request_codex", delegated):
+            guard.request_codex_exact_head(22, CANDIDATE_SHA)
+        delegated.assert_called_once_with(22, CANDIDATE_SHA)
+        with self.assertRaises(ValueError):
+            guard.request_codex_exact_head(22, "not-a-sha")
 
     def test_main_installs_all_final_guards_before_runtime(self):
         guard = self._load_guard()
@@ -287,7 +285,7 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             self.assertEqual(guard.main(), 0)
         self.assertIs(guard.runtime.native_workflow_evidence, guard.guarded_native_workflow_evidence)
         self.assertIs(guard.runtime.gh, guard.guarded_gh)
-        self.assertIs(guard.runtime.request_codex, guard.request_codex_without_provider_mention)
+        self.assertIs(guard.runtime.request_codex, guard.request_codex_exact_head)
         delegated.assert_called_once_with()
 
 
