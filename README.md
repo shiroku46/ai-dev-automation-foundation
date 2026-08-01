@@ -1,22 +1,42 @@
 # AI Development Automation Foundation
 
-A public, reusable, history-free foundation for guarded AI-assisted development on GitHub.
+A public, reusable foundation for practical AI-assisted development on GitHub. The current design favors a small, understandable minimum safety baseline over maximum-defense gates that repeatedly block ordinary work.
 
 ## What this repository provides
 
-- read-only CI that is safe for forked pull requests;
-- an owner-authorized Claude issue queue;
-- bounded reconciliation for missing trusted checks;
-- a deterministic recovery and merge decision engine;
-- a default-branch-controlled supervisor that never executes proposed-branch code with write permissions;
-- a Bootstrap generator for installing the same controls in another repository;
-- security, export, workflow, and policy regression tests.
+- a Phase 0 startup contract for GitHub/Codex authorization, exact-repository Codex Environment creation, Claude credential installation, and harmless acceptance testing;
+- an owner-authorized Claude Issue Queue;
+- read-only exact-SHA Foundation checks that do not expose Secrets or write permission to proposed code;
+- one machine-readable `foundation-task-scope` contract for paths, risk, operation, prohibited effects, and required checks;
+- low, standard, and protected review tiers;
+- exact GitHub-visible remote-head verification and expected-head merge protection;
+- a default-branch-controlled coordinator and bounded fallback/recovery path;
+- a Bootstrap generator for installing the same policy into another repository;
+- export, workflow, policy, and regression tests.
 
-## Safety model
+## Minimum safety model
 
-Untrusted pull-request code runs only in jobs with `contents: read` and without Secrets, OIDC, or write permissions. Jobs that can comment, relabel, dispatch, close, mark ready, or merge operate only from the default branch, inspect immutable current SHAs, require same-repository provenance, use fixed workflow names and refs, bound their candidate set, and use an expected-head-SHA merge guard.
+The required boundaries are:
 
-The queue accepts issue creation or an exact standalone `/claude-run` comment only when `github.actor` is the configured owner. A separate default-branch-only trusted dispatch path is available to the supervisor.
+- no automation direct push to the default branch;
+- exact GitHub-visible remote SHA for checks, review, readiness, and merge;
+- one trusted owner-authored scope covering every changed and renamed path;
+- protected risk for workflows, permissions, authentication/Secret interfaces, supervisor/security policy, settings, billing, deployment/production, or destructive operations;
+- no Secret value exposure and no candidate code in Secret/OIDC/write-capable jobs;
+- same-repository and fixed-workflow boundaries;
+- exact-head Foundation and configured product checks;
+- one final live recheck and expected-head merge protection;
+- separate explicit authorization for deployment and production mutation.
+
+See [`docs/MINIMUM_SAFETY_PROFILE.md`](docs/MINIMUM_SAFETY_PROFILE.md) and [`docs/OPERATING_RULES.md`](docs/OPERATING_RULES.md).
+
+## Review tiers
+
+- **Low risk:** scope and required exact-head checks; Codex is optional.
+- **Standard risk:** clean exact-SHA Codex or a trusted unedited coordinator review for the same SHA.
+- **Protected risk:** clean exact-SHA Codex requested through an owner/connector-supported route.
+
+GitHub Actions records a neutral review-required state and does not depend on a bot-authored provider mention. Provider setup guidance is not review evidence.
 
 ## Validation
 
@@ -32,8 +52,8 @@ python -m unittest discover -s tests
 python bootstrap/generator.py --target ../example-repository --owner YOUR_GITHUB_LOGIN
 ```
 
-Review the generated install checklist before enabling write-capable workflows. Repository Secrets are never generated, copied, or printed.
+Review the generated installation checklist. Complete Phase 0 before the first product Issue. Repository Secret values are never generated, copied, printed, or stored by the Foundation.
 
 ## Project status
 
-This public repository is the implementation source of truth. Earlier private sandboxes remain archives and are not imported into this history.
+This public repository is the implementation source of truth. The public E2E repository is the release-acceptance source. Earlier private sandboxes and superseded maximum-defense procedures are archives only.
