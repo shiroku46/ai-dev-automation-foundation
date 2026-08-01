@@ -52,6 +52,14 @@ def is_protected(path: str) -> bool:
     return normalized in PROTECTED_EXACT or normalized.startswith(PROTECTED_PREFIXES)
 
 
+def _pattern_is_protected(pattern: str) -> bool:
+    normalized = normalize_path(pattern)
+    base = normalized[:-3].rstrip("/") if normalized.endswith("/**") else normalized
+    if base in {".github", "bootstrap"}:
+        return True
+    return is_protected(base)
+
+
 def parse_issue_number(pr_body: str) -> int | None:
     match = re.search(r"(?im)\b(?:closes|fixes|resolves)\s+#(\d+)\b", pr_body or "")
     return int(match.group(1)) if match else None
@@ -126,7 +134,7 @@ def parse_task_scope(issue_body: str) -> TaskScope | None:
         raise ValueError("foundation-task-scope paths are required")
     if len(paths) != len(set(paths)):
         raise ValueError("foundation-task-scope paths must be unique")
-    if risk != "protected" and any(is_protected(path.rstrip("/**")) for path in paths):
+    if risk != "protected" and any(_pattern_is_protected(path) for path in paths):
         raise ValueError("protected paths require risk: protected")
     return TaskScope(
         risk=risk,
