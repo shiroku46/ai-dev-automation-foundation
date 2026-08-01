@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock, patch
 from pathlib import Path
 
+import scripts as scripts_package
 from scripts.supervisor_policy import is_protected
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,10 +15,19 @@ ISSUE_NUMBER = 129
 
 
 class QueueAndFinalGuardTest(unittest.TestCase):
+    @staticmethod
+    def _clear_repository_bound_modules():
+        for name in ("scripts.supervisor_final_guard", "scripts.supervisor_runtime"):
+            sys.modules.pop(name, None)
+        for attribute in ("supervisor_final_guard", "supervisor_runtime"):
+            if hasattr(scripts_package, attribute):
+                delattr(scripts_package, attribute)
+
     def tearDown(self):
-        # Do not leak repository-bound module constants into later test modules.
-        sys.modules.pop("scripts.supervisor_final_guard", None)
-        sys.modules.pop("scripts.supervisor_runtime", None)
+        # `from scripts import supervisor_runtime` can reuse the package
+        # attribute even after sys.modules is cleared. Remove both caches so
+        # later Queue recovery tests load their own repository-bound constants.
+        self._clear_repository_bound_modules()
 
     def test_queue_failure_is_non_notifying_and_recovery_is_separated(self):
         queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
@@ -45,8 +55,7 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             "AUTOMATION_OWNER": "owner",
         }
         with patch.dict(os.environ, environment, clear=False):
-            sys.modules.pop("scripts.supervisor_final_guard", None)
-            sys.modules.pop("scripts.supervisor_runtime", None)
+            self._clear_repository_bound_modules()
             return importlib.import_module("scripts.supervisor_final_guard")
 
     @staticmethod
