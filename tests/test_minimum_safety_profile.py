@@ -43,6 +43,70 @@ checks:
         )
         self.assertFalse(scope_is_authorized(["docs/outside.md"], body))
 
+    def test_fenced_scope_examples_are_not_authorization(self):
+        example = self._scope("low", ["docs/example.md"])
+        actual = self._scope("protected", ["scripts/supervisor_policy.py"])
+        body = f"""The following block is only an example:
+
+```text
+{example}
+```
+
+The actual authorization follows:
+
+{actual}
+"""
+        scope = parse_task_scope(body)
+        self.assertIsNotNone(scope)
+        self.assertEqual(scope.risk, "protected")
+        self.assertEqual(scope.paths, ("scripts/supervisor_policy.py",))
+        self.assertTrue(
+            scope_is_authorized(["scripts/supervisor_policy.py"], body)
+        )
+        self.assertFalse(scope_is_authorized(["docs/example.md"], body))
+
+    def test_fenced_example_without_actual_scope_falls_back_to_legacy(self):
+        example = self._scope("protected", [".github/**"])
+        body = f"""```markdown
+{example}
+## Allowed paths
+- forbidden/example.py
+```
+
+## Allowed paths
+- docs/actual.md
+"""
+        self.assertIsNone(parse_task_scope(body))
+        self.assertTrue(scope_is_authorized(["docs/actual.md"], body))
+        self.assertFalse(scope_is_authorized(["forbidden/example.py"], body))
+
+    def test_fenced_legacy_protected_example_is_ignored(self):
+        body = """```text
+<!-- foundation-protected-authorization
+paths:
+- .github/workflows/fake.yml
+-->
+```
+
+## Allowed paths
+- .github/workflows/real.yml
+
+<!-- foundation-protected-authorization
+paths:
+- .github/workflows/real.yml
+-->
+"""
+        self.assertTrue(
+            protected_scope_is_authorized(
+                [".github/workflows/real.yml"], body
+            )
+        )
+        self.assertFalse(
+            protected_scope_is_authorized(
+                [".github/workflows/fake.yml"], body
+            )
+        )
+
     def test_exactly_one_task_scope_block_is_required(self):
         valid = self._scope()
         with self.assertRaisesRegex(ValueError, "exactly one"):
