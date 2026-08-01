@@ -75,6 +75,7 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Immediately before merge, perform one final live PR/head/scope/check/review/mergeability recheck.\n"
         "- [ ] Merge only with the exact expected head SHA.\n"
         "- [ ] Routine failures use one idempotent status record and do not ask the owner to press Retry, approve, mark Ready, or merge.\n"
+        "- [ ] Legacy public-safe records on `automation-internal-stops` remain readable until the status migration is complete.\n"
         "- [ ] Deployment and production mutation remain separately authorized.\n",
         encoding="utf-8",
     )
