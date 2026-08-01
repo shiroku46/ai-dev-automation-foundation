@@ -50,27 +50,60 @@ checks:
         with self.assertRaisesRegex(ValueError, "exactly one"):
             parse_task_scope(f"{valid}\n<!-- foundation-task-scope\nrisk: low")
 
+    def test_scalar_scope_fields_and_sections_are_unique(self):
+        cases = {
+            "risk": self._scope().replace(
+                "risk: standard", "risk: standard\nrisk: protected"
+            ),
+            "operation": self._scope().replace(
+                "operation: implement the bounded task",
+                "operation: implement the bounded task\noperation: another operation",
+            ),
+            "prohibited": self._scope().replace(
+                "prohibited: no Secrets, deployment, production, or unrelated changes",
+                "prohibited: no Secrets\nprohibited: no deployment",
+            ),
+            "paths": self._scope().replace(
+                "paths:\n", "paths:\n- src/a.py\npaths:\n", 1
+            ),
+            "checks": self._scope().replace(
+                "checks:\n", "checks:\n- lint\nchecks:\n", 1
+            ),
+        }
+        for field, body in cases.items():
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "exactly one"):
+                    parse_task_scope(body)
+
     def test_protected_paths_and_policy_documents_require_protected_risk(self):
-        protected_paths = (
+        protected_exact = (
             ".github/workflows/ci.yml",
-            ".github/**",
-            "bootstrap/**",
             "AGENTS.md",
             "CLAUDE.md",
+            "INSTALL_CHECKLIST.md",
             "docs/MINIMUM_SAFETY_PROFILE.md",
             "docs/OPERATING_RULES.md",
             "docs/PUBLIC_SECURITY_MODEL.md",
-            "docs/**",
+            "scripts/public_export_guard.py",
+            "scripts/validate_repository.py",
         )
-        for protected_path in protected_paths:
+        for protected_path in protected_exact:
             with self.subTest(protected_path=protected_path):
-                self.assertTrue(
-                    is_protected(protected_path)
-                    if not protected_path.endswith("/**")
-                    else True
-                )
+                self.assertTrue(is_protected(protected_path))
                 with self.assertRaisesRegex(ValueError, "protected paths"):
                     parse_task_scope(self._scope("standard", [protected_path]))
+
+        protected_patterns = (
+            ".github/**",
+            "bootstrap/**",
+            "docs/**",
+            "scripts/**",
+        )
+        for protected_pattern in protected_patterns:
+            with self.subTest(protected_pattern=protected_pattern):
+                with self.assertRaisesRegex(ValueError, "protected paths"):
+                    parse_task_scope(self._scope("standard", [protected_pattern]))
+
         body = self._scope("protected", [".github/**", "tests/**"])
         self.assertEqual(
             risk_for_changes([".github/workflows/ci.yml"], body),
@@ -79,6 +112,16 @@ checks:
         self.assertTrue(
             protected_scope_is_authorized([".github/workflows/ci.yml"], body)
         )
+
+    def test_installation_and_validator_files_cannot_be_low_risk(self):
+        for path in (
+            "INSTALL_CHECKLIST.md",
+            "scripts/public_export_guard.py",
+            "scripts/validate_repository.py",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValueError, "protected paths"):
+                    parse_task_scope(self._scope("low", [path]))
 
     def test_low_risk_is_restricted_to_non_runtime_paths(self):
         body = self._scope(
@@ -92,6 +135,7 @@ checks:
             "scripts/tool.py",
             "docs/**",
             "docs/OPERATING_RULES.md",
+            "INSTALL_CHECKLIST.md",
         ):
             with self.subTest(executable=executable):
                 with self.assertRaisesRegex(
