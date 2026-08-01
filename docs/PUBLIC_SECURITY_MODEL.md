@@ -1,27 +1,41 @@
 # Public workflow security model
 
+The Foundation keeps a small set of controls that directly prevent material damage. Risk-tier review and operational convenience may vary, but the boundaries below are mandatory.
+
 | Context | Code source | Permissions | Secrets |
 |---|---|---:|---:|
-| Fork or same-repository Pull Request checks | exact Pull Request head | `contents: read` | none |
-| Queue implementation | default-branch workflow plus bounded Claude write step | bounded repository write | one configured Claude credential |
-| Trusted exact-SHA validation | fixed current default-branch workflow; candidate executes only in isolated jobs | `contents: read` in candidate jobs | none |
-| Reconciliation | current default branch | fixed Actions dispatch write | none |
-| Supervisor | current default branch | bounded Issue/Pull Request/Actions writes | none |
+| Pull Request checks | exact GitHub-visible Pull Request head | `contents: read` | none |
+| Queue implementation | fixed default-branch workflow plus bounded same-repository writer | bounded repository write | configured Claude credential only where required |
+| Trusted exact-SHA validation | fixed default-branch workflow; candidate runs only in isolated jobs | `contents: read` in candidate jobs | none |
+| Reconciliation/control plane | current default branch | fixed, bounded API permissions | none |
+| Final merge | current default-branch guard | bounded Pull Request/content mutation | none |
 
-Write-capable jobs never check out or execute a proposed branch. They inspect metadata through fixed GitHub APIs and dispatch only the allowlisted `trusted-checks.yml` workflow on the current default branch for an immutable candidate SHA.
+## Mandatory boundaries
 
-## Immutable attestation contract
+- Automation never pushes directly to the default branch and never force-updates a candidate branch.
+- GitHub-visible remote SHA is authoritative. Local-only commits and provider success claims are not merge evidence.
+- Proposed-branch code never executes in a job with Secrets, OIDC, or repository write permission.
+- Every changed and previous renamed path must match one trusted owner-authored task scope.
+- Protected paths and operations require `risk: protected` and a nonempty authorized operation/prohibited-effects statement.
+- Candidate or Issue text cannot select arbitrary repositories, refs, workflows, actions, or commands.
+- Exact-head Foundation checks and configured product lint, test, type-check, and build checks must succeed.
+- A final live recheck binds source, scope, checks, applicable review evidence, mergeability, hold state, and expected head immediately before merge.
+- Deployment, production, billing, repository-setting, authentication, Secret-interface, and destructive mutations require separate explicit protected authorization.
 
-The trusted evidence is GitHub-owned workflow-run and workflow-job metadata. The supervisor accepts an attempt only when all of the following remain true:
+## Review evidence
 
-- the workflow ID and path identify `.github/workflows/trusted-checks.yml`;
-- the workflow run used `workflow_dispatch` on the current default branch and its workflow SHA is the current default-branch SHA;
-- the actor is the repository owner, configured owner, or `github-actions[bot]`;
-- the display title contains the exact full candidate SHA and the fixed authorization job proves that SHA is still an eligible same-repository Pull Request head;
-- candidate execution checks out that immutable input SHA with persisted credentials disabled and verifies `git rev-parse HEAD` before validation;
-- exactly one job named `CI / validate` and exactly one job named `Unit Tests / test` belong to the recognized run ID and carry that run's trusted default-branch `head_sha`;
-- the run and both required jobs are completed successfully.
+Review is risk-based rather than universally provider-blocking:
 
-Foreign-workflow, wrong-actor, wrong-title, wrong-path, or stale-default-branch runs are rejected before attempt classification and can never authorize progress. Once a run passes those identity gates, missing, duplicate, cancelled, failed, incomplete, wrong-run, or wrong-workflow-SHA job evidence fails closed and consumes the bounded recognized-attempt budget. Candidate-authored commit statuses and custom Check Runs are not merge-authorizing evidence.
+- low risk: exact-head scope and checks; external review optional;
+- standard risk: clean exact-SHA Codex or a trusted unedited nonempty coordinator review marker for the same SHA;
+- protected risk: clean exact-SHA Codex requested through an owner/connector-supported path.
 
-Actions are pinned to immutable commit SHAs. Candidate scans and recognized retry attempts are bounded. Same-repository provenance and explicit protected-path authorization are mandatory. Idempotency markers prevent duplicate comments and repeated actions. Merge requires clean exact-SHA Codex evidence, mergeability, and `expected_head_sha` protection.
+A provider setup message, a stale SHA, an edited or untrusted marker, an empty summary, or unresolved review threads cannot authorize progress. GitHub Actions may publish a neutral exact-SHA review-required marker but does not use a bot-authored provider mention as the active review request.
+
+## Merge race protection
+
+The controller keeps one stable evidence snapshot while work is in progress, then re-fetches the live Pull Request and exact head immediately before mutation. Merge uses the expected head SHA. If the head changes, all prior checks and reviews become stale. A rejected pre-mutation attempt may be retried after fresh evidence; a successful merge consumes the gate.
+
+## Legacy compatibility
+
+Existing generated targets may still use immutable trusted workflow-run/job evidence, bounded recovery attempts, and public-safe `automation-internal-stops` records. These remain accepted during migration, but they do not replace the minimum boundaries above and are not required merely to make a low-risk change mergeable.
