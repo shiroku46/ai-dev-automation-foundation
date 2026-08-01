@@ -1,0 +1,28 @@
+{
+  "audit": {
+    "alternative_connected_paths": "trusted-checks.yml:active:324449305;ci-reconcile.yml:active:324405826;supervisor.yml:active:324405830;claude-queue.yml:active:324405828",
+    "changed_and_renamed_paths": "[\".github/workflows/ci-reconcile.yml\",\".github/workflows/claude-queue.yml\",\".github/workflows/supervisor.yml\",\"bootstrap/generator.py\",\"scripts/supervisor_final_guard.py\",\"scripts/supervisor_policy.py\",\"scripts/supervisor_queue_recovery.py\",\"scripts/supervisor_queue_recovery_v2.py\",\"scripts/supervisor_queue_recovery_v3.py\",\"scripts/validate_repository.py\",\"tests/test_bootstrap.py\",\"tests/test_queue_and_final_guard.py\",\"tests/test_queue_recovery.py\",\"tests/test_queue_recovery_final_races.py\",\"tests/test_queue_recovery_hardening.py\",\"tests/test_queue_workflow.py\"]",
+    "check_evidence": "[{\"app\":\"github-actions\",\"conclusion\":\"failure\",\"name\":\"test\",\"status\":\"completed\"},{\"app\":\"github-actions\",\"conclusion\":\"failure\",\"name\":\"validate\",\"status\":\"completed\"}]",
+    "exact_head_sha": "fcb21908494c1feb5bbf53970cf475b5d8b857ca",
+    "human_only_connected_evidence": "not-applicable",
+    "idempotency": "automation-stops/pr-114/fcb21908494c1feb5bbf53970cf475b5d8b857ca/UNAUTHORIZED_CHANGED_PATH.json",
+    "issue": "#112",
+    "mergeability": "mergeable=True,mergeable_state=unstable",
+    "native_pull_request_workflow_evidence": "{\"clean\":false,\"runs\":[{\"conclusion\":\"failure\",\"display_name\":\"CI\",\"run_id\":30685570630,\"status\":\"completed\",\"updated_at\":\"2026-08-01T05:18:07Z\",\"workflow\":\"ci.yml\",\"workflow_id\":324405827},{\"conclusion\":\"failure\",\"display_name\":\"Unit Tests\",\"run_id\":30685570643,\"status\":\"completed\",\"updated_at\":\"2026-08-01T05:18:08Z\",\"workflow\":\"unit-tests.yml\",\"workflow_id\":324405831}]}",
+    "permissions_and_credentials": "automation_owner_permission=admin,secret_values_not_requested=true",
+    "pull_request": "#114",
+    "reason_code": "UNAUTHORIZED_CHANGED_PATH",
+    "repository_metadata": "visibility=public,default_branch=main,initial_and_final_head_confirmed=true",
+    "review_and_provenance": "codex=pending,codex_timestamp=None,trusted_request_timestamp=None,unresolved_threads=True",
+    "scope_and_authorization": "issue=state=open,trusted_author=True,authorization=all_paths=False,protected_paths=False",
+    "workflow_run_and_job_evidence": "[]"
+  },
+  "detail": "Changed or renamed paths exceed the trusted Issue allowlist.",
+  "exact_head_sha": "fcb21908494c1feb5bbf53970cf475b5d8b857ca",
+  "issue_number": 112,
+  "notification": false,
+  "pull_request_number": 114,
+  "reason_code": "UNAUTHORIZED_CHANGED_PATH",
+  "required_human_action": null,
+  "schema_version": 1
+}
