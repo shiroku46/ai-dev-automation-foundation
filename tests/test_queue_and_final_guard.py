@@ -14,6 +14,11 @@ ISSUE_NUMBER = 129
 
 
 class QueueAndFinalGuardTest(unittest.TestCase):
+    def tearDown(self):
+        # Do not leak repository-bound module constants into later test modules.
+        sys.modules.pop("scripts.supervisor_final_guard", None)
+        sys.modules.pop("scripts.supervisor_runtime", None)
+
     def test_queue_failure_is_non_notifying_and_recovery_is_separated(self):
         queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
         finalize = queue.split("\n  finalize:\n", 1)[1]
@@ -141,7 +146,7 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             guard.runtime, "attestation_attempts", return_value=[{"success": True}]
         ), patch.object(guard, "_native_workflow_evidence", return_value=(True, ["native"])), patch.object(
             guard.runtime, "api", return_value=live
-        ), patch.object(guard, "source_and_scope_minimum", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)):
+        ), patch.object(guard, "source_and_scope", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)):
             self.assertEqual(
                 guard.guarded_native_workflow_evidence(CANDIDATE_SHA, 12),
                 (True, ["native"]),
@@ -173,7 +178,7 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         live = self._live_pr(20)
         delegated = Mock(return_value="merged")
         with patch.object(guard.runtime, "api", return_value=live), patch.object(
-            guard, "source_and_scope_minimum", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)
+            guard, "source_and_scope", return_value=(ISSUE_NUMBER, {}, ["docs/a.md"], None)
         ), patch.object(guard, "_original_current_default_sha", return_value=DEFAULT_SHA), patch.object(
             guard, "_original_gh", delegated
         ):
