@@ -344,15 +344,12 @@ jobs:
       RESOLVE_RESULT: ${{ needs.resolve.result }}
       VERIFY_RESULT: ${{ needs.verify.result }}
       PUBLISH_RESULT: ${{ needs.publish.result }}
-      PR_URL: ${{ needs.publish.outputs.pr_url }}
       TARGET_SHA: ${{ needs.resolve.outputs.branch_sha }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Publish deduplicated Queue state without branch execution
+      - name: Publish successful Queue state or retain non-notifying failure evidence
         run: |
           set -euo pipefail
           gh label create ai-review --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "Automation candidate awaits exact-SHA evidence" --force
-          gh label create ai-blocked --repo "$GITHUB_REPOSITORY" --color B60205 --description "Automation stopped after self-resolution" --force
 
           if [ "$DUPLICATE_SKIPPED" = "true" ]; then
             exit 0
@@ -363,17 +360,12 @@ jobs:
             exit 0
           fi
 
-          marker="<!-- foundation-queue-stop:${GITHUB_RUN_ID} -->"
-          if ! gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" --jq '.[].body' | grep -Fq "$marker"; then
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$marker
-          ## Structured Queue stop
-
-          - reason_code: \`QUEUE_PIPELINE_FAILED\`
-          - issue: \`#$ISSUE_NUMBER\`
-          - immutable_sha: \`${TARGET_SHA:-unavailable}\`
-          - stages: implement=$IMPLEMENT_RESULT resolve=$RESOLVE_RESULT verify=$VERIFY_RESULT publish=$PUBLISH_RESULT
-          - workflow_run: $RUN_URL
-          - self_resolution_audit: admission, source Issue, duplicate state, branch identity, exact SHA, read-only verification, and publication state were checked.
-          - no credential, Secret value, or provider diagnostic is included."
-          fi
-          gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label ai-blocked --remove-label ai-review || true
+          {
+            echo "## Queue pipeline incomplete"
+            echo
+            echo "- issue: #$ISSUE_NUMBER"
+            echo "- immutable_sha: ${TARGET_SHA:-unavailable}"
+            echo "- stages: implement=$IMPLEMENT_RESULT resolve=$RESOLVE_RESULT verify=$VERIFY_RESULT publish=$PUBLISH_RESULT"
+            echo "- notification: false"
+            echo "- next: merged default-branch supervisor reconciliation performs the bounded self-resolution audit and internal-stop decision"
+          } >> "$GITHUB_STEP_SUMMARY"
