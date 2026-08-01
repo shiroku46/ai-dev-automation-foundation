@@ -68,11 +68,17 @@ class BootstrapTest(unittest.TestCase):
             self.assertFalse((target / "bootstrap").exists())
             self.assertFalse((target / "tests").exists())
 
-            unit_tests = (target / ".github/workflows/unit-tests.yml").read_text(encoding="utf-8")
-            self.assertIn("if [ -d tests ]; then", unit_tests)
-            self.assertIn("python -m unittest discover -s tests", unit_tests)
-            self.assertIn("python scripts/public_export_guard.py .", unit_tests)
-            self.assertIn("python scripts/validate_repository.py", unit_tests)
+            for workflow_path in (
+                ".github/workflows/unit-tests.yml",
+                ".github/workflows/claude-queue.yml",
+                ".github/workflows/trusted-checks.yml",
+            ):
+                with self.subTest(workflow_path=workflow_path):
+                    workflow = (target / workflow_path).read_text(encoding="utf-8")
+                    self.assertIn("if [ -d tests ]; then", workflow)
+                    self.assertIn("python -m unittest discover -s tests", workflow)
+                    self.assertIn("python scripts/public_export_guard.py .", workflow)
+                    self.assertIn("python scripts/validate_repository.py", workflow)
 
             result = run_generated_unit_tests_path(target)
             self.assertEqual(

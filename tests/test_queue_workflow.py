@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 QUEUE = ROOT / ".github/workflows/claude-queue.yml"
+TRUSTED_CHECKS = ROOT / ".github/workflows/trusted-checks.yml"
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
 HEREDOC = re.compile(r"(?ms)^\s*cat\s+>.*?<<EOF\s*$.*?^\s*EOF\s*$")
 
@@ -108,14 +109,29 @@ class QueueWorkflowTest(unittest.TestCase):
         self.assertIn("permissions:\n      contents: read", verify)
         self.assertIn("persist-credentials: false", verify)
         self.assertIn('test "$(git rev-parse HEAD)" = "$TARGET_SHA"', verify)
+        self.assertIn("if [ -d tests ]; then", verify)
+        self.assertIn("python -m unittest discover -s tests", verify)
         self.assertIn("python scripts/public_export_guard.py .", verify)
         self.assertIn("python scripts/validate_repository.py", verify)
-        self.assertIn("python -m unittest discover -s tests", verify)
         self.assertNotIn("contents: write", verify)
         self.assertNotIn("issues: write", verify)
         self.assertNotIn("pull-requests: write", verify)
         self.assertNotIn("id-token: write", verify)
         self.assertNotIn("secrets.", verify)
+
+    def test_trusted_exact_sha_tests_use_generated_target_fallback(self):
+        text = TRUSTED_CHECKS.read_text(encoding="utf-8")
+        test_target = job_block(text, "test_target")
+        self.assertIn("permissions:\n      contents: read", test_target)
+        self.assertIn("persist-credentials: false", test_target)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$TARGET_SHA"', test_target)
+        self.assertIn("if [ -d tests ]; then", test_target)
+        self.assertIn("python -m unittest discover -s tests", test_target)
+        self.assertIn("python scripts/public_export_guard.py .", test_target)
+        self.assertIn("python scripts/validate_repository.py", test_target)
+        self.assertNotIn("contents: write", test_target)
+        self.assertNotIn("id-token: write", test_target)
+        self.assertNotIn("secrets.", test_target)
 
     def test_publication_and_finalization_do_not_checkout_or_execute_candidate(self):
         publish = job_block(self.text, "publish", "finalize")
