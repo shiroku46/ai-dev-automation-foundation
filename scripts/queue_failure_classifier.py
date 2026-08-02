@@ -99,7 +99,6 @@ def classify_conclusion(
 
     low = (error_detail or "").lower()
 
-    # Only explicit tool-policy evidence may override an authentication signal.
     policy_signals = (
         "tool policy",
         "tool permission",
@@ -113,7 +112,6 @@ def classify_conclusion(
     if permission_denials_count > 0 or any(signal in low for signal in policy_signals):
         return FailureClass.PERMISSION_CONTRACT
 
-    # Git/network publication failures stay automation-owned, including CONNECT 403.
     git_context = any(
         signal in low
         for signal in (
@@ -131,7 +129,6 @@ def classify_conclusion(
     ):
         return FailureClass.GIT_TRANSPORT
 
-    # Genuine credential/Secret failures require human UI action.
     auth_signals = (
         "401",
         "403",
@@ -180,23 +177,37 @@ def check_tool_permission_contract(
 ) -> list[str]:
     """Return required commands that the current tool policy does not permit.
 
-    The caller must abort before invoking the model when this returns a non-empty
-    list. Matching is case-insensitive and accepts a required base command when
-    at least one allowed command uses that base executable.
+    Matching is case-insensitive and whitespace-normalized. A bare required
+    executable (for example ``git``) is satisfied when any allowed specification
+    uses that executable. A required command with arguments must match an allowed
+    command exactly or extend an allowed argument-bearing command at a token
+    boundary. A bare allowlist entry never authorizes arbitrary subcommands.
     """
-    allowed: set[str] = set()
-    for command in allowed_bash_commands:
-        normalized = command.strip().lower()
-        if normalized:
-            allowed.add(normalized)
-            allowed.add(normalized.split()[0])
+    allowed_specs = [
+        " ".join(command.strip().lower().split())
+        for command in allowed_bash_commands
+        if command.strip()
+    ]
+    allowed_bases = {spec.split()[0] for spec in allowed_specs}
 
     denied: list[str] = []
     for command in required_commands:
-        normalized = command.strip().lower()
+        normalized = " ".join(command.strip().lower().split())
+        if not normalized:
+            denied.append(command)
+            continue
+
         parts = normalized.split()
-        base = parts[0] if parts else normalized
-        if base not in allowed and normalized not in allowed:
+        if len(parts) == 1:
+            permitted = normalized in allowed_bases
+        else:
+            permitted = any(
+                len(spec.split()) > 1
+                and (normalized == spec or normalized.startswith(spec + " "))
+                for spec in allowed_specs
+            )
+
+        if not permitted:
             denied.append(command)
     return denied
 
