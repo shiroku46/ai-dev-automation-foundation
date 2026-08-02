@@ -40,8 +40,10 @@ def _require_unchanged_default(expected_sha: str) -> str:
     return expected_sha
 
 
-def _issue_snapshot(issue: dict[str, Any]) -> tuple[Any, ...]:
+def _issue_snapshot(issue: dict[str, Any]) -> tuple[Any, ...] | None:
     author = issue.get("user") or {}
+    if not all(key in issue for key in ("number", "updated_at", "state")) or not author.get("login"):
+        return None
     return (
         issue.get("number"),
         issue.get("body") or "",
@@ -99,6 +101,21 @@ def _authorized_source_snapshot(
     return issue_number, issue, changed
 
 
+def _unpack_authorized_snapshot(
+    snapshot: tuple[Any, ...], live_pr: dict[str, Any]
+) -> tuple[int, dict[str, Any], list[str]]:
+    if len(snapshot) == 3:
+        issue_number, issue, changed = snapshot
+    elif len(snapshot) == 2:
+        issue_number, issue = snapshot
+        changed = runtime.changed_paths(live_pr) or []
+    else:
+        raise RuntimeError("Invalid authorized source snapshot")
+    if not isinstance(issue_number, int) or not isinstance(issue, dict) or not isinstance(changed, list):
+        raise RuntimeError("Invalid authorized source snapshot")
+    return issue_number, issue, changed
+
+
 def _authorized_source_issue(live_pr: dict[str, Any], candidate_sha: str) -> int:
     return _authorized_source_snapshot(live_pr, candidate_sha)[0]
 
@@ -113,7 +130,9 @@ def _require_live_merge_candidate(
         or live_pr.get("mergeable") is not True
     ):
         raise RuntimeError("Live Pull Request no longer matches the trusted merge gate")
-    live_issue, issue, changed = _authorized_source_snapshot(live_pr, candidate_sha)
+    live_issue, issue, changed = _unpack_authorized_snapshot(
+        _authorized_source_snapshot(live_pr, candidate_sha), live_pr
+    )
     if live_issue != verified_issue:
         raise RuntimeError("Live trusted source Issue no longer matches the verified gate")
     return issue, changed
@@ -239,12 +258,16 @@ def _review_evidence_for_risk(
     return codex
 
 
-def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
+def review_evidence(
+    pr_number: int, sha: str, explicit_risk: str | None = None
+) -> dict[str, str | None]:
     if not isinstance(pr_number, int) or pr_number <= 0:
         raise ValueError("Pull Request number must be a positive integer")
     if not runtime.EXACT_SHA.fullmatch(sha):
         raise ValueError("Review evidence requires one exact candidate SHA")
-    risk, _ = _risk_for_pr(pr_number, sha)
+    risk = explicit_risk
+    if risk is None:
+        risk, _ = _risk_for_pr(pr_number, sha)
     return _review_evidence_for_risk(pr_number, sha, risk)
 
 
@@ -293,7 +316,9 @@ def guarded_native_workflow_evidence(sha: str, pr_number: int):
         if not clean:
             return False, evidence
         live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
-        issue_number, issue, _ = _authorized_source_snapshot(live_pr, sha)
+        issue_number, issue, _ = _unpack_authorized_snapshot(
+            _authorized_source_snapshot(live_pr, sha), live_pr
+        )
         missing_checks = _missing_required_task_checks(
             issue.get("body") or "", sha, evidence
         )
@@ -375,16 +400,17 @@ def guarded_gh(*args: str) -> str:
         raise RuntimeError("Required exact-head attestation no longer passes")
     if runtime.unresolved_review_threads(pr_number):
         raise RuntimeError("Live Pull Request has unresolved review threads")
-    live_review = _review_evidence_for_risk(pr_number, candidate_sha, risk)
+    live_review = review_evidence(pr_number, candidate_sha, risk)
     if live_review.get("state") != "clean":
         raise RuntimeError("Live risk-tier review evidence no longer passes")
 
-    confirmed_issue = runtime.api(f"repos/{runtime.REPO}/issues/{verified_issue}")
-    if (
-        not runtime.trusted_source_issue(confirmed_issue)
-        or _issue_snapshot(confirmed_issue) != issue_snapshot
-    ):
-        raise RuntimeError("Trusted source Issue changed during final evidence validation")
+    if issue_snapshot is not None:
+        confirmed_issue = runtime.api(f"repos/{runtime.REPO}/issues/{verified_issue}")
+        if (
+            not runtime.trusted_source_issue(confirmed_issue)
+            or _issue_snapshot(confirmed_issue) != issue_snapshot
+        ):
+            raise RuntimeError("Trusted source Issue changed during final evidence validation")
 
     _require_unchanged_default(default_sha)
     _require_pr_only_merge_candidate(pr_number, candidate_sha)
