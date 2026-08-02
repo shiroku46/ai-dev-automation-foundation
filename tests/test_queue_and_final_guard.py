@@ -300,6 +300,34 @@ checks:
         self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER))
         delegated.assert_not_called()
 
+    def test_final_merge_revalidates_live_attestation(self):
+        guard = self._load_guard()
+        guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
+        args = (
+            "api", "--method", "PUT",
+            "repos/example/foundation/pulls/20/merge",
+            "-f", "merge_method=squash",
+            "-f", f"sha={CANDIDATE_SHA}",
+        )
+        live = self._live_pr(20)
+        issue = {"body": self._task_scope(checks=("CI",))}
+        delegated = Mock(return_value="merged")
+        with patch.object(guard.runtime, "api", return_value=live), patch.object(
+            guard, "_authorized_source_snapshot", return_value=(ISSUE_NUMBER, issue)
+        ), patch.object(
+            guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
+        ), patch.object(
+            guard.runtime, "api_key_pages", return_value=[]
+        ), patch.object(
+            guard.runtime, "attestation_attempts", return_value=[{"success": False}]
+        ), patch.object(
+            guard, "_original_current_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(guard, "_original_gh", delegated):
+            with self.assertRaisesRegex(RuntimeError, "attestation"):
+                guard.guarded_gh(*args)
+        self.assertEqual(guard._verified_gate, (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER))
+        delegated.assert_not_called()
+
     def test_final_merge_revalidates_live_review_tier(self):
         guard = self._load_guard()
         guard._verified_gate = (CANDIDATE_SHA, 20, DEFAULT_SHA, ISSUE_NUMBER)
@@ -318,6 +346,8 @@ checks:
             guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
         ), patch.object(
             guard.runtime, "api_key_pages", return_value=[]
+        ), patch.object(
+            guard.runtime, "attestation_attempts", return_value=[{"success": True}]
         ), patch.object(
             guard.runtime, "unresolved_review_threads", return_value=0
         ), patch.object(
@@ -345,6 +375,8 @@ checks:
             guard, "_authorized_source_snapshot", return_value=(ISSUE_NUMBER, {"body": ""})
         ), patch.object(
             guard, "_native_workflow_evidence", return_value=(True, [{"display_name": "CI"}])
+        ), patch.object(
+            guard.runtime, "attestation_attempts", return_value=[{"success": True}]
         ), patch.object(
             guard.runtime, "unresolved_review_threads", return_value=0
         ), patch.object(
