@@ -89,14 +89,11 @@ def classify_conclusion(
 ) -> FailureClass:
     """Map a raw implementation job conclusion to a FailureClass.
 
-    Classification order is deliberate. Explicit tool-policy denials and Git
-    transport failures are automation-owned even when their text contains HTTP
-    403. Generic provider "permission denied" text is not sufficient evidence of
-    a tool-policy contract failure and remains eligible for auth classification.
+    Explicit tool-policy evidence takes precedence over a terminal max-turn
+    conclusion so deterministic contract repairs are not consumed as transient
+    retries. Git transport failures remain automation-owned even when they contain
+    HTTP 403. Generic provider permission text remains eligible for auth handling.
     """
-    if conclusion == "error_max_turns":
-        return FailureClass.MAX_TURNS
-
     low = (error_detail or "").lower()
 
     policy_signals = (
@@ -111,6 +108,9 @@ def classify_conclusion(
     )
     if permission_denials_count > 0 or any(signal in low for signal in policy_signals):
         return FailureClass.PERMISSION_CONTRACT
+
+    if conclusion == "error_max_turns":
+        return FailureClass.MAX_TURNS
 
     git_context = any(
         signal in low
@@ -178,10 +178,10 @@ def check_tool_permission_contract(
     """Return required commands that the current tool policy does not permit.
 
     Matching is case-insensitive and whitespace-normalized. A bare required
-    executable (for example ``git``) is satisfied when any allowed specification
-    uses that executable. A required command with arguments must match an allowed
-    command exactly or extend an allowed argument-bearing command at a token
-    boundary. A bare allowlist entry never authorizes arbitrary subcommands.
+    executable is satisfied when any allowed specification uses that executable.
+    A required command with arguments must match an allowed command exactly or
+    extend an allowed argument-bearing command at a token boundary. A bare
+    allowlist entry never authorizes arbitrary subcommands.
     """
     allowed_specs = [
         " ".join(command.strip().lower().split())
