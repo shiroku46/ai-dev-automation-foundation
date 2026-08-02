@@ -82,11 +82,13 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Confirm a failed audit or moved head writes no internal-stop record or close action.\n"
         "- [ ] Confirm Codex no-progress uses the immutable trusted request timestamp and merge-state no-progress uses the latest immutable clean evidence.\n"
         "- [ ] Confirm combined Codex comments and reviews are ordered by immutable event time before the latest exact-SHA evidence is selected.\n"
-        "- [ ] Confirm only canonical account/provider UI prerequisites can create a human-only notice after connected inspection is attempted.\n"
-        "- [ ] Confirm immutable `github-actions[bot]` comments are used only for trusted, deduplicated machine-readable notice evidence.\n"
-        "- [ ] Confirm the connected UI-only condition is re-derived inside the final audit.\n"
-        "- [ ] Confirm the connected condition is checked again immediately before publication.\n"
-        "- [ ] Confirm every human-only notice names the exact UI navigation or local command, records no Secret values, and includes the automatic-resumption condition.\n"
+        "- [ ] Confirm only the three canonical account/provider UI reason codes can create a human-only notice.\n"
+        "- [ ] Confirm account-level repository absence is independently derived from connected GitHub API queries for the exact targets and caller assertions must match that evidence.\n"
+        "- [ ] Confirm credential and integration-reconnection notices fail closed until a reason-specific connected provider evidence adapter exists.\n"
+        "- [ ] Confirm every human-only notice re-derives the connected condition inside the final audit, persists an exact deterministic audit record, and rechecks the condition immediately before publication.\n"
+        "- [ ] Confirm the notice record binds Issue, Pull Request, SHA, attempted connected paths, impossibility evidence, canonical UI action, target/provider, and automatic-resumption condition.\n"
+        "- [ ] Confirm human-only deduplication requires both the exact persisted record and an immutable `github-actions[bot]` comment.\n"
+        "- [ ] Configure `CLAUDE_CODE_OAUTH_TOKEN` only through GitHub/provider UI.\n"
         "- [ ] Run export guard, validator, and tests.\n"
         "- [ ] Validate in a disposable E2E repository.\n",
         encoding="utf-8",
