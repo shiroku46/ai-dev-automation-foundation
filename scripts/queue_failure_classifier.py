@@ -1,20 +1,6 @@
 #!/usr/bin/env python3
 """Classify Queue implementation failures and enforce permission-contract preflight.
 
-This module implements two key reliability mechanisms:
-
-Fix C - Contract and permission consistency:
-  check_tool_permission_contract() detects when a work order requires commands
-  that are not in the configured allowed-tools list. Call this BEFORE invoking
-  the model; a non-empty denial list must abort execution immediately.
-
-Fix D - Automatic recovery classification:
-  classify_conclusion() maps raw implementation job conclusions and error
-  signatures to a FailureClass. classify_conclusion() + build_failure_status()
-  produce a deterministic FailureStatus record whose human_action_required flag
-  explicitly separates automation-owned failures from genuine human-only
-  UI/identity failures.
-
 Only AUTH_SECRET sets human_action_required=True. Transport, platform, max-turn,
 permission-contract, test, and unknown failures remain automation-owned.
 """
@@ -42,14 +28,9 @@ RETRYABLE_CLASSES: frozenset[FailureClass] = frozenset(
         FailureClass.UNKNOWN,
     }
 )
-
 HUMAN_ONLY_CLASSES: frozenset[FailureClass] = frozenset({FailureClass.AUTH_SECRET})
-
 FIXABLE_CLASSES: frozenset[FailureClass] = frozenset(
-    {
-        FailureClass.PERMISSION_CONTRACT,
-        FailureClass.TEST_FAILURE,
-    }
+    {FailureClass.PERMISSION_CONTRACT, FailureClass.TEST_FAILURE}
 )
 
 
@@ -65,7 +46,6 @@ class FailureStatus:
     human_action_required: bool
 
     def as_status_comment(self) -> str:
-        """Return a concise human-readable status block for posting on the Issue."""
         lines = [
             "<!-- foundation-failure-status -->",
             f"- failure_class: `{self.failure_class.value}`",
@@ -87,12 +67,12 @@ def classify_conclusion(
     permission_denials_count: int = 0,
     error_detail: str = "",
 ) -> FailureClass:
-    """Map a raw implementation job conclusion to a FailureClass.
+    """Map raw Queue evidence to one deterministic failure class.
 
-    Explicit tool-policy evidence takes precedence over a terminal max-turn
-    conclusion so deterministic contract repairs are not consumed as transient
-    retries. Git transport failures remain automation-owned even when they contain
-    HTTP 403. Generic provider permission text remains eligible for auth handling.
+    Explicit tool-policy evidence overrides terminal max-turn conclusions.
+    Explicit network/tunnel transport evidence overrides incidental HTTP 403 text.
+    Authentication evidence overrides generic Git command context, so a Git push
+    that fails because a token expired remains human-only rather than retryable.
     """
     low = (error_detail or "").lower()
 
@@ -112,21 +92,17 @@ def classify_conclusion(
     if conclusion == "error_max_turns":
         return FailureClass.MAX_TURNS
 
-    git_context = any(
-        signal in low
-        for signal in (
-            "git push",
-            "git fetch",
-            "git clone",
-            "git transport",
-            "connect tunnel",
-            "remote ref",
-        )
+    explicit_transport_signals = (
+        "connect tunnel",
+        "git transport",
+        "transport error",
+        "could not resolve host",
+        "connection reset",
+        "connection refused",
+        "network is unreachable",
+        "remote ref",
     )
-    if git_context or (
-        "git" in low
-        and any(signal in low for signal in ("push", "fetch", "clone", "transport", "tunnel"))
-    ):
+    if any(signal in low for signal in explicit_transport_signals):
         return FailureClass.GIT_TRANSPORT
 
     auth_signals = (
@@ -135,12 +111,17 @@ def classify_conclusion(
         "token expired",
         "expired token",
         "credential expired",
+        "authentication failed",
         "missing secret",
         "secret not found",
         "unauthorized",
     )
     if any(signal in low for signal in auth_signals):
         return FailureClass.AUTH_SECRET
+
+    generic_git_signals = ("git push", "git fetch", "git clone")
+    if any(signal in low for signal in generic_git_signals):
+        return FailureClass.GIT_TRANSPORT
 
     if "test" in low and any(signal in low for signal in ("fail", "error", "assert")):
         return FailureClass.TEST_FAILURE
@@ -154,7 +135,6 @@ def classify_conclusion(
 
 
 def is_human_only_failure(failure_class: FailureClass) -> bool:
-    """Return True only for failures requiring genuine human UI/identity action."""
     return failure_class in HUMAN_ONLY_CLASSES
 
 
@@ -163,7 +143,6 @@ def should_auto_retry(
     retry_attempt: int,
     max_retries: int,
 ) -> bool:
-    """Return True when the bounded retry budget allows one more automatic attempt."""
     if is_human_only_failure(failure_class):
         return False
     if failure_class in FIXABLE_CLASSES:
@@ -177,11 +156,10 @@ def check_tool_permission_contract(
 ) -> list[str]:
     """Return required commands that the current tool policy does not permit.
 
-    Matching is case-insensitive and whitespace-normalized. A bare required
-    executable is satisfied when any allowed specification uses that executable.
-    A required command with arguments must match an allowed command exactly or
-    extend an allowed argument-bearing command at a token boundary. A bare
-    allowlist entry never authorizes arbitrary subcommands.
+    A bare required executable is satisfied when any allowed specification uses
+    that executable. A required command with arguments must match an allowed
+    command exactly or extend an argument-bearing allowlist entry at a token
+    boundary. A bare allowlist entry never authorizes arbitrary subcommands.
     """
     allowed_specs = [
         " ".join(command.strip().lower().split())
@@ -206,7 +184,6 @@ def check_tool_permission_contract(
                 and (normalized == spec or normalized.startswith(spec + " "))
                 for spec in allowed_specs
             )
-
         if not permitted:
             denied.append(command)
     return denied
@@ -219,7 +196,6 @@ def build_failure_status(
     checkpoint_sha: str | None = None,
     checkpoint_artifact: str | None = None,
 ) -> FailureStatus:
-    """Build a deterministic FailureStatus with explicit human-action semantics."""
     human_required = is_human_only_failure(failure_class)
 
     if human_required:
