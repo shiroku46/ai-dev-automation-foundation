@@ -6,9 +6,9 @@ The public Foundation repository and its public E2E repository are the implement
 
 ## Mandatory Phase 0 before ordinary flow
 
-Every newly bootstrapped repository must complete the repository-specific procedure in `docs/PROJECT_STARTUP.md` before the first product Issue, `/claude-run`, implementation request, or harmless Bootstrap acceptance exercise.
+Every newly bootstrapped repository must complete setup steps 1–5 in `docs/PROJECT_STARTUP.md` before the harmless Bootstrap acceptance exercise. Successful acceptance is the final Phase 0 gate. Product Issues, product `/claude-run`, and product implementation start only after that gate passes.
 
-The coordinator performs all connected inspections first. When no repository-settings API is callable, the owner must complete this one-time GitHub UI action in the exact target repository:
+The coordinator performs all connected inspections first. When no repository-settings API is callable, the owner must complete this one-time GitHub UI action in the exact target repository before acceptance:
 
 `Settings` → `Actions` → `General` → `Workflow permissions`
 
@@ -16,9 +16,11 @@ The coordinator performs all connected inspections first. When no repository-set
 2. enable **Allow GitHub Actions to create and approve pull requests**;
 3. save the setting.
 
-Phase 0 also requires exact-repository GitHub/Codex access, an exact-repository Codex environment, the configured credential name when OAuth is used, enabled Actions and Foundation workflows, and a harmless acceptance candidate proving that branches, Pull Requests, comments/labels, readiness, checks, review, and bounded merge orchestration work.
+Pre-PR Phase 0 guidance is a narrow startup exception, not a runtime GitHub notice. It is delivered directly in the initiating project conversation before GitHub orchestration starts, contains only non-secret navigation or a local command plus the automatic-resumption condition, does not call `human_only_notice()`, does not publish a GitHub comment, does not require an Issue/PR destination, and does not create or relax a runtime reason code. Completion is later recorded in the non-secret Bootstrap acceptance evidence.
 
-Do not retry a stalled write-capable workflow or ask the owner to repost commands until this setting has been checked. After acceptance, do not request the setup again unless connected evidence shows that it was reset or the integration is no longer usable. This startup instruction does not add or relax a runtime human-notice reason code.
+The setup prerequisites also include exact-repository GitHub/Codex access, an exact-repository Codex environment, the configured credential name when OAuth is used, and enabled Actions and Foundation workflows. After those prerequisites pass, the harmless acceptance candidate proves that branches, Pull Requests, comments/labels, readiness, checks, review, and bounded merge orchestration work and thereby completes Phase 0.
+
+Do not retry a stalled write-capable workflow or ask the owner to repost commands until the Workflow-permissions setting has been checked. After acceptance, do not request the setup again unless connected evidence shows that it was reset or the integration is no longer usable.
 
 ## Ordinary flow
 
