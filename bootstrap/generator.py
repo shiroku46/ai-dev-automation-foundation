@@ -13,6 +13,7 @@ ALLOWLIST = [
     "AGENTS.md",
     "CLAUDE.md",
     "SECURITY.md",
+    "docs/PROJECT_STARTUP.md",
     "docs/OPERATING_RULES.md",
     "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py",
@@ -45,6 +46,20 @@ def render(target: Path, owner: str) -> None:
     (target / "INSTALL_CHECKLIST.md").write_text(
         f"{GENERATED_TARGET_MARKER}\n"
         "# Installation checklist\n\n"
+        "## Phase 0 — mandatory before acceptance or product work\n\n"
+        "- [ ] Read `docs/PROJECT_STARTUP.md` for this exact repository.\n"
+        "- [ ] Connect ChatGPT/Codex to GitHub and authorize this exact repository.\n"
+        "- [ ] Create and verify a Codex environment for this exact repository.\n"
+        "- [ ] When Claude OAuth is used, run `claude setup-token` locally and store the value only as the GitHub Actions Secret `CLAUDE_CODE_OAUTH_TOKEN`; never paste, print, log, or commit the value.\n"
+        "- [ ] Confirm GitHub Actions are enabled and the Foundation workflows exist on the default branch.\n"
+        "- [ ] In this exact repository, open `Settings` → `Actions` → `General` → `Workflow permissions`.\n"
+        "- [ ] Select **Read and write permissions**.\n"
+        "- [ ] Enable **Allow GitHub Actions to create and approve pull requests**.\n"
+        "- [ ] Save the Workflow permissions setting.\n"
+        "- [ ] Confirm automation can create/update a bounded branch and Pull Request, post required comments/labels, update readiness/review state, and complete the expected-head merge path.\n"
+        "- [ ] Complete one harmless Bootstrap acceptance candidate and record only non-secret evidence: repository, acceptance date, Secret name, both Workflow-permissions settings, Issue/PR, exact head SHA, and successful checks/review.\n"
+        "- [ ] Do not create or trigger the first product Issue until every Phase 0 item passes. Do not request these steps again after acceptance unless connected evidence shows the integration or Workflow permissions are no longer usable.\n\n"
+        "## Foundation safety and merge checks\n\n"
         f"- [ ] Optionally set repository variable `AUTOMATION_OWNER` to `{owner}`; "
         "the repository owner is the fail-closed default.\n"
         "- [ ] Require the trusted source Issue to allowlist every changed and renamed path; bounded patterns such as `tests/**` may be used.\n"
@@ -67,13 +82,8 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Confirm a failed audit or moved head writes no internal-stop record or close action.\n"
         "- [ ] Confirm Codex no-progress uses the immutable trusted request timestamp and merge-state no-progress uses the latest immutable clean evidence.\n"
         "- [ ] Confirm combined Codex comments and reviews are ordered by immutable event time before the latest exact-SHA evidence is selected.\n"
-        "- [ ] Confirm only the three canonical account/provider UI reason codes can create a human-only notice.\n"
-        "- [ ] Confirm account-level repository absence is independently derived from connected GitHub API queries for the exact targets and caller assertions must match that evidence.\n"
-        "- [ ] Confirm credential and integration-reconnection notices fail closed until a reason-specific connected provider evidence adapter exists.\n"
-        "- [ ] Confirm every human-only notice re-derives the connected condition inside the final audit, persists an exact deterministic audit record, and rechecks the condition immediately before publication.\n"
-        "- [ ] Confirm the notice record binds Issue, Pull Request, SHA, attempted connected paths, impossibility evidence, canonical UI action, target/provider, and automatic-resumption condition.\n"
-        "- [ ] Confirm human-only deduplication requires both the exact persisted record and an immutable `github-actions[bot]` comment.\n"
-        "- [ ] Configure `CLAUDE_CODE_OAUTH_TOKEN` only through GitHub/provider UI.\n"
+        "- [ ] Confirm only canonical account/provider UI prerequisites can create a human-only notice after connected inspection is attempted.\n"
+        "- [ ] Confirm every human-only notice names the exact UI navigation or local command, records no Secret values, and includes the automatic-resumption condition.\n"
         "- [ ] Run export guard, validator, and tests.\n"
         "- [ ] Validate in a disposable E2E repository.\n",
         encoding="utf-8",
