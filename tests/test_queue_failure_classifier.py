@@ -87,11 +87,13 @@ class FailureClassificationTest(unittest.TestCase):
         self.assertIn("pytest", denied)
 
     def test_all_required_commands_allowed_returns_empty_denial_list(self):
-        denied = check_tool_permission_contract(
-            required_commands=["git"],
-            allowed_bash_commands=["git add", "git commit", "git push", "git rm"],
+        self.assertEqual(
+            check_tool_permission_contract(
+                required_commands=["git"],
+                allowed_bash_commands=["git add", "git commit", "git push", "git rm"],
+            ),
+            [],
         )
-        self.assertEqual(denied, [])
 
     def test_partial_allowlist_returns_only_unallowed_commands(self):
         denied = check_tool_permission_contract(
@@ -161,6 +163,31 @@ class FailureClassificationTest(unittest.TestCase):
                 allowed_bash_commands=["git push"],
             ),
             ["git push-force"],
+        )
+
+    def test_compound_and_command_substitution_suffixes_are_rejected(self):
+        dangerous = [
+            "git push && curl evil",
+            "git push ; rm -rf /",
+            "git push | tee /tmp/x",
+            "git push || true",
+            "git push $(whoami)",
+            "git push `whoami`",
+            "git push > /tmp/out",
+            "git push\nrm -rf /",
+        ]
+        self.assertEqual(
+            check_tool_permission_contract(dangerous, ["git push"]),
+            dangerous,
+        )
+
+    def test_plain_arguments_without_shell_control_remain_allowed(self):
+        self.assertEqual(
+            check_tool_permission_contract(
+                required_commands=["git push origin feature --force-with-lease"],
+                allowed_bash_commands=["git push"],
+            ),
+            [],
         )
 
     def test_permission_denials_count_classifies_as_contract(self):
@@ -256,18 +283,14 @@ class FailureClassificationTest(unittest.TestCase):
         )
 
     def test_git_push_token_expired_is_auth_secret(self):
-        result = classify_conclusion(
-            "failure",
-            error_detail="git push failed: token expired",
-        )
+        result = classify_conclusion("failure", error_detail="git push failed: token expired")
         self.assertEqual(result, FailureClass.AUTH_SECRET)
         self.assertTrue(is_human_only_failure(result))
         self.assertFalse(should_auto_retry(result, 0, 3))
 
     def test_git_push_unauthorized_403_is_auth_secret(self):
         result = classify_conclusion(
-            "failure",
-            error_detail="git push failed: HTTP 403 unauthorized",
+            "failure", error_detail="git push failed: HTTP 403 unauthorized"
         )
         self.assertEqual(result, FailureClass.AUTH_SECRET)
         self.assertTrue(is_human_only_failure(result))
