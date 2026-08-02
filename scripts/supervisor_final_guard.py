@@ -332,6 +332,9 @@ def guarded_gh(*args: str) -> str:
         raise RuntimeError(
             f"Live Issue requires missing exact-head checks: {missing_checks}"
         )
+    attempts = runtime.attestation_attempts(candidate_sha)
+    if not any(item.get("success") is True for item in attempts):
+        raise RuntimeError("Required exact-head attestation no longer passes")
     if runtime.unresolved_review_threads(pr_number):
         raise RuntimeError("Live Pull Request has unresolved review threads")
     live_review = review_evidence(pr_number, candidate_sha)
