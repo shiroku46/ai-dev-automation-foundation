@@ -88,10 +88,7 @@ class FailureClassificationTest(unittest.TestCase):
         self.assertIn("pip", denied)
 
     def test_empty_required_commands_returns_no_denials(self):
-        self.assertEqual(
-            check_tool_permission_contract([], ["git add"]),
-            [],
-        )
+        self.assertEqual(check_tool_permission_contract([], ["git add"]), [])
 
     def test_empty_allowed_commands_denies_all_required(self):
         required = ["python", "pytest", "pip install"]
@@ -121,14 +118,41 @@ class FailureClassificationTest(unittest.TestCase):
             FailureClass.PERMISSION_CONTRACT,
         )
 
-    def test_permission_denial_403_stays_contract_not_auth(self):
+    def test_permission_denial_count_precedes_403_auth_text(self):
         self.assertEqual(
             classify_conclusion(
                 "failure",
                 permission_denials_count=1,
-                error_detail="HTTP 403 permission denied by tool policy",
+                error_detail="HTTP 403 permission denied by provider",
             ),
             FailureClass.PERMISSION_CONTRACT,
+        )
+
+    def test_explicit_tool_policy_wording_classifies_as_contract(self):
+        self.assertEqual(
+            classify_conclusion(
+                "failure",
+                error_detail="command is not allowed by tool policy",
+            ),
+            FailureClass.PERMISSION_CONTRACT,
+        )
+
+    def test_generic_provider_permission_denied_403_is_auth(self):
+        self.assertEqual(
+            classify_conclusion(
+                "failure",
+                error_detail="HTTP 403: permission denied for this credential",
+            ),
+            FailureClass.AUTH_SECRET,
+        )
+
+    def test_generic_provider_permission_denied_401_is_auth(self):
+        self.assertEqual(
+            classify_conclusion(
+                "failure",
+                error_detail="HTTP 401 permission denied by provider",
+            ),
+            FailureClass.AUTH_SECRET,
         )
 
     def test_permission_contract_is_not_retryable_or_human_only(self):
