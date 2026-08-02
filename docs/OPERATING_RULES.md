@@ -4,17 +4,34 @@
 
 The public Foundation repository and its public E2E repository are the implementation and acceptance sources of truth. Private predecessor repositories are archives only.
 
+## Mandatory Phase 0 before ordinary flow
+
+Every newly bootstrapped repository must complete the repository-specific procedure in `docs/PROJECT_STARTUP.md` before the first product Issue, `/claude-run`, implementation request, or harmless Bootstrap acceptance exercise.
+
+The coordinator performs all connected inspections first. When no repository-settings API is callable, the owner must complete this one-time GitHub UI action in the exact target repository:
+
+`Settings` → `Actions` → `General` → `Workflow permissions`
+
+1. select **Read and write permissions**;
+2. enable **Allow GitHub Actions to create and approve pull requests**;
+3. save the setting.
+
+Phase 0 also requires exact-repository GitHub/Codex access, an exact-repository Codex environment, the configured credential name when OAuth is used, enabled Actions and Foundation workflows, and a harmless acceptance candidate proving that branches, Pull Requests, comments/labels, readiness, checks, review, and bounded merge orchestration work.
+
+Do not retry a stalled write-capable workflow or ask the owner to repost commands until this setting has been checked. After acceptance, do not request the setup again unless connected evidence shows that it was reset or the integration is no longer usable.
+
 ## Ordinary flow
 
-1. A trusted owner-authored Issue states the goal, acceptance criteria, every allowed changed or renamed path, prohibited effects, and validation.
-2. The owner starts the Queue with an exact standalone `/claude-run`, or the trusted default-branch supervisor dispatches it.
-3. Claude writes a dedicated branch and Draft Pull Request.
-4. Public Pull Request checks execute the exact candidate SHA with `contents: read`, no Secrets, no OIDC, and no write permission.
-5. Fixed default-branch trusted checks create GitHub-owned immutable workflow-run and exact job evidence for the same SHA.
-6. Fixed native Pull Request workflows create independent exact-head evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` exists.
-7. Codex independently reviews that exact SHA.
-8. The supervisor revalidates provenance, scope, protected authorization, complete trusted and native evidence, Codex and thread state, mergeability, and the current head.
-9. The supervisor marks an eligible Pull Request ready and merges through the Merge API with the exact expected head SHA.
+1. Phase 0 acceptance for the exact repository is already complete and recorded without Secret values.
+2. A trusted owner-authored Issue states the goal, acceptance criteria, every allowed changed or renamed path, prohibited effects, and validation.
+3. The owner starts the Queue with an exact standalone `/claude-run`, or the trusted default-branch supervisor dispatches it.
+4. Claude writes a dedicated branch and Draft Pull Request.
+5. Public Pull Request checks execute the exact candidate SHA with `contents: read`, no Secrets, no OIDC, and no write permission.
+6. Fixed default-branch trusted checks create GitHub-owned immutable workflow-run and exact job evidence for the same SHA.
+7. Fixed native Pull Request workflows create independent exact-head evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` exists.
+8. Codex independently reviews that exact SHA.
+9. The supervisor revalidates provenance, scope, protected authorization, complete trusted and native evidence, Codex and thread state, mergeability, and the current head.
+10. The supervisor marks an eligible Pull Request ready and merges through the Merge API with the exact expected head SHA.
 
 A separate human merge click is not required.
 
@@ -75,24 +92,12 @@ Combined Codex comments and reviews are ordered by immutable event time. Codex n
 
 ## Human-only notice boundary
 
-Only these reason codes may notify a person:
+Human notice is limited to genuine account/provider/UI prerequisites after connected inspection paths have been attempted. This includes mandatory Phase 0 Workflow-permissions configuration when no callable repository-settings endpoint is available.
 
-- `HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE`
-- `HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED`
-- `HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED`
+A valid notice identifies the exact repository, the connected checks already attempted, the exact UI navigation or local command, the non-secret completion evidence, and the automatic-resumption condition. It must never request Secret values.
 
-A notice requires a trusted source Issue, live open same-repository Pull Request, lowercase 40-character current head SHA, concrete connected paths already attempted, independently observed impossibility evidence, exact targets or provider, one canonical reason-compatible provider UI action, an automatic-resumption condition, and the same mandatory connected self-resolution audit.
+For Workflow permissions, the canonical UI action is:
 
-For account-level repository creation, the runtime independently queries the exact target repositories through the connected GitHub API. Caller-supplied attempted paths and impossibility assertions must exactly match the derived observations, and no notice is valid when both targets are visible. Credential and integration-reconnection reasons fail closed until a reason-specific connected provider evidence adapter can prove the UI-only condition; generic caller assertions are never sufficient.
+`Settings` → `Actions` → `General` → `Workflow permissions` → **Read and write permissions** + **Allow GitHub Actions to create and approve pull requests** → Save.
 
-The connected condition is re-derived inside the final self-resolution audit and embedded in the persisted audit record. It is queried again after the audit and immediately before publication. A repository becoming visible, a provider state changing, or any mismatch between requested and connected evidence prevents the notice.
-
-Before publication, the runtime persists a sanitized deterministic record at:
-
-```text
-automation-stops/pr-<number>/<exact-sha>/<HUMAN_ONLY_REASON>.notice.json
-```
-
-The record binds the Issue, Pull Request, exact SHA, connected attempted paths, connected impossibility evidence, exact targets/provider, canonical UI action, automatic-resumption condition, and audit. The live destination is revalidated before persistence and before publication. Deduplication requires both the exact persisted record and an immutable `github-actions[bot]` comment containing the exact reason/Issue/Pull Request/SHA marker. An untrusted or edited comment cannot suppress a valid notice, and a trusted comment without the matching record fails closed.
-
-Routine technical failures, retry exhaustion, no progress, missing evidence, merge state, path denial, untrusted evidence, unsupported provider assertions, or unresolved ambiguity cannot use the human-only formatter. Automation resumes automatically when the audited UI condition changes; a new owner message is not required.
+Routine technical failures, retry exhaustion, no progress, missing evidence, merge state, path denial, untrusted evidence, unsupported provider assertions, or unresolved ambiguity cannot be converted into repeated human requests. Automation resumes automatically when the audited UI condition changes; a new owner message is not required.
