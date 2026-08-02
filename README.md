@@ -20,9 +20,9 @@ The queue accepts issue creation or an exact standalone `/claude-run` comment on
 
 ## Mandatory repository Phase 0
 
-Before the first product Issue or implementation request in a newly bootstrapped repository, complete [`docs/PROJECT_STARTUP.md`](docs/PROJECT_STARTUP.md).
+Before the harmless Bootstrap acceptance exercise in a newly bootstrapped repository, complete setup steps 1–5 in [`docs/PROJECT_STARTUP.md`](docs/PROJECT_STARTUP.md). Successful acceptance is the final Phase 0 gate; product Issues and implementation start only afterward.
 
-The exact target repository must have GitHub/Codex access, an exact-repository Codex environment, the required Claude credential when OAuth is used, enabled Actions/workflows, and the following GitHub setting:
+The exact target repository must have GitHub/Codex access, an exact-repository Codex environment, the required Claude credential when OAuth is used, enabled Actions/workflows, and the following GitHub setting before acceptance:
 
 `Settings` → `Actions` → `General` → `Workflow permissions`
 
@@ -30,7 +30,7 @@ The exact target repository must have GitHub/Codex access, an exact-repository C
 - enable **Allow GitHub Actions to create and approve pull requests**;
 - save the setting.
 
-Do not start product development or the Bootstrap acceptance exercise until Phase 0 is confirmed. After the exact repository passes Phase 0, do not request the setup again unless connected evidence shows the setting or integration is no longer usable.
+After the exact repository passes acceptance and completes Phase 0, do not request the setup again unless connected evidence shows the setting or integration is no longer usable.
 
 ## Validation
 
