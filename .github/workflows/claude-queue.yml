@@ -74,7 +74,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_PATH: ${{ github.event_path }}
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
           TRUSTED_SUPERVISOR: ${{ inputs.trusted_supervisor }}
           TRUSTED_RUN_ID: ${{ inputs.trusted_run_id }}
@@ -96,7 +95,7 @@ jobs:
           event_name = os.environ["EVENT_NAME"]
           event = {}
           if event_name in {"issues", "issue_comment"}:
-              event_path = os.environ.get("EVENT_PATH", "")
+              event_path = os.environ.get("GITHUB_EVENT_PATH", "")
               if not event_path:
                   raise RuntimeError(f"Missing event payload for {event_name}")
               event = json.loads(Path(event_path).read_text())
@@ -225,7 +224,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           base_branch: ${{ github.event.repository.default_branch }}
           branch_prefix: claude-issue-${{ needs.prepare.outputs.issue_number }}-
-          track_progress: true
+          track_progress: ${{ github.event_name != 'workflow_dispatch' }}
           prompt: |
             Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written.
             Read AGENTS.md, CLAUDE.md, SECURITY.md, and docs/OPERATING_RULES.md.

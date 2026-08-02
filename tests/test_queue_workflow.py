@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -34,13 +35,21 @@ class QueueWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = QUEUE.read_text(encoding="utf-8")
 
+    def _prepare_script(self) -> str:
+        prepare = job_block(self.text, "prepare", "implement")
+        script = prepare.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+        return "\n".join(
+            line[10:] if line.startswith("          ") else line
+            for line in script.splitlines()
+        )
+
     def test_owner_and_trusted_supervisor_admission_remain_fail_closed(self):
         self.assertIn("github.actor == github.repository_owner", self.text)
         self.assertIn("github.actor == vars.AUTOMATION_OWNER", self.text)
         self.assertIn("github.actor == 'github-actions[bot]'", self.text)
         self.assertIn("trusted_run_id:", self.text)
         self.assertIn('expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"', self.text)
-        self.assertIn("snapshot.get(\"head_sha\") == default_sha", self.text)
+        self.assertIn('snapshot.get("head_sha") == default_sha', self.text)
         self.assertIn('body.strip() == trigger', self.text)
         self.assertIn("issue_author in trusted_authors", self.text)
         self.assertNotIn("github.triggering_actor", self.text)
@@ -53,12 +62,7 @@ class QueueWorkflowTest(unittest.TestCase):
         self.assertIn("foundation-queue-duplicate", prepare)
 
     def test_issue_119_workflow_dispatch_does_not_read_empty_event_path(self):
-        prepare = job_block(self.text, "prepare", "implement")
-        script = prepare.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
-        script = "\n".join(
-            line[10:] if line.startswith("          ") else line
-            for line in script.splitlines()
-        )
+        script = self._prepare_script()
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -79,7 +83,6 @@ class QueueWorkflowTest(unittest.TestCase):
                 **os.environ,
                 "PATH": f"{root}:{os.environ['PATH']}",
                 "EVENT_NAME": "workflow_dispatch",
-                "EVENT_PATH": "",
                 "DISPATCH_ISSUE": "119",
                 "TRUSTED_SUPERVISOR": "false",
                 "TRUSTED_RUN_ID": "",
@@ -92,6 +95,7 @@ class QueueWorkflowTest(unittest.TestCase):
                 "DEFAULT_BRANCH": "main",
                 "GITHUB_OUTPUT": str(output),
             }
+            env.pop("GITHUB_EVENT_PATH", None)
             subprocess.run(["python3", "-c", script], env=env, check=True)
 
             self.assertEqual(
@@ -99,10 +103,76 @@ class QueueWorkflowTest(unittest.TestCase):
                 ["issue_number=119", "should_run=true", "duplicate_skipped=false"],
             )
 
+    def test_issue_events_use_runner_provided_event_payload(self):
+        prepare = job_block(self.text, "prepare", "implement")
+        self.assertIn('os.environ.get("GITHUB_EVENT_PATH", "")', prepare)
+        self.assertNotIn("EVENT_PATH: ${{ github.event_path }}", prepare)
+
+        cases = {
+            "issue_comment": {
+                "issue": {"number": 138},
+                "comment": {"body": "/claude-run"},
+            },
+            "issues": {
+                "issue": {
+                    "number": 138,
+                    "body": "/claude-run\n\n## Hotfix",
+                },
+            },
+        }
+        for event_name, payload in cases.items():
+            with self.subTest(event_name=event_name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / "output"
+                event_path = root / "event.json"
+                event_path.write_text(json.dumps(payload), encoding="utf-8")
+                gh = root / "gh"
+                gh.write_text(
+                    "#!/bin/sh\n"
+                    "case \"$*\" in\n"
+                    "  *issues/138*) printf '%s\\n' "
+                    "'{\"number\":138,\"user\":{\"login\":\"owner\"}}' ;;\n"
+                    "  *pulls*) printf '%s\\n' '[]' ;;\n"
+                    "  *) exit 1 ;;\n"
+                    "esac\n",
+                    encoding="utf-8",
+                )
+                gh.chmod(0o755)
+                env = {
+                    **os.environ,
+                    "PATH": f"{root}:{os.environ['PATH']}",
+                    "EVENT_NAME": event_name,
+                    "GITHUB_EVENT_PATH": str(event_path),
+                    "DISPATCH_ISSUE": "",
+                    "TRUSTED_SUPERVISOR": "false",
+                    "TRUSTED_RUN_ID": "",
+                    "REQUEST_FINGERPRINT": "",
+                    "RECOVERY_ATTEMPT": "",
+                    "ACTOR": "owner",
+                    "OWNER": "owner",
+                    "CONFIGURED_OWNER": "",
+                    "REPOSITORY": "owner/repository",
+                    "DEFAULT_BRANCH": "main",
+                    "GITHUB_OUTPUT": str(output),
+                }
+                subprocess.run(["python3", "-c", self._prepare_script()], env=env, check=True)
+                self.assertEqual(
+                    output.read_text(encoding="utf-8").splitlines(),
+                    ["issue_number=138", "should_run=true", "duplicate_skipped=false"],
+                )
+
     def test_issue_events_fail_closed_without_event_payload(self):
         prepare = job_block(self.text, "prepare", "implement")
         self.assertIn('if event_name in {"issues", "issue_comment"}:', prepare)
         self.assertIn('raise RuntimeError(f"Missing event payload for {event_name}")', prepare)
+
+    def test_manual_dispatch_disables_track_progress(self):
+        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn(
+            "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
+            implement,
+        )
+        self.assertNotIn("track_progress: true", implement)
 
     def test_candidate_execution_is_confined_to_read_only_verify_job(self):
         verify = job_block(self.text, "verify", "publish")
