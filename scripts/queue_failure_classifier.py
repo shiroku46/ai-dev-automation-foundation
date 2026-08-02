@@ -89,18 +89,28 @@ def classify_conclusion(
 ) -> FailureClass:
     """Map a raw implementation job conclusion to a FailureClass.
 
-    Classification order is deliberate. Task-policy denials and Git transport
-    failures are automation-owned even when their text contains HTTP 403. Only a
-    credential/Secret signal that is not attributable to those contexts may
-    become AUTH_SECRET and request human action.
+    Classification order is deliberate. Explicit tool-policy denials and Git
+    transport failures are automation-owned even when their text contains HTTP
+    403. Generic provider "permission denied" text is not sufficient evidence of
+    a tool-policy contract failure and remains eligible for auth classification.
     """
     if conclusion == "error_max_turns":
         return FailureClass.MAX_TURNS
 
     low = (error_detail or "").lower()
 
-    # Predictable tool-policy denials are a contract mismatch, not an auth problem.
-    if permission_denials_count > 0 or "permission denied" in low or "not allowed" in low:
+    # Only explicit tool-policy evidence may override an authentication signal.
+    policy_signals = (
+        "tool policy",
+        "tool permission",
+        "allowedtools",
+        "allowed tools",
+        "not allowed by tool",
+        "not permitted by tool",
+        "command is not allowed",
+        "command not allowed",
+    )
+    if permission_denials_count > 0 or any(signal in low for signal in policy_signals):
         return FailureClass.PERMISSION_CONTRACT
 
     # Git/network publication failures stay automation-owned, including CONNECT 403.
