@@ -255,6 +255,23 @@ class FailureClassificationTest(unittest.TestCase):
             FailureClass.AUTH_SECRET,
         )
 
+    def test_git_push_token_expired_is_auth_secret(self):
+        result = classify_conclusion(
+            "failure",
+            error_detail="git push failed: token expired",
+        )
+        self.assertEqual(result, FailureClass.AUTH_SECRET)
+        self.assertTrue(is_human_only_failure(result))
+        self.assertFalse(should_auto_retry(result, 0, 3))
+
+    def test_git_push_unauthorized_403_is_auth_secret(self):
+        result = classify_conclusion(
+            "failure",
+            error_detail="git push failed: HTTP 403 unauthorized",
+        )
+        self.assertEqual(result, FailureClass.AUTH_SECRET)
+        self.assertTrue(is_human_only_failure(result))
+
     def test_human_only_and_retryable_sets_are_disjoint(self):
         self.assertTrue(HUMAN_ONLY_CLASSES.isdisjoint(RETRYABLE_CLASSES))
 
@@ -287,6 +304,12 @@ class FailureClassificationTest(unittest.TestCase):
         self.assertEqual(result, FailureClass.GIT_TRANSPORT)
         self.assertFalse(is_human_only_failure(result))
         self.assertTrue(should_auto_retry(result, 0, 3))
+
+    def test_generic_git_push_failure_without_auth_is_transport(self):
+        self.assertEqual(
+            classify_conclusion("failure", error_detail="git push failed"),
+            FailureClass.GIT_TRANSPORT,
+        )
 
     def test_platform_outage_is_retryable_and_not_human_only(self):
         self.assertFalse(is_human_only_failure(FailureClass.PLATFORM_OUTAGE))
