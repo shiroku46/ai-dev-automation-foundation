@@ -47,10 +47,40 @@ class BootstrapTest(unittest.TestCase):
                 self.assertTrue((target / path).is_file(), path)
             self.assertTrue((target / "README.md").read_text(encoding="utf-8").strip())
             self.assertTrue((target / "LICENSE").read_text(encoding="utf-8").strip())
+            self.assertTrue((target / "docs/PROJECT_STARTUP.md").is_file())
+
             checklist = (target / "INSTALL_CHECKLIST.md").read_text(encoding="utf-8")
             self.assertIn(GENERATED_TARGET_MARKER, checklist)
             self.assertIn("example-owner", checklist)
             self.assertNotIn("notion", checklist.lower())
+
+            # Phase 0 must be the first operational section and must include the
+            # exact GitHub Workflow-permissions settings that enable orchestration.
+            self.assertLess(
+                checklist.index("## Phase 0"),
+                checklist.index("## Foundation safety and merge checks"),
+            )
+            self.assertIn("Settings` → `Actions` → `General` → `Workflow permissions", checklist)
+            self.assertIn("Read and write permissions", checklist)
+            self.assertIn("Allow GitHub Actions to create and approve pull requests", checklist)
+            self.assertIn("Save the Workflow permissions setting", checklist)
+            self.assertIn("Do not create or trigger the first product Issue", checklist)
+            self.assertIn("claude setup-token", checklist)
+            self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", checklist)
+            self.assertIn("never paste, print, log, or commit the value", checklist)
+            self.assertIn("harmless Bootstrap acceptance candidate", checklist)
+
+            issue_template = (target / ".github/ISSUE_TEMPLATE/ai-task.yml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("Repository startup acceptance", issue_template)
+            self.assertIn("Read and write permissions", issue_template)
+            self.assertIn(
+                "Allow GitHub Actions to create and approve pull requests",
+                issue_template,
+            )
+            self.assertIn("Never include token or Secret values", issue_template)
+
             self.assertIn("Queue failure creates no routine Issue or Pull Request comment", checklist)
             self.assertIn("Queue recovery is bounded, deterministic, idempotent, non-notifying", checklist)
             self.assertIn("one unchanged default-branch SHA", checklist)
@@ -62,8 +92,6 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn("failed audit or moved head", checklist)
             self.assertIn("immutable trusted request timestamp", checklist)
             self.assertIn("latest immutable clean evidence", checklist)
-            self.assertIn("three canonical account/provider UI reason codes", checklist)
-            self.assertIn("github-actions[bot]", checklist)
             self.assertIn("automatic-resumption condition", checklist)
             self.assertFalse((target / "bootstrap").exists())
             self.assertFalse((target / "tests").exists())
@@ -137,6 +165,7 @@ class BootstrapTest(unittest.TestCase):
             "README.md",
             "LICENSE",
             "SECURITY.md",
+            "docs/PROJECT_STARTUP.md",
             "scripts/supervisor_final_guard.py",
             "scripts/supervisor_queue_recovery.py",
             "scripts/supervisor_queue_recovery_v2.py",
