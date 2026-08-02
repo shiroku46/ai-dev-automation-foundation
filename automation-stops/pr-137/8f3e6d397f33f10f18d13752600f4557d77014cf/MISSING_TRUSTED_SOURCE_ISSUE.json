@@ -1,0 +1,28 @@
+{
+  "audit": {
+    "alternative_connected_paths": "trusted-checks.yml:active:324449305;ci-reconcile.yml:active:324405826;supervisor.yml:active:324405830;claude-queue.yml:active:324405828",
+    "changed_and_renamed_paths": "[\".github/ISSUE_TEMPLATE/ai-task.yml\",\"AGENTS.md\",\"CLAUDE.md\",\"README.md\",\"bootstrap/generator.py\",\"docs/OPERATING_RULES.md\",\"docs/PROJECT_STARTUP.md\",\"tests/test_bootstrap.py\",\"tests/test_project_startup.py\"]",
+    "check_evidence": "[{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"test\",\"status\":\"completed\"},{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"validate\",\"status\":\"completed\"}]",
+    "exact_head_sha": "8f3e6d397f33f10f18d13752600f4557d77014cf",
+    "human_only_connected_evidence": "not-applicable",
+    "idempotency": "automation-stops/pr-137/8f3e6d397f33f10f18d13752600f4557d77014cf/MISSING_TRUSTED_SOURCE_ISSUE.json",
+    "issue": "unknown",
+    "mergeability": "mergeable=True,mergeable_state=clean",
+    "native_pull_request_workflow_evidence": "{\"clean\":false,\"runs\":[]}",
+    "permissions_and_credentials": "automation_owner_permission=admin,secret_values_not_requested=true",
+    "pull_request": "#137",
+    "reason_code": "MISSING_TRUSTED_SOURCE_ISSUE",
+    "repository_metadata": "visibility=public,default_branch=main,initial_and_final_head_confirmed=true",
+    "review_and_provenance": "codex=pending,codex_timestamp=None,trusted_request_timestamp=None,unresolved_threads=False",
+    "scope_and_authorization": "issue=not-applicable,authorization=not-applicable",
+    "workflow_run_and_job_evidence": "[]"
+  },
+  "detail": "PR body identifies no trusted source Issue.",
+  "exact_head_sha": "8f3e6d397f33f10f18d13752600f4557d77014cf",
+  "issue_number": null,
+  "notification": false,
+  "pull_request_number": 137,
+  "reason_code": "MISSING_TRUSTED_SOURCE_ISSUE",
+  "required_human_action": null,
+  "schema_version": 1
+}
