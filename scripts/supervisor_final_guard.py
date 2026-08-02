@@ -40,6 +40,17 @@ def _require_unchanged_default(expected_sha: str) -> str:
     return expected_sha
 
 
+def _issue_snapshot(issue: dict[str, Any]) -> tuple[Any, ...]:
+    author = issue.get("user") or {}
+    return (
+        issue.get("number"),
+        issue.get("body") or "",
+        issue.get("updated_at"),
+        issue.get("state"),
+        author.get("login"),
+    )
+
+
 def source_and_scope_minimum(
     pr: dict[str, Any],
 ) -> tuple[int | None, dict[str, Any] | None, list[str], str | None]:
@@ -66,20 +77,18 @@ def source_and_scope_minimum(
     return issue_number, issue, changed, None
 
 
-# Compatibility alias during the validator migration. The active implementation
-# is the unified minimum-safety contract: source_and_scope(live_pr).
 source_and_scope = source_and_scope_minimum
 
 
 def _authorized_source_snapshot(
     live_pr: dict[str, Any], candidate_sha: str
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, dict[str, Any], list[str]]:
     live_head = str((live_pr.get("head") or {}).get("sha") or "")
     if not isinstance(live_pr.get("labels"), list):
         raise RuntimeError("Live Pull Request omitted explicit label evidence")
     if live_head != candidate_sha or not runtime.trusted_candidate(live_pr):
         raise RuntimeError("Live Pull Request no longer matches the trusted candidate")
-    issue_number, issue, _, scope_error = source_and_scope(live_pr)
+    issue_number, issue, changed, scope_error = source_and_scope(live_pr)
     if (
         scope_error
         or not isinstance(issue_number, int)
@@ -87,16 +96,16 @@ def _authorized_source_snapshot(
         or not isinstance(issue, dict)
     ):
         raise RuntimeError("Live source and scope authorization no longer passes")
-    return issue_number, issue
+    return issue_number, issue, changed
 
 
-def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
+def _authorized_source_issue(live_pr: dict[str, Any], candidate_sha: str) -> int:
     return _authorized_source_snapshot(live_pr, candidate_sha)[0]
 
 
 def _require_live_merge_candidate(
     pr_number: int, candidate_sha: str, verified_issue: int
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[str]]:
     live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
     if (
         live_pr.get("state") != "open"
@@ -104,10 +113,23 @@ def _require_live_merge_candidate(
         or live_pr.get("mergeable") is not True
     ):
         raise RuntimeError("Live Pull Request no longer matches the trusted merge gate")
-    live_issue, issue = _authorized_source_snapshot(live_pr, candidate_sha)
+    live_issue, issue, changed = _authorized_source_snapshot(live_pr, candidate_sha)
     if live_issue != verified_issue:
         raise RuntimeError("Live trusted source Issue no longer matches the verified gate")
-    return issue
+    return issue, changed
+
+
+def _require_pr_only_merge_candidate(pr_number: int, candidate_sha: str) -> None:
+    live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
+    if (
+        live_pr.get("state") != "open"
+        or live_pr.get("draft") is not False
+        or live_pr.get("mergeable") is not True
+        or str((live_pr.get("head") or {}).get("sha") or "") != candidate_sha
+        or not isinstance(live_pr.get("labels"), list)
+        or not runtime.trusted_candidate(live_pr)
+    ):
+        raise RuntimeError("Final Pull Request-only merge check failed")
 
 
 def _successful_exact_head_check_names(
@@ -187,12 +209,9 @@ def _coordinator_review(pr_number: int, sha: str) -> dict[str, str | None] | Non
     return None
 
 
-def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
-    if not isinstance(pr_number, int) or pr_number <= 0:
-        raise ValueError("Pull Request number must be a positive integer")
-    if not runtime.EXACT_SHA.fullmatch(sha):
-        raise ValueError("Review evidence requires one exact candidate SHA")
-    risk, _ = _risk_for_pr(pr_number, sha)
+def _review_evidence_for_risk(
+    pr_number: int, sha: str, risk: str
+) -> dict[str, str | None]:
     unresolved = runtime.unresolved_review_threads(pr_number)
     codex = dict(_original_exact_codex_evidence(pr_number, sha))
     codex["review_source"] = "codex"
@@ -220,6 +239,15 @@ def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
     return codex
 
 
+def review_evidence(pr_number: int, sha: str) -> dict[str, str | None]:
+    if not isinstance(pr_number, int) or pr_number <= 0:
+        raise ValueError("Pull Request number must be a positive integer")
+    if not runtime.EXACT_SHA.fullmatch(sha):
+        raise ValueError("Review evidence requires one exact candidate SHA")
+    risk, _ = _risk_for_pr(pr_number, sha)
+    return _review_evidence_for_risk(pr_number, sha, risk)
+
+
 def record_review_required(pr_number: int, sha: str) -> None:
     risk, _ = _risk_for_pr(pr_number, sha)
     if risk == "low":
@@ -244,7 +272,6 @@ def record_review_required(pr_number: int, sha: str) -> None:
 
 
 def request_codex_exact_head(pr_number: int, sha: str) -> None:
-    """Legacy callable retained for compatibility; the active runtime uses a neutral marker."""
     if not isinstance(pr_number, int) or pr_number <= 0:
         raise ValueError("Pull Request number must be a positive integer")
     if not runtime.EXACT_SHA.fullmatch(sha):
@@ -253,7 +280,6 @@ def request_codex_exact_head(pr_number: int, sha: str) -> None:
 
 
 def guarded_native_workflow_evidence(sha: str, pr_number: int):
-    """Evaluate stable checks and task authorization before the final live recheck."""
     global _verified_gate
     _verified_gate = None
     default_sha = _exact_live_default_sha()
@@ -267,7 +293,7 @@ def guarded_native_workflow_evidence(sha: str, pr_number: int):
         if not clean:
             return False, evidence
         live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
-        issue_number, issue = _authorized_source_snapshot(live_pr, sha)
+        issue_number, issue, _ = _authorized_source_snapshot(live_pr, sha)
         missing_checks = _missing_required_task_checks(
             issue.get("body") or "", sha, evidence
         )
@@ -313,7 +339,6 @@ def _merge_identity(args: tuple[str, ...]) -> tuple[str, int] | None:
 
 
 def guarded_gh(*args: str) -> str:
-    """Perform the final live recheck and clear eligibility only after merge succeeds."""
     global _verified_gate
     identity = _merge_identity(args)
     if identity is None:
@@ -325,7 +350,13 @@ def guarded_gh(*args: str) -> str:
     verified_sha, verified_pr, default_sha, verified_issue = gate
     if (candidate_sha, pr_number) != (verified_sha, verified_pr):
         raise RuntimeError("Merge call does not match the verified candidate gate")
-    issue = _require_live_merge_candidate(pr_number, candidate_sha, verified_issue)
+
+    issue, changed = _require_live_merge_candidate(
+        pr_number, candidate_sha, verified_issue
+    )
+    issue_snapshot = _issue_snapshot(issue)
+    issue_body = issue.get("body") or ""
+    risk = policy.risk_for_changes(changed, issue_body)
 
     native_clean, native_evidence = _native_workflow_evidence(
         candidate_sha, pr_number
@@ -333,7 +364,7 @@ def guarded_gh(*args: str) -> str:
     if not native_clean:
         raise RuntimeError("Required exact-head native checks no longer pass")
     missing_checks = _missing_required_task_checks(
-        issue.get("body") or "", candidate_sha, native_evidence
+        issue_body, candidate_sha, native_evidence
     )
     if missing_checks:
         raise RuntimeError(
@@ -344,16 +375,19 @@ def guarded_gh(*args: str) -> str:
         raise RuntimeError("Required exact-head attestation no longer passes")
     if runtime.unresolved_review_threads(pr_number):
         raise RuntimeError("Live Pull Request has unresolved review threads")
-    live_review = review_evidence(pr_number, candidate_sha)
+    live_review = _review_evidence_for_risk(pr_number, candidate_sha, risk)
     if live_review.get("state") != "clean":
         raise RuntimeError("Live risk-tier review evidence no longer passes")
 
-    # Evidence queries above can take long enough for a merge hold or other
-    # trusted-candidate property to change. Re-fetch the PR after every query
-    # and validate its exact head, labels, state, source Issue, and scope again
-    # immediately before the expected-head merge mutation.
-    _require_live_merge_candidate(pr_number, candidate_sha, verified_issue)
+    confirmed_issue = runtime.api(f"repos/{runtime.REPO}/issues/{verified_issue}")
+    if (
+        not runtime.trusted_source_issue(confirmed_issue)
+        or _issue_snapshot(confirmed_issue) != issue_snapshot
+    ):
+        raise RuntimeError("Trusted source Issue changed during final evidence validation")
+
     _require_unchanged_default(default_sha)
+    _require_pr_only_merge_candidate(pr_number, candidate_sha)
     result = _original_gh(*args)
     _verified_gate = None
     return result
