@@ -2,6 +2,23 @@ name: AI implementation task
 description: One bounded implementation request
 title: "[Task] "
 body:
+  - type: checkboxes
+    id: startup_acceptance
+    attributes:
+      label: Repository startup acceptance
+      description: Confirm non-secret Phase 0 evidence for this exact repository before product work. Never include token or Secret values.
+      options:
+        - label: GitHub/Codex access, the exact-repository Codex environment, required Secret name, Actions/workflows, and harmless Bootstrap acceptance are complete.
+          required: true
+        - label: Under Settings → Actions → General → Workflow permissions, Read and write permissions is selected and Allow GitHub Actions to create and approve pull requests is enabled.
+          required: true
+  - type: textarea
+    id: startup_evidence
+    attributes:
+      label: Non-secret Phase 0 evidence reference
+      description: Provide the acceptance Issue/PR or status reference, exact head SHA, and successful check names. Do not provide credential values.
+    validations:
+      required: true
   - type: textarea
     id: goal
     attributes:
