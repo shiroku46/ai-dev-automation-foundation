@@ -94,6 +94,22 @@ def _authorized_source_issue(live_pr: dict, candidate_sha: str) -> int:
     return _authorized_source_snapshot(live_pr, candidate_sha)[0]
 
 
+def _require_live_merge_candidate(
+    pr_number: int, candidate_sha: str, verified_issue: int
+) -> dict[str, Any]:
+    live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
+    if (
+        live_pr.get("state") != "open"
+        or live_pr.get("draft") is not False
+        or live_pr.get("mergeable") is not True
+    ):
+        raise RuntimeError("Live Pull Request no longer matches the trusted merge gate")
+    live_issue, issue = _authorized_source_snapshot(live_pr, candidate_sha)
+    if live_issue != verified_issue:
+        raise RuntimeError("Live trusted source Issue no longer matches the verified gate")
+    return issue
+
+
 def _successful_exact_head_check_names(
     sha: str, native_evidence: list[dict[str, Any]]
 ) -> set[str]:
@@ -309,16 +325,7 @@ def guarded_gh(*args: str) -> str:
     verified_sha, verified_pr, default_sha, verified_issue = gate
     if (candidate_sha, pr_number) != (verified_sha, verified_pr):
         raise RuntimeError("Merge call does not match the verified candidate gate")
-    live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
-    if (
-        live_pr.get("state") != "open"
-        or live_pr.get("draft") is not False
-        or live_pr.get("mergeable") is not True
-    ):
-        raise RuntimeError("Live Pull Request no longer matches the trusted merge gate")
-    live_issue, issue = _authorized_source_snapshot(live_pr, candidate_sha)
-    if live_issue != verified_issue:
-        raise RuntimeError("Live trusted source Issue no longer matches the verified gate")
+    issue = _require_live_merge_candidate(pr_number, candidate_sha, verified_issue)
 
     native_clean, native_evidence = _native_workflow_evidence(
         candidate_sha, pr_number
@@ -341,6 +348,11 @@ def guarded_gh(*args: str) -> str:
     if live_review.get("state") != "clean":
         raise RuntimeError("Live risk-tier review evidence no longer passes")
 
+    # Evidence queries above can take long enough for a merge hold or other
+    # trusted-candidate property to change. Re-fetch the PR after every query
+    # and validate its exact head, labels, state, source Issue, and scope again
+    # immediately before the expected-head merge mutation.
+    _require_live_merge_candidate(pr_number, candidate_sha, verified_issue)
     _require_unchanged_default(default_sha)
     result = _original_gh(*args)
     _verified_gate = None
