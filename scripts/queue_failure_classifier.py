@@ -6,6 +6,7 @@ permission-contract, test, and unknown failures remain automation-owned.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 
@@ -33,11 +34,13 @@ FIXABLE_CLASSES: frozenset[FailureClass] = frozenset(
     {FailureClass.PERMISSION_CONTRACT, FailureClass.TEST_FAILURE}
 )
 
+# Required commands are single-command specifications, never shell programs.
+# Reject operators, substitutions, redirects, and line breaks before prefix matching.
+SHELL_CONTROL_PATTERN = re.compile(r"(?:&&|\|\||[;&|`<>]|\$\(|[\r\n])")
+
 
 @dataclass(frozen=True)
 class FailureStatus:
-    """Deterministic status record for one failed Queue implementation attempt."""
-
     failure_class: FailureClass
     retry_attempt: int
     checkpoint_sha: str | None
@@ -119,8 +122,7 @@ def classify_conclusion(
     if any(signal in low for signal in auth_signals):
         return FailureClass.AUTH_SECRET
 
-    generic_git_signals = ("git push", "git fetch", "git clone")
-    if any(signal in low for signal in generic_git_signals):
+    if any(signal in low for signal in ("git push", "git fetch", "git clone")):
         return FailureClass.GIT_TRANSPORT
 
     if "test" in low and any(signal in low for signal in ("fail", "error", "assert")):
@@ -159,7 +161,8 @@ def check_tool_permission_contract(
     A bare required executable is satisfied when any allowed specification uses
     that executable. A required command with arguments must match an allowed
     command exactly or extend an argument-bearing allowlist entry at a token
-    boundary. A bare allowlist entry never authorizes arbitrary subcommands.
+    boundary. Shell control operators, substitutions, redirects, and line breaks
+    are rejected before matching, so one allowlisted command cannot append another.
     """
     allowed_specs = [
         " ".join(command.strip().lower().split())
@@ -170,11 +173,12 @@ def check_tool_permission_contract(
 
     denied: list[str] = []
     for command in required_commands:
-        normalized = " ".join(command.strip().lower().split())
-        if not normalized:
+        raw = command.strip()
+        if not raw or SHELL_CONTROL_PATTERN.search(raw):
             denied.append(command)
             continue
 
+        normalized = " ".join(raw.lower().split())
         parts = normalized.split()
         if len(parts) == 1:
             permitted = normalized in allowed_bases
