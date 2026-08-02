@@ -103,13 +103,49 @@ class FailureClassificationTest(unittest.TestCase):
             [],
         )
 
-    def test_base_command_match_on_subcommand_spec(self):
+    def test_bare_required_executable_matches_an_allowed_subcommand(self):
         self.assertEqual(
             check_tool_permission_contract(
                 required_commands=["git"],
-                allowed_bash_commands=["git add", "git commit", "git push"],
+                allowed_bash_commands=["git add", "git commit"],
             ),
             [],
+        )
+
+    def test_unlisted_subcommand_is_not_authorized_by_same_executable(self):
+        self.assertEqual(
+            check_tool_permission_contract(
+                required_commands=["git push"],
+                allowed_bash_commands=["git add"],
+            ),
+            ["git push"],
+        )
+
+    def test_bare_allowlist_entry_does_not_authorize_arbitrary_subcommand(self):
+        self.assertEqual(
+            check_tool_permission_contract(
+                required_commands=["git push"],
+                allowed_bash_commands=["git"],
+            ),
+            ["git push"],
+        )
+
+    def test_argument_bearing_allowlist_authorizes_bounded_extension(self):
+        self.assertEqual(
+            check_tool_permission_contract(
+                required_commands=["git push origin feature"],
+                allowed_bash_commands=["git push"],
+            ),
+            [],
+        )
+
+    def test_prefix_must_end_on_token_boundary(self):
+        self.assertEqual(
+            check_tool_permission_contract(
+                required_commands=["git push-force"],
+                allowed_bash_commands=["git push"],
+            ),
+            ["git push-force"],
         )
 
     def test_permission_denials_count_classifies_as_contract(self):
