@@ -84,6 +84,8 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Confirm combined Codex comments and reviews are ordered by immutable event time before the latest exact-SHA evidence is selected.\n"
         "- [ ] Confirm only canonical account/provider UI prerequisites can create a human-only notice after connected inspection is attempted.\n"
         "- [ ] Confirm immutable `github-actions[bot]` comments are used only for trusted, deduplicated machine-readable notice evidence.\n"
+        "- [ ] Confirm the connected UI-only condition is re-derived inside the final audit.\n"
+        "- [ ] Confirm the connected condition is checked again immediately before publication.\n"
         "- [ ] Confirm every human-only notice names the exact UI navigation or local command, records no Secret values, and includes the automatic-resumption condition.\n"
         "- [ ] Run export guard, validator, and tests.\n"
         "- [ ] Validate in a disposable E2E repository.\n",
