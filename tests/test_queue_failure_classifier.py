@@ -22,6 +22,21 @@ class FailureClassificationTest(unittest.TestCase):
     def test_error_max_turns_classifies_as_max_turns(self):
         self.assertEqual(classify_conclusion("error_max_turns"), FailureClass.MAX_TURNS)
 
+    def test_max_turns_with_permission_denials_classifies_as_contract(self):
+        self.assertEqual(
+            classify_conclusion("error_max_turns", permission_denials_count=2),
+            FailureClass.PERMISSION_CONTRACT,
+        )
+
+    def test_max_turns_with_explicit_tool_policy_detail_classifies_as_contract(self):
+        self.assertEqual(
+            classify_conclusion(
+                "error_max_turns",
+                error_detail="command is not allowed by tool policy",
+            ),
+            FailureClass.PERMISSION_CONTRACT,
+        )
+
     def test_max_turns_is_not_human_only(self):
         self.assertFalse(is_human_only_failure(FailureClass.MAX_TURNS))
 
