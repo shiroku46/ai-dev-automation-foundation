@@ -1,8 +1,10 @@
 # Repository startup: mandatory Phase 0
 
-Every newly bootstrapped repository must complete this repository-specific Phase 0 before the first product Issue, `/claude-run`, implementation request, or harmless Bootstrap acceptance exercise.
+Every newly bootstrapped repository must complete setup steps 1–5 before the harmless Bootstrap acceptance exercise. Successful completion of the acceptance exercise in step 6 is the final Phase 0 gate. The first product Issue, product `/claude-run`, or product implementation request may start only after that final gate passes.
 
 The coordinating ChatGPT/agent performs every check available through connected tools first. It asks the owner only for settings that require an authenticated provider UI, local authenticated CLI, MFA, CAPTCHA, hardware key, or another operation for which no callable connector/API exists.
+
+Pre-PR Phase 0 guidance is a narrowly scoped exception to the runtime GitHub human-notice mechanism: it is delivered directly in the project-start conversation for the exact repository before GitHub orchestration starts. It does not call `human_only_notice()`, publish an automated GitHub notice, create a new runtime reason code, or require an Issue/PR destination. It may contain only the exact non-secret UI navigation or local command, the reason it is necessary, and the automatic-resumption condition. The coordinator records completion later in the non-secret Bootstrap acceptance evidence and does not repeat the guidance unless connected evidence shows the prerequisite became unusable.
 
 ## 1. Connect the exact repository
 
@@ -15,7 +17,7 @@ The coordinating ChatGPT/agent performs every check available through connected 
 - Create a Codex environment for the exact target repository.
 - Confirm that the repository is selectable and usable in Codex.
 
-Provider replies such as `To use Codex here, create an environment for this repo` or `To use Codex here, create a Codex account and connect to github` mean Phase 0 is incomplete. They are not review evidence and must not trigger repeated implementation or review requests.
+Provider replies such as `To use Codex here, create an environment for this repo` or `To use Codex here, create a Codex account and connect to github` mean the setup prerequisites are incomplete. They are not review evidence and must not trigger repeated implementation or review requests.
 
 ## 3. Install the Claude credential when OAuth is used
 
@@ -42,7 +44,7 @@ Also confirm:
 
 These Workflow permissions are mandatory because the Foundation must be able to create or update branches and Pull Requests, post comments and labels, update review/readiness state, and complete the bounded merge orchestration. If those operations repeatedly fail, inspect this setting before retrying workflows or asking the owner to repost commands.
 
-The coordinator must verify the repository setting through connected repository-settings/API tools when a callable endpoint exists. When no such endpoint is available, this is a one-time human GitHub UI action. Give the exact navigation above and request it once.
+The coordinator must verify the repository setting through connected repository-settings/API tools when a callable endpoint exists. When no such endpoint is available, use the narrowly scoped pre-PR guidance defined above: give the exact navigation once, never request a value or screenshot containing credentials, and resume automatically after the owner confirms the setting is saved.
 
 ## 5. Validate the installed Foundation
 
@@ -54,15 +56,17 @@ python scripts/validate_repository.py
 python -m unittest discover -s tests
 ```
 
-## 6. Complete Bootstrap acceptance
+## 6. Complete Bootstrap acceptance and finish Phase 0
 
-Before product work, prove that the exact repository can complete one harmless bounded candidate:
+After steps 1–5 pass, prove that the exact repository can complete one harmless bounded candidate:
 
 - create a dedicated branch and Pull Request;
 - receive native CI and Unit Tests on the exact remote head SHA;
 - receive the required review response instead of a provider onboarding error;
 - confirm automation can perform the required bounded write operations without a Workflow-permissions failure;
 - confirm expected-head protection is used for the merge decision.
+
+Successful acceptance completes Phase 0 and unlocks product work.
 
 ## Phase 0 evidence
 
