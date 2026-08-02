@@ -83,6 +83,7 @@ def render(target: Path, owner: str) -> None:
         "- [ ] Confirm Codex no-progress uses the immutable trusted request timestamp and merge-state no-progress uses the latest immutable clean evidence.\n"
         "- [ ] Confirm combined Codex comments and reviews are ordered by immutable event time before the latest exact-SHA evidence is selected.\n"
         "- [ ] Confirm only canonical account/provider UI prerequisites can create a human-only notice after connected inspection is attempted.\n"
+        "- [ ] Confirm immutable `github-actions[bot]` comments are used only for trusted, deduplicated machine-readable notice evidence.\n"
         "- [ ] Confirm every human-only notice names the exact UI navigation or local command, records no Secret values, and includes the automatic-resumption condition.\n"
         "- [ ] Run export guard, validator, and tests.\n"
         "- [ ] Validate in a disposable E2E repository.\n",
