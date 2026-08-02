@@ -1,0 +1,1 @@
+{"attempt":1,"default_sha":"ae7f15d339b65eadc5676b45cd673a04cce342fb","expected_run_title":"Claude Issue Queue issue-132 request-edaba0b242929d67bde7 attempt-1","fixed_workflow":"claude-queue.yml","issue_number":132,"notification":false,"reason":"QUEUE_PIPELINE_RETRY","request_fingerprint":"edaba0b242929d67bde7"}
