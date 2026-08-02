@@ -140,13 +140,15 @@ def _require_live_merge_candidate(
 
 def _require_pr_only_merge_candidate(pr_number: int, candidate_sha: str) -> None:
     live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
+    if not isinstance(live_pr.get("labels"), list):
+        raise RuntimeError("Final Pull Request omitted explicit label evidence")
+    if not runtime.trusted_candidate(live_pr):
+        raise RuntimeError("Live Pull Request no longer matches the trusted candidate")
     if (
         live_pr.get("state") != "open"
         or live_pr.get("draft") is not False
         or live_pr.get("mergeable") is not True
         or str((live_pr.get("head") or {}).get("sha") or "") != candidate_sha
-        or not isinstance(live_pr.get("labels"), list)
-        or not runtime.trusted_candidate(live_pr)
     ):
         raise RuntimeError("Final Pull Request-only merge check failed")
 
