@@ -78,4 +78,4 @@ Record only non-secret evidence:
 - **Allow GitHub Actions to create and approve pull requests** enabled;
 - Bootstrap acceptance Issue/PR, exact head SHA, and successful checks.
 
-After the exact repository passes Phase 0, do not request these steps again unless connected evidence shows that the repository authorization, environment, credential, Actions availability, or Workflow permissions are no longer usable. Resume orchestration automatically after the missing UI-only prerequisite is completed; the owner must not be asked to repost `/claude-run`, copy a Codex prompt, create a Pull Request, press Retry, or repeat routine instructions.
+After the exact repository passes Phase 0, **Do not request these steps again** unless connected evidence shows that the repository authorization, environment, credential, Actions availability, or Workflow permissions are no longer usable. Resume orchestration automatically after the missing UI-only prerequisite is completed; the owner must not be asked to repost `/claude-run`, copy a Codex prompt, create a Pull Request, press Retry, or repeat routine instructions.
