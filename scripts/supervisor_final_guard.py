@@ -108,7 +108,7 @@ def _unpack_authorized_snapshot(
         issue_number, issue, changed = snapshot
     elif len(snapshot) == 2:
         issue_number, issue = snapshot
-        changed = runtime.changed_paths(live_pr) or []
+        changed = []
     else:
         raise RuntimeError("Invalid authorized source snapshot")
     if not isinstance(issue_number, int) or not isinstance(issue, dict) or not isinstance(changed, list):
