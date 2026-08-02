@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any
+from typing import Any, Callable
 
 from scripts import supervisor_policy as policy
 from scripts import supervisor_queue_recovery as recovery
 from scripts import supervisor_queue_recovery_v2 as hardened
 from scripts import supervisor_runtime as runtime
+from scripts.queue_failure_classifier import (
+    FailureClass,
+    build_failure_status,
+    classify_conclusion,
+    should_auto_retry,
+)
 
 _original_connected_exhaustion_snapshot = hardened._connected_exhaustion_snapshot
 _original_intent_identity = hardened._intent_identity
@@ -272,7 +278,171 @@ def complete_connected_exhaustion_snapshot(
             "source_issue_authorization_verified": True,
         }
     )
+
+    # Requirement 8: include failure class, checkpoint, retry attempt, next action,
+    # and human_action_required in the sanitized exhaustion snapshot.
+    attempt_count = len(expected_retry_records)
+    evidence = _latest_run_failure_evidence(issue_number)
+    if evidence is not None:
+        conclusion, perm_denials, error_detail = evidence
+        failure_class = classify_conclusion(conclusion, perm_denials, error_detail)
+    else:
+        failure_class = FailureClass.UNKNOWN
+    checkpoint = _wip_branch_info(issue_number)
+    checkpoint_branch = checkpoint[0] if checkpoint is not None else None
+    checkpoint_sha = checkpoint[1] if checkpoint is not None else None
+    status = build_failure_status(
+        failure_class=failure_class,
+        retry_attempt=attempt_count,
+        max_retries=recovery.MAX_QUEUE_RECOVERY_ATTEMPTS,
+        checkpoint_sha=checkpoint_sha,
+    )
+    snapshot.update(
+        {
+            "checkpoint_branch": checkpoint_branch,
+            "checkpoint_sha": checkpoint_sha,
+            "failure_class": status.failure_class.value,
+            "human_action_required": status.human_action_required,
+            "next_automatic_action": status.next_automatic_action,
+            "retry_attempt": status.retry_attempt,
+        }
+    )
     return snapshot
+
+
+def _wip_branch_info(issue_number: int) -> tuple[str, str] | None:
+    """Return (branch_name, sha) for an existing same-issue WIP/checkpoint branch, or None.
+
+    Checks GitHub branches for names starting with 'claude-issue-{N}-', which indicates
+    an in-progress or checkpointed implementation for this issue exists without a PR.
+    """
+    prefix = f"claude-issue-{issue_number}-"
+    result = runtime.gh_result(
+        "api",
+        "-H",
+        "Accept: application/vnd.github+json",
+        f"repos/{runtime.REPO}/branches?per_page=100",
+    )
+    if result.returncode != 0:
+        return None
+    branches = json.loads(result.stdout)
+    if not isinstance(branches, list):
+        return None
+    for branch in branches:
+        name = str(branch.get("name") or "")
+        if name.startswith(prefix):
+            sha = str((branch.get("commit") or {}).get("sha") or "")
+            if runtime.EXACT_SHA.fullmatch(sha):
+                return name, sha
+    return None
+
+
+def _latest_run_failure_evidence(
+    issue_number: int,
+) -> tuple[str, int, str] | None:
+    """Return (conclusion, permission_denials_count, error_detail) from the latest Queue run.
+
+    Scans completed failed Queue workflow runs on the default branch and returns
+    implement-job evidence for the most recent run relevant to this issue.
+    Returns None when no applicable run is found.
+    """
+    latest_run_id: int | None = None
+    latest_run_number: int = 0
+
+    for run in recovery._queue_runs():
+        run_repo = (run.get("repository") or {}).get("full_name")
+        run_path = str(run.get("path") or "").split("@", 1)[0]
+        run_number = int(run.get("run_number") or 0)
+        title = str(run.get("display_title") or "")
+        if (
+            run_repo != runtime.REPO
+            or run_path != recovery.QUEUE_WORKFLOW_PATH
+            or run.get("head_branch") != runtime.DEFAULT_BRANCH
+            or run.get("status") != "completed"
+            or run.get("conclusion") in {"success", "skipped", "neutral"}
+        ):
+            continue
+        # Recovery runs embed the issue number in their display title.
+        # Original runs triggered by issue events are also relevant.
+        is_for_issue = (
+            f"issue-{issue_number} " in title
+            or run.get("event") in {"issues", "issue_comment"}
+        )
+        if not is_for_issue:
+            continue
+        run_id = int(run.get("id") or 0)
+        if run_id > 0 and run_number > latest_run_number:
+            latest_run_number = run_number
+            latest_run_id = run_id
+
+    if latest_run_id is None:
+        return None
+
+    jobs = runtime.api_key_pages(
+        f"repos/{runtime.REPO}/actions/runs/{latest_run_id}/jobs?filter=all&per_page=100",
+        "jobs",
+    )
+    implement = [job for job in jobs if job.get("name") == "implement"]
+    if len(implement) != 1 or implement[0].get("status") != "completed":
+        return None
+
+    impl_job = implement[0]
+    conclusion = str(impl_job.get("conclusion") or "")
+    perm_denials = 0
+    error_detail_parts: list[str] = []
+
+    for step in impl_job.get("steps") or []:
+        step_name = str(step.get("name") or "").lower()
+        step_conclusion = str(step.get("conclusion") or "")
+        if step_conclusion == "failure":
+            error_detail_parts.append(step_name)
+            if any(
+                sig in step_name
+                for sig in (
+                    "tool policy",
+                    "tool permission",
+                    "not allowed",
+                    "permission denied",
+                    "allowedtools",
+                    "allowed tools",
+                )
+            ):
+                perm_denials += 1
+
+    return conclusion, perm_denials, "; ".join(error_detail_parts)
+
+
+def _classified_dispatch_retry(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    v2_dispatch: Callable[..., bool],
+) -> bool:
+    """Pre-check failure class and WIP branch before allowing dispatch.
+
+    Returns False without dispatching when:
+    - an existing same-issue WIP/checkpoint branch is detected (requirement 7), or
+    - the latest run's failure class is non-retryable (requirements 4-6).
+    Otherwise delegates to the v2 guarded dispatch.
+    """
+    # Requirement 7: detect existing WIP/checkpoint branch even without a PR.
+    checkpoint = _wip_branch_info(issue_number)
+    if checkpoint is not None:
+        return False
+
+    # Requirements 1-3: inspect the latest Queue run and classify its failure.
+    evidence = _latest_run_failure_evidence(issue_number)
+    if evidence is not None:
+        conclusion, perm_denials, error_detail = evidence
+        failure_class = classify_conclusion(conclusion, perm_denials, error_detail)
+    else:
+        failure_class = FailureClass.UNKNOWN
+
+    # Requirements 4-6: only dispatch for retryable automation-owned classes.
+    if not should_auto_retry(failure_class, attempt - 1, recovery.MAX_QUEUE_RECOVERY_ATTEMPTS):
+        return False
+
+    return v2_dispatch(issue_number, fingerprint, attempt)
 
 
 def main() -> int:
@@ -281,7 +451,26 @@ def main() -> int:
     hardened._dispatch_fixed_retry = dispatch_without_alternative
     hardened._wait_for_queue_implementation_start = wait_for_admitted_implementation
     hardened._connected_exhaustion_snapshot = complete_connected_exhaustion_snapshot
-    return hardened.main()
+
+    # Install the classified dispatch wrapper. v2's main() sets recovery._dispatch_retry
+    # to guarded_dispatch_retry before calling recovery.main(). We intercept recovery.main
+    # so we can wrap that assignment with our classification pre-check.
+    _original_recovery_main = recovery.main
+
+    def _recovery_main_with_classification() -> int:
+        _v2_dispatch = recovery._dispatch_retry
+
+        def _classified(iss: int, fp: str, att: int) -> bool:
+            return _classified_dispatch_retry(iss, fp, att, _v2_dispatch)
+
+        recovery._dispatch_retry = _classified
+        return _original_recovery_main()
+
+    recovery.main = _recovery_main_with_classification
+    try:
+        return hardened.main()
+    finally:
+        recovery.main = _original_recovery_main
 
 
 if __name__ == "__main__":
