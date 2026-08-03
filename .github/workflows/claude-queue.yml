@@ -326,26 +326,70 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, os, pathlib, re, stat, subprocess
+
           base = os.environ["BASE_SHA"]
           if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != base:
               raise SystemExit("implementation changed HEAD instead of only the worktree")
-          records = []
-          raw = subprocess.check_output(["git", "diff", "--name-status", "-z", base, "--"]) .split(b"\0")
+
+          def checked_path(raw_path):
+              path = raw_path.decode("utf-8")
+              pure = pathlib.PurePosixPath(path)
+              if not path or pure.is_absolute() or ".." in pure.parts:
+                  raise SystemExit("unsafe path")
+              return path
+
+          def regular_mode(target):
+              info = target.lstat()
+              if not stat.S_ISREG(info.st_mode):
+                  raise SystemExit("candidate files must be regular files")
+              return "100755" if info.st_mode & stat.S_IXUSR else "100644"
+
+          records_by_path = {}
+          raw = subprocess.check_output(
+              ["git", "diff", "--name-status", "--no-renames", "-z", base, "--"]
+          ).split(b"\0")
           i = 0
           while i < len(raw) and raw[i]:
-              status = raw[i].decode(); i += 1
-              if status[0] in "RC":
-                  raise SystemExit("renames and copies are not accepted in candidate handoff")
-              path = raw[i].decode(); i += 1
-              if path.startswith("/") or ".." in pathlib.PurePosixPath(path).parts:
-                  raise SystemExit("unsafe path")
+              status = raw[i].decode("ascii")
+              i += 1
+              if status not in {"A", "M", "D"}:
+                  raise SystemExit("unsupported tracked candidate status")
+              path = checked_path(raw[i])
+              i += 1
+              if path in records_by_path:
+                  raise SystemExit("duplicate candidate path")
               target = pathlib.Path(path)
               deleted = status == "D"
               data = b"" if deleted else target.read_bytes()
-              mode = None if deleted else ("100755" if target.stat().st_mode & stat.S_IXUSR else "100644")
-              records.append({"path": path, "mode": mode, "deleted": deleted,
-                              "sha256": hashlib.sha256(data).hexdigest(),
-                              "content_base64": base64.b64encode(data).decode()})
+              mode = None if deleted else regular_mode(target)
+              records_by_path[path] = {
+                  "path": path,
+                  "mode": mode,
+                  "deleted": deleted,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "content_base64": base64.b64encode(data).decode(),
+              }
+
+          untracked = subprocess.check_output(
+              ["git", "ls-files", "--others", "--exclude-standard", "-z"]
+          ).split(b"\0")
+          for raw_path in untracked:
+              if not raw_path:
+                  continue
+              path = checked_path(raw_path)
+              if path in records_by_path:
+                  raise SystemExit("conflicting candidate path")
+              target = pathlib.Path(path)
+              data = target.read_bytes()
+              records_by_path[path] = {
+                  "path": path,
+                  "mode": regular_mode(target),
+                  "deleted": False,
+                  "sha256": hashlib.sha256(data).hexdigest(),
+                  "content_base64": base64.b64encode(data).decode(),
+              }
+
+          records = [records_by_path[path] for path in sorted(records_by_path)]
           if not records:
               raise SystemExit("candidate has no changes")
           branch = os.environ.get("CLAUDE_BRANCH") or f"claude-issue-{os.environ['ISSUE_NUMBER']}-api"
@@ -355,7 +399,8 @@ jobs:
           canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
           digest = hashlib.sha256(canonical).hexdigest()
           out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-candidate"
-          out.mkdir(); (out / "candidate.json").write_bytes(canonical)
+          out.mkdir()
+          (out / "candidate.json").write_bytes(canonical)
           (out / "candidate.sha256").write_text(digest + "  candidate.json\n")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"branch_name={branch}\nartifact_sha256={digest}\n")
@@ -480,49 +525,129 @@ jobs:
           headRefOid
           EOF
           python3 - <<'PY'
-          import base64, hashlib, json, os, pathlib, subprocess
-          repo=os.environ["GITHUB_REPOSITORY"]
-          def api(path, method="GET", fields=None):
-              cmd=["gh","api",path,"--method",method,"-H","Accept: application/vnd.github+json"]
-              for key,value in (fields or {}).items(): cmd += ["-f", f"{key}={value}"]
-              return json.loads(subprocess.check_output(cmd,text=True))
-          base_ref=os.environ["BASE_REF"]; base_sha=os.environ["BASE_SHA"]
-          live=api(f"repos/{repo}/git/ref/heads/{base_ref}")
-          if live["object"]["sha"] != base_sha: raise SystemExit("base moved before publication")
+          import base64, hashlib, json, os, pathlib, re, subprocess
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+
+          def api(path, method="GET", payload=None):
+              cmd = [
+                  "gh",
+                  "api",
+                  path,
+                  "--method",
+                  method,
+                  "-H",
+                  "Accept: application/vnd.github+json",
+              ]
+              request = None
+              if payload is not None:
+                  cmd += ["--input", "-"]
+                  request = json.dumps(payload, separators=(",", ":"))
+              return json.loads(subprocess.check_output(cmd, input=request, text=True))
+
+          base_ref = os.environ["BASE_REF"]
+          base_sha = os.environ["BASE_SHA"]
+          live = api(f"repos/{repo}/git/ref/heads/{base_ref}")
+          if live["object"]["sha"] != base_sha:
+              raise SystemExit("base moved before publication")
+          base_commit = api(f"repos/{repo}/git/commits/{base_sha}")
+          base_tree_sha = ((base_commit.get("tree") or {}).get("sha") or "")
+          if not re.fullmatch(r"[0-9a-f]{40}", base_tree_sha):
+              raise SystemExit("base commit tree unavailable")
           if os.environ["RECOVERY"] == "true":
-              pr=api(f"repos/{repo}/pulls/{os.environ['BASE_PR']}"); head=pr.get("head") or {}
-              if not (pr.get("state") == "open" and head.get("ref") == base_ref and head.get("sha") == base_sha
-                      and (head.get("repo") or {}).get("full_name") == repo and ((pr.get("base") or {}).get("repo") or {}).get("full_name") == repo):
+              pr = api(f"repos/{repo}/pulls/{os.environ['BASE_PR']}")
+              head = pr.get("head") or {}
+              if not (
+                  pr.get("state") == "open"
+                  and head.get("ref") == base_ref
+                  and head.get("sha") == base_sha
+                  and (head.get("repo") or {}).get("full_name") == repo
+                  and ((pr.get("base") or {}).get("repo") or {}).get("full_name") == repo
+              ):
                   raise SystemExit("existing PR identity changed")
-          raw=(pathlib.Path(os.environ["RUNNER_TEMP"])/"queue-candidate/candidate.json").read_bytes()
-          if hashlib.sha256(raw).hexdigest() != os.environ["EXPECTED_DIGEST"]: raise SystemExit("artifact digest mismatch")
-          candidate=json.loads(raw); tree=[]; paths=[]
-          if candidate.get("base_sha") != base_sha or candidate.get("branch_name") != os.environ["BRANCH"]: raise SystemExit("artifact identity mismatch")
+          raw = (pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-candidate/candidate.json").read_bytes()
+          if hashlib.sha256(raw).hexdigest() != os.environ["EXPECTED_DIGEST"]:
+              raise SystemExit("artifact digest mismatch")
+          candidate = json.loads(raw)
+          tree = []
+          paths = []
+          if candidate.get("base_sha") != base_sha or candidate.get("branch_name") != os.environ["BRANCH"]:
+              raise SystemExit("artifact identity mismatch")
           for item in candidate["files"]:
-              content=base64.b64decode(item["content_base64"],validate=True)
-              if hashlib.sha256(content).hexdigest()!=item["sha256"]: raise SystemExit("file digest mismatch")
+              content = base64.b64decode(item["content_base64"], validate=True)
+              if hashlib.sha256(content).hexdigest() != item["sha256"]:
+                  raise SystemExit("file digest mismatch")
               paths.append(item["path"])
-              if item["deleted"]: tree.append({"path":item["path"],"mode":"100644","type":"blob","sha":None})
+              if item["deleted"]:
+                  tree.append({"path": item["path"], "mode": "100644", "type": "blob", "sha": None})
               else:
-                  blob=api(f"repos/{repo}/git/blobs","POST",{"content":item["content_base64"],"encoding":"base64"})
-                  tree.append({"path":item["path"],"mode":item["mode"],"type":"blob","sha":blob["sha"]})
-          tree_obj=api(f"repos/{repo}/git/trees","POST",{"base_tree":base_sha,"tree":json.dumps(tree,separators=(',',':'))})
-          commit=api(f"repos/{repo}/git/commits","POST",{"message":f"Claude: Issue #{os.environ['ISSUE_NUMBER']}","tree":tree_obj["sha"],"parents":json.dumps([base_sha])})
-          branch=os.environ["BRANCH"]
-          try: current=api(f"repos/{repo}/git/ref/heads/{branch}")["object"]["sha"]
+                  blob = api(
+                      f"repos/{repo}/git/blobs",
+                      "POST",
+                      {"content": item["content_base64"], "encoding": "base64"},
+                  )
+                  tree.append(
+                      {"path": item["path"], "mode": item["mode"], "type": "blob", "sha": blob["sha"]}
+                  )
+          tree_obj = api(
+              f"repos/{repo}/git/trees",
+              "POST",
+              {"base_tree": base_tree_sha, "tree": tree},
+          )
+          commit = api(
+              f"repos/{repo}/git/commits",
+              "POST",
+              {
+                  "message": f"Claude: Issue #{os.environ['ISSUE_NUMBER']}",
+                  "tree": tree_obj["sha"],
+                  "parents": [base_sha],
+              },
+          )
+          branch = os.environ["BRANCH"]
+          try:
+              current = api(f"repos/{repo}/git/ref/heads/{branch}")["object"]["sha"]
           except subprocess.CalledProcessError:
-              api(f"repos/{repo}/git/refs","POST",{"ref":f"refs/heads/{branch}","sha":commit["sha"]}); current=commit["sha"]
-          if current != commit["sha"]: raise SystemExit("generated branch already exists at another SHA")
-          existing=api(f"repos/{repo}/pulls?state=open&head={repo.split('/')[0]}:{branch}")
-          body=(f"Closes #{os.environ['ISSUE_NUMBER']}.\n\n"
-                f"Source existing PR: #{os.environ['BASE_PR'] or 'none'}\nExact base SHA: `{base_sha}`\n"
-                f"Exact candidate SHA: `{commit['sha']}`\n\n## Exact changed paths\n"+"\n".join(f"- `{p}`" for p in paths)+
-                "\n\nCandidate bytes were validated read-only and published through the Git Data API; no candidate code executed with write credentials.")
-          if existing: result=existing[0]
-          else: result=api(f"repos/{repo}/pulls","POST",{"title":f"Claude: Issue #{os.environ['ISSUE_NUMBER']} exact-base recovery","head":branch,"base":base_ref,"body":body,"draft":"true"})
-          if result.get("state")!="open" or not result.get("draft") or (result.get("base") or {}).get("ref")!=base_ref or (result.get("head") or {}).get("sha")!=commit["sha"]:
+              api(
+                  f"repos/{repo}/git/refs",
+                  "POST",
+                  {"ref": f"refs/heads/{branch}", "sha": commit["sha"]},
+              )
+              current = commit["sha"]
+          if current != commit["sha"]:
+              raise SystemExit("generated branch already exists at another SHA")
+          existing = api(f"repos/{repo}/pulls?state=open&head={repo.split('/')[0]}:{branch}")
+          body = (
+              f"Closes #{os.environ['ISSUE_NUMBER']}.\n\n"
+              f"Source existing PR: #{os.environ['BASE_PR'] or 'none'}\nExact base SHA: `{base_sha}`\n"
+              f"Exact candidate SHA: `{commit['sha']}`\n\n## Exact changed paths\n"
+              + "\n".join(f"- `{path}`" for path in paths)
+              + "\n\nCandidate bytes were validated read-only and published through the Git Data API; "
+              "no candidate code executed with write credentials."
+          )
+          if existing:
+              result = existing[0]
+          else:
+              # Legacy string payloads such as {"draft":"true"} are forbidden; draft is a JSON boolean.
+              result = api(
+                  f"repos/{repo}/pulls",
+                  "POST",
+                  {
+                      "title": f"Claude: Issue #{os.environ['ISSUE_NUMBER']} exact-base recovery",
+                      "head": branch,
+                      "base": base_ref,
+                      "body": body,
+                      "draft": True,
+                  },
+              )
+          if (
+              result.get("state") != "open"
+              or not result.get("draft")
+              or (result.get("base") or {}).get("ref") != base_ref
+              or (result.get("head") or {}).get("sha") != commit["sha"]
+          ):
               raise SystemExit("published PR identity mismatch")
-          with open(os.environ["GITHUB_OUTPUT"],"a") as out: out.write(f"pr_url={result['html_url']}\nbranch_sha={commit['sha']}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"pr_url={result['html_url']}\nbranch_sha={commit['sha']}\n")
           PY
 
   finalize:
