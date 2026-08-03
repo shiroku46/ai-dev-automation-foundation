@@ -1,0 +1,28 @@
+{
+  "audit": {
+    "alternative_connected_paths": "trusted-checks.yml:active:324449305;ci-reconcile.yml:active:324405826;supervisor.yml:active:324405830;claude-queue.yml:active:324405828",
+    "changed_and_renamed_paths": "[\"scripts/supervisor_queue_recovery_v3.py\",\"tests/test_queue_reliability_e2e.py\"]",
+    "check_evidence": "[{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"test\",\"status\":\"completed\"},{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"validate\",\"status\":\"completed\"}]",
+    "exact_head_sha": "a32df06754f88e5d88ff9281dac96d2edf660b00",
+    "human_only_connected_evidence": "not-applicable",
+    "idempotency": "automation-stops/pr-149/a32df06754f88e5d88ff9281dac96d2edf660b00/UNAUTHORIZED_PROTECTED_PATH.json",
+    "issue": "#146",
+    "mergeability": "mergeable=True,mergeable_state=clean",
+    "native_pull_request_workflow_evidence": "{\"clean\":false,\"runs\":[]}",
+    "permissions_and_credentials": "automation_owner_permission=admin,secret_values_not_requested=true",
+    "pull_request": "#149",
+    "reason_code": "UNAUTHORIZED_PROTECTED_PATH",
+    "repository_metadata": "visibility=public,default_branch=main,initial_and_final_head_confirmed=true",
+    "review_and_provenance": "codex=pending,codex_timestamp=None,trusted_request_timestamp=None,unresolved_threads=True",
+    "scope_and_authorization": "issue=state=open,trusted_author=True,authorization=all_paths=True,protected_paths=False",
+    "workflow_run_and_job_evidence": "[]"
+  },
+  "detail": "Protected changed or renamed paths lack exact protected authorization.",
+  "exact_head_sha": "a32df06754f88e5d88ff9281dac96d2edf660b00",
+  "issue_number": 146,
+  "notification": false,
+  "pull_request_number": 149,
+  "reason_code": "UNAUTHORIZED_PROTECTED_PATH",
+  "required_human_action": null,
+  "schema_version": 1
+}
