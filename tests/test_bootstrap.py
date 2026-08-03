@@ -53,6 +53,9 @@ class BootstrapTest(unittest.TestCase):
             self.assertNotIn("notion", checklist.lower())
             self.assertIn("Queue failure creates no routine Issue or Pull Request comment", checklist)
             self.assertIn("Queue recovery is bounded, deterministic, idempotent, non-notifying", checklist)
+            self.assertIn("owner-authored existing-PR-base block", checklist)
+            self.assertIn("digest-bound full-byte handoff", checklist)
+            self.assertIn("ordinary Issues still target the default branch", checklist)
             self.assertIn("one unchanged default-branch SHA", checklist)
             self.assertIn("explicit label evidence", checklist)
             self.assertIn("single-use", checklist)
@@ -144,6 +147,16 @@ class BootstrapTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertIn(path, ALLOWLIST)
+
+    def test_generated_queue_workflow_has_byte_parity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render(target, "example-owner")
+            source = Path(__file__).resolve().parents[1] / ".github/workflows/claude-queue.yml"
+            self.assertEqual(
+                (target / ".github/workflows/claude-queue.yml").read_bytes(),
+                source.read_bytes(),
+            )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,33 @@ ISSUE_NUMBER = 85
 
 
 class QueueAndFinalGuardTest(unittest.TestCase):
+    def test_queue_exact_existing_pr_base_contract_is_fail_closed(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        self.assertIn("foundation-queue-existing-pr-base", queue)
+        self.assertIn('set(values) != {"pull_request", "base_ref", "base_sha"}', queue)
+        self.assertIn('pull.get("state") == "open"', queue)
+        self.assertIn('head_repo.get("full_name") == repository', queue)
+        self.assertIn('head.get("ref") == values["base_ref"]', queue)
+        self.assertIn('head.get("sha") == values["base_sha"]', queue)
+        self.assertIn("base moved before publication", queue)
+
+    def test_queue_uses_full_byte_handoff_and_api_only_publication(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        implement = queue.split("\n  implement:\n", 1)[1].split("\n  verify:\n", 1)[0]
+        publish = queue.split("\n  publish:\n", 1)[1].split("\n  finalize:\n", 1)[0]
+        self.assertIn("persist-credentials: false", implement)
+        self.assertIn("contents: read", implement)
+        self.assertNotIn("contents: write", implement)
+        self.assertIn("content_base64", implement)
+        self.assertIn("artifact_sha256", implement)
+        self.assertIn("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", implement)
+        self.assertIn("contents: write", publish)
+        self.assertIn("repos/{repo}/git/blobs", publish)
+        self.assertIn("repos/{repo}/git/trees", publish)
+        self.assertIn("repos/{repo}/git/commits", publish)
+        self.assertIn('"draft":"true"', publish)
+        self.assertNotIn("actions/checkout", publish)
+
     def test_queue_failure_is_non_notifying_and_recovery_is_separated_from_merge_supervisor(self):
         queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
         finalize = queue.split("\n  finalize:\n", 1)[1]
