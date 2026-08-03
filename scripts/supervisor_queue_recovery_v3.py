@@ -320,7 +320,7 @@ def complete_connected_exhaustion_snapshot(
     post_enrichment_alternatives = _trusted_alternative_candidates(issue_number)
     if post_enrichment_alternatives:
         raise RuntimeError(
-            "Trusted alternative candidate appeared after Queue exhaustion enrichment"
+            "Trusted alternative candidate appeared during complete Queue audit"
         )
     snapshot["alternative_candidate_prs"] = post_enrichment_alternatives
     snapshot["alternative_paths_exhausted"] = True
