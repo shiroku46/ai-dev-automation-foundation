@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import time
 from typing import Any, Callable
 
@@ -279,16 +280,24 @@ def complete_connected_exhaustion_snapshot(
         }
     )
 
-    # Requirement 8: include failure class, checkpoint, retry attempt, next action,
-    # and human_action_required in the sanitized exhaustion snapshot.
+    # Failure evidence and checkpoint discovery are optional enrichment for the
+    # sanitized stop snapshot. If local GitHub CLI access is unavailable, retain
+    # every validated exhaustion gate and report a deterministic unknown/no-checkpoint
+    # state instead of aborting snapshot generation.
     attempt_count = len(expected_retry_records)
-    evidence = _latest_run_failure_evidence(issue_number)
+    try:
+        evidence = _latest_run_failure_evidence(issue_number)
+    except (OSError, subprocess.CalledProcessError):
+        evidence = None
     if evidence is not None:
         conclusion, perm_denials, error_detail = evidence
         failure_class = classify_conclusion(conclusion, perm_denials, error_detail)
     else:
         failure_class = FailureClass.UNKNOWN
-    checkpoint = _wip_branch_info(issue_number)
+    try:
+        checkpoint = _wip_branch_info(issue_number)
+    except (OSError, subprocess.CalledProcessError):
+        checkpoint = None
     checkpoint_branch = checkpoint[0] if checkpoint is not None else None
     checkpoint_sha = checkpoint[1] if checkpoint is not None else None
     status = build_failure_status(
@@ -317,12 +326,15 @@ def _wip_branch_info(issue_number: int) -> tuple[str, str] | None:
     an in-progress or checkpointed implementation for this issue exists without a PR.
     """
     prefix = f"claude-issue-{issue_number}-"
-    result = runtime.gh_result(
-        "api",
-        "-H",
-        "Accept: application/vnd.github+json",
-        f"repos/{runtime.REPO}/branches?per_page=100",
-    )
+    try:
+        result = runtime.gh_result(
+            "api",
+            "-H",
+            "Accept: application/vnd.github+json",
+            f"repos/{runtime.REPO}/branches?per_page=100",
+        )
+    except OSError:
+        return None
     if result.returncode != 0:
         return None
     branches = json.loads(result.stdout)
