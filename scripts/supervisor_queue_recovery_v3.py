@@ -288,7 +288,9 @@ def complete_connected_exhaustion_snapshot(
 
     attempt_count = len(expected_retry_records)
     try:
-        evidence = _latest_run_failure_evidence(issue_number)
+        evidence = _latest_run_failure_evidence(
+            issue_number, fingerprint, expected_default_sha
+        )
     except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
         evidence = None
     failure_class, _ = _parse_failure_evidence(evidence)
@@ -322,6 +324,8 @@ def complete_connected_exhaustion_snapshot(
         raise RuntimeError(
             "Trusted alternative candidate appeared during complete Queue audit"
         )
+    if _exact_default_sha() != expected_default_sha:
+        raise RuntimeError("Default branch moved after final alternative audit")
     snapshot["alternative_candidate_prs"] = post_enrichment_alternatives
     snapshot["alternative_paths_exhausted"] = True
     return snapshot
@@ -382,23 +386,147 @@ def _job_stage(name: str) -> str | None:
     return None
 
 
-def _latest_run_failure_evidence(
+def _validated_request_timestamp(issue_number: int, fingerprint: str) -> str:
+    issue = recovery._revalidate_request(issue_number, fingerprint)
+    timestamp = recovery._request_timestamp(issue)
+    if not timestamp:
+        raise RuntimeError("Queue request timestamp is unavailable")
+    return timestamp
+
+
+def _run_matches_request(
+    run: dict[str, Any],
     issue_number: int,
+    fingerprint: str,
+    expected_default_sha: str,
+    request_timestamp: str,
+) -> bool:
+    run_repo = (run.get("repository") or {}).get("full_name")
+    run_path = str(run.get("path") or "").split("@", 1)[0]
+    title = str(run.get("display_title") or "")
+    event = str(run.get("event") or "")
+    actor = (run.get("actor") or {}).get("login") or ""
+    created_at = str(run.get("created_at") or "")
+    if (
+        run_repo != runtime.REPO
+        or run_path != recovery.QUEUE_WORKFLOW_PATH
+        or run.get("head_branch") != runtime.DEFAULT_BRANCH
+        or run.get("head_sha") != expected_default_sha
+        or run.get("status") != "completed"
+        or run.get("conclusion") in {"success", "skipped", "neutral", ""}
+        or actor not in runtime.ALLOWED_AUTHORS
+        or not _title_identifies_issue(title, issue_number)
+        or not created_at
+        or created_at < request_timestamp
+    ):
+        return False
+    if event == "workflow_dispatch":
+        return f"request-{fingerprint}" in title
+    return event in {"issues", "issue_comment"}
+
+
+def _job_log_failure_markers(job_id: int) -> list[str]:
+    """Extract only known classification markers from a failed job log."""
+    if job_id <= 0:
+        return []
+    result = runtime.gh_result(
+        "api",
+        "-H",
+        "Accept: application/vnd.github+json",
+        f"repos/{runtime.REPO}/actions/jobs/{job_id}/logs",
+    )
+    if result.returncode != 0:
+        return []
+    low = f"{result.stdout}\n{result.stderr}".lower()
+    marker_signals: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            "error_max_turns",
+            (
+                "error_max_turns",
+                "max turns",
+                "maximum number of turns",
+                "turn limit",
+            ),
+        ),
+        (
+            "tool policy",
+            (
+                "tool policy",
+                "tool permission",
+                "allowedtools",
+                "allowed tools",
+                "command is not allowed",
+                "not permitted by tool",
+            ),
+        ),
+        (
+            "authentication failed",
+            (
+                "token expired",
+                "expired token",
+                "authentication failed",
+                "missing secret",
+                "secret not found",
+                "unauthorized",
+                "session limit",
+                "credential expired",
+            ),
+        ),
+        (
+            "connect tunnel",
+            (
+                "connect tunnel",
+                "could not resolve host",
+                "connection reset",
+                "connection refused",
+                "network is unreachable",
+                "git transport",
+            ),
+        ),
+        (
+            "test failure",
+            (
+                "failed (failures=",
+                "failed (errors=",
+                "assertionerror",
+                "test failure",
+                "tests failed",
+            ),
+        ),
+        (
+            "service unavailable",
+            (
+                "service unavailable",
+                "runner lost communication",
+                "503 service",
+                "timed out",
+            ),
+        ),
+    )
+    return [
+        marker
+        for marker, signals in marker_signals
+        if any(signal in low for signal in signals)
+    ]
+
+
+def _bound_failure_evidence(
+    issue_number: int,
+    fingerprint: str,
+    expected_default_sha: str,
 ) -> tuple[str, int, str, int] | None:
-    """Return sanitized evidence from the failed stage of the latest exact-Issue run."""
+    request_timestamp = _validated_request_timestamp(issue_number, fingerprint)
+    if _exact_default_sha() != expected_default_sha:
+        raise RuntimeError("Default branch moved before Queue failure classification")
     latest_run: dict[str, Any] | None = None
     latest_key = (-1, -1)
     for run in recovery._queue_runs():
-        run_repo = (run.get("repository") or {}).get("full_name")
-        run_path = str(run.get("path") or "").split("@", 1)[0]
-        title = str(run.get("display_title") or "")
-        if (
-            run_repo != runtime.REPO
-            or run_path != recovery.QUEUE_WORKFLOW_PATH
-            or run.get("head_branch") != runtime.DEFAULT_BRANCH
-            or run.get("status") != "completed"
-            or run.get("conclusion") in {"success", "skipped", "neutral"}
-            or not _title_identifies_issue(title, issue_number)
+        if not _run_matches_request(
+            run,
+            issue_number,
+            fingerprint,
+            expected_default_sha,
+            request_timestamp,
         ):
             continue
         run_id = int(run.get("id") or 0)
@@ -460,7 +588,35 @@ def _latest_run_failure_evidence(
             )
         ):
             perm_denials += 1
+
+    log_markers = _job_log_failure_markers(int(failed_job.get("id") or 0))
+    error_detail_parts.extend(log_markers)
+    if "tool policy" in log_markers:
+        perm_denials += 1
+    if "error_max_turns" in log_markers:
+        conclusion = "error_max_turns"
+    if _exact_default_sha() != expected_default_sha:
+        raise RuntimeError("Default branch moved during Queue failure classification")
     return conclusion, perm_denials, "; ".join(error_detail_parts), latest_run_id
+
+
+def _latest_run_failure_evidence(
+    issue_number: int,
+    fingerprint: str | None = None,
+    expected_default_sha: str | None = None,
+) -> tuple[str, int, str, int] | None:
+    """Return failure evidence bound to the current request and exact default SHA."""
+    if expected_default_sha is None:
+        expected_default_sha = _exact_default_sha()
+    if fingerprint is None:
+        issue = runtime.api(f"repos/{runtime.REPO}/issues/{issue_number}")
+        timestamp = recovery._request_timestamp(issue)
+        if not timestamp:
+            return None
+        fingerprint = content_bound_request_fingerprint(issue_number, timestamp)
+    return _bound_failure_evidence(
+        issue_number, fingerprint, expected_default_sha
+    )
 
 
 def _reconcile_existing_attempt_before_checkpoint(
@@ -515,8 +671,19 @@ def _internal_stop_audit(
         raise RuntimeError("Non-retryable stop omitted its Queue run ID")
     default_sha = _exact_default_sha()
     _validated_issue_scope(issue_number)
+    request_timestamp = _validated_request_timestamp(issue_number, fingerprint)
     require_no_trusted_alternative(issue_number)
-    recovery._revalidate_request(issue_number, fingerprint)
+    failure_run = runtime.api(
+        f"repos/{runtime.REPO}/actions/runs/{failure_run_id}"
+    )
+    if not _run_matches_request(
+        failure_run,
+        issue_number,
+        fingerprint,
+        default_sha,
+        request_timestamp,
+    ):
+        raise RuntimeError("Non-retryable stop run is not bound to the current request")
     checkpoint = _wip_branch_info(issue_number, strict=True)
     if _exact_default_sha() != default_sha:
         raise RuntimeError("Default branch moved during non-retryable stop audit")
@@ -572,16 +739,25 @@ def _classified_dispatch_retry(
     attempt: int,
     v2_dispatch: Callable[..., bool],
 ) -> bool:
-    """Classify the latest exact-Issue failure before bounded dispatch."""
+    """Classify the current exact-Issue failure before bounded dispatch or stop."""
+    expected_default_sha = _exact_default_sha()
     checkpoint = _wip_branch_info(issue_number, strict=True)
+    reconciled = False
     if checkpoint is not None:
-        if _reconcile_existing_attempt_before_checkpoint(
+        reconciled = _reconcile_existing_attempt_before_checkpoint(
             issue_number, fingerprint, attempt, v2_dispatch
-        ):
-            return True
-        return False
+        )
+        try:
+            evidence = _bound_failure_evidence(
+                issue_number, fingerprint, expected_default_sha
+            )
+        except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
+            evidence = None
+    else:
+        evidence = _latest_run_failure_evidence(
+            issue_number, fingerprint, expected_default_sha
+        )
 
-    evidence = _latest_run_failure_evidence(issue_number)
     failure_class, failure_run_id = _parse_failure_evidence(evidence)
     if not should_auto_retry(
         failure_class, attempt - 1, recovery.MAX_QUEUE_RECOVERY_ATTEMPTS
@@ -594,8 +770,10 @@ def _classified_dispatch_retry(
                 failure_class,
                 failure_run_id,
             )
-        return False
+        return reconciled
 
+    if checkpoint is not None:
+        return reconciled
     return v2_dispatch(issue_number, fingerprint, attempt)
 
 
