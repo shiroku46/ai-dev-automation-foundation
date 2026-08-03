@@ -45,6 +45,16 @@ ALLOWED_SCOPE_HEADINGS = frozenset(
 TASK_SCOPE_MARKER = "<!-- foundation-task-scope"
 TASK_SCOPE_END = "-->"
 RISK_LEVELS = frozenset({"low", "standard", "protected"})
+PROTECTED_OPERATION_PATTERNS = (
+    re.compile(r"\bdeploy(?:ment|ing|ed)?\b"),
+    re.compile(r"\bproduction\b"),
+    re.compile(r"\bauth(?:entication|orization)?\b"),
+    re.compile(r"\bbilling\b"),
+    re.compile(r"\bsecret(?:s)?\b"),
+    re.compile(r"\boidc\b"),
+    re.compile(r"\brepository\s+settings?\b"),
+    re.compile(r"\b(?:delete|destroy|destructive|drop|purge|erase|truncate)\b"),
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +77,11 @@ def normalize_path(path: str) -> str:
 def is_protected(path: str) -> bool:
     normalized = normalize_path(path)
     return normalized in PROTECTED_EXACT or normalized.startswith(PROTECTED_PREFIXES)
+
+
+def operation_requires_protected(operation: str) -> bool:
+    normalized = " ".join((operation or "").lower().replace("_", " ").replace("-", " ").split())
+    return any(pattern.search(normalized) for pattern in PROTECTED_OPERATION_PATTERNS)
 
 
 def _pattern_base(pattern: str) -> str:
@@ -220,6 +235,8 @@ def parse_task_scope(issue_body: str) -> TaskScope | None:
         raise ValueError("foundation-task-scope checks must be unique")
     if risk != "protected" and any(_pattern_is_protected(path) for path in paths):
         raise ValueError("protected paths require risk: protected")
+    if risk != "protected" and operation_requires_protected(operation):
+        raise ValueError("protected operations require risk: protected")
     if risk == "low" and any(not _pattern_is_low_risk(path) for path in paths):
         raise ValueError("low-risk paths must be documentation, tests, or generated metadata")
     return TaskScope(
@@ -323,6 +340,8 @@ def risk_for_changes(changed_paths, issue_body: str) -> str:
     if scope is not None:
         if any(is_protected(path) for path in changed_paths) and scope.risk != "protected":
             raise ValueError("protected changed paths require risk: protected")
+        if operation_requires_protected(scope.operation) and scope.risk != "protected":
+            raise ValueError("protected operations require risk: protected")
         return scope.risk
     return "protected" if any(is_protected(path) for path in changed_paths) else "standard"
 
