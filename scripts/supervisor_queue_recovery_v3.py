@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import time
 from typing import Any, Callable
@@ -243,6 +244,16 @@ def wait_for_admitted_implementation(
     )
 
 
+def _parse_failure_evidence(
+    evidence: tuple[str, int, str] | tuple[str, int, str, int] | None,
+) -> tuple[FailureClass, int | None]:
+    if evidence is None:
+        return FailureClass.UNKNOWN, None
+    conclusion, permission_denials, error_detail = evidence[:3]
+    run_id = int(evidence[3]) if len(evidence) > 3 else None
+    return classify_conclusion(conclusion, permission_denials, error_detail), run_id
+
+
 def complete_connected_exhaustion_snapshot(
     issue_number: int,
     fingerprint: str,
@@ -280,23 +291,15 @@ def complete_connected_exhaustion_snapshot(
         }
     )
 
-    # Failure evidence and checkpoint discovery are optional enrichment for the
-    # sanitized stop snapshot. If local GitHub CLI access is unavailable, retain
-    # every validated exhaustion gate and report a deterministic unknown/no-checkpoint
-    # state instead of aborting snapshot generation.
     attempt_count = len(expected_retry_records)
     try:
         evidence = _latest_run_failure_evidence(issue_number)
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
         evidence = None
-    if evidence is not None:
-        conclusion, perm_denials, error_detail = evidence
-        failure_class = classify_conclusion(conclusion, perm_denials, error_detail)
-    else:
-        failure_class = FailureClass.UNKNOWN
+    failure_class, _ = _parse_failure_evidence(evidence)
     try:
-        checkpoint = _wip_branch_info(issue_number)
-    except (OSError, subprocess.CalledProcessError):
+        checkpoint = _wip_branch_info(issue_number, strict=False)
+    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
         checkpoint = None
     checkpoint_branch = checkpoint[0] if checkpoint is not None else None
     checkpoint_sha = checkpoint[1] if checkpoint is not None else None
@@ -316,55 +319,83 @@ def complete_connected_exhaustion_snapshot(
             "retry_attempt": status.retry_attempt,
         }
     )
+
+    if _exact_default_sha() != expected_default_sha:
+        raise RuntimeError("Default branch moved after Queue exhaustion enrichment")
+    post_enrichment_alternatives = _trusted_alternative_candidates(issue_number)
+    if post_enrichment_alternatives:
+        raise RuntimeError(
+            "Trusted alternative candidate appeared after Queue exhaustion enrichment"
+        )
+    snapshot["alternative_candidate_prs"] = post_enrichment_alternatives
+    snapshot["alternative_paths_exhausted"] = True
     return snapshot
 
 
-def _wip_branch_info(issue_number: int) -> tuple[str, str] | None:
-    """Return (branch_name, sha) for an existing same-issue WIP/checkpoint branch, or None.
+def _wip_branch_info(
+    issue_number: int, *, strict: bool = False
+) -> tuple[str, str] | None:
+    """Return one deterministic same-Issue checkpoint branch, if present.
 
-    Checks GitHub branches for names starting with 'claude-issue-{N}-', which indicates
-    an in-progress or checkpointed implementation for this issue exists without a PR.
+    Dispatch admission uses strict mode: pagination/API failures stop recovery rather
+    than allowing a duplicate default-branch retry. Exhaustion enrichment may use
+    best-effort mode because it is status-only and is followed by exact-head audits.
     """
     prefix = f"claude-issue-{issue_number}-"
     try:
-        result = runtime.gh_result(
-            "api",
-            "-H",
-            "Accept: application/vnd.github+json",
-            f"repos/{runtime.REPO}/branches?per_page=100",
+        branches = runtime.api_list(
+            f"repos/{runtime.REPO}/branches?per_page=100"
         )
-    except OSError:
+    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        if strict:
+            raise RuntimeError("Checkpoint branch enumeration failed closed") from exc
         return None
-    if result.returncode != 0:
-        return None
-    branches = json.loads(result.stdout)
     if not isinstance(branches, list):
+        if strict:
+            raise RuntimeError("Checkpoint branch enumeration was incomplete")
         return None
+
+    matches: list[tuple[str, str]] = []
     for branch in branches:
         name = str(branch.get("name") or "")
-        if name.startswith(prefix):
-            sha = str((branch.get("commit") or {}).get("sha") or "")
-            if runtime.EXACT_SHA.fullmatch(sha):
-                return name, sha
+        if not name.startswith(prefix):
+            continue
+        sha = str((branch.get("commit") or {}).get("sha") or "")
+        if not runtime.EXACT_SHA.fullmatch(sha):
+            if strict:
+                raise RuntimeError("Checkpoint branch omitted an exact SHA")
+            continue
+        matches.append((name, sha))
+    return sorted(matches)[0] if matches else None
+
+
+def _title_identifies_issue(title: str, issue_number: int) -> bool:
+    return bool(
+        re.search(
+            rf"(?<![0-9])issue-{issue_number}(?![0-9])",
+            title,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _job_stage(name: str) -> str | None:
+    normalized = name.strip().lower()
+    for stage in ("prepare", "resolve", "implement", "verify", "publish", "finalize"):
+        if normalized == stage or normalized.startswith(stage + " ") or normalized.startswith(stage + " /"):
+            return stage
     return None
 
 
 def _latest_run_failure_evidence(
     issue_number: int,
-) -> tuple[str, int, str] | None:
-    """Return (conclusion, permission_denials_count, error_detail) from the latest Queue run.
-
-    Scans completed failed Queue workflow runs on the default branch and returns
-    implement-job evidence for the most recent run relevant to this issue.
-    Returns None when no applicable run is found.
-    """
-    latest_run_id: int | None = None
-    latest_run_number: int = 0
-
+) -> tuple[str, int, str, int] | None:
+    """Return sanitized evidence from the failed stage of the latest exact-Issue run."""
+    latest_run: dict[str, Any] | None = None
+    latest_key = (-1, -1)
     for run in recovery._queue_runs():
         run_repo = (run.get("repository") or {}).get("full_name")
         run_path = str(run.get("path") or "").split("@", 1)[0]
-        run_number = int(run.get("run_number") or 0)
         title = str(run.get("display_title") or "")
         if (
             run_repo != runtime.REPO
@@ -372,56 +403,172 @@ def _latest_run_failure_evidence(
             or run.get("head_branch") != runtime.DEFAULT_BRANCH
             or run.get("status") != "completed"
             or run.get("conclusion") in {"success", "skipped", "neutral"}
+            or not _title_identifies_issue(title, issue_number)
         ):
             continue
-        # Recovery runs embed the issue number in their display title.
-        # Original runs triggered by issue events are also relevant.
-        is_for_issue = (
-            f"issue-{issue_number} " in title
-            or run.get("event") in {"issues", "issue_comment"}
-        )
-        if not is_for_issue:
-            continue
         run_id = int(run.get("id") or 0)
-        if run_id > 0 and run_number > latest_run_number:
-            latest_run_number = run_number
-            latest_run_id = run_id
+        key = (int(run.get("run_number") or 0), run_id)
+        if run_id > 0 and key > latest_key:
+            latest_key = key
+            latest_run = run
 
-    if latest_run_id is None:
+    if latest_run is None:
         return None
-
+    latest_run_id = int(latest_run["id"])
     jobs = runtime.api_key_pages(
         f"repos/{runtime.REPO}/actions/runs/{latest_run_id}/jobs?filter=all&per_page=100",
         "jobs",
     )
-    implement = [job for job in jobs if job.get("name") == "implement"]
-    if len(implement) != 1 or implement[0].get("status") != "completed":
+    stage_order = {
+        "prepare": 0,
+        "resolve": 1,
+        "implement": 2,
+        "verify": 3,
+        "publish": 4,
+        "finalize": 5,
+    }
+    failed_jobs: list[tuple[int, dict[str, Any]]] = []
+    for job in jobs:
+        stage = _job_stage(str(job.get("name") or ""))
+        conclusion = str(job.get("conclusion") or "")
+        if (
+            stage is not None
+            and job.get("status") == "completed"
+            and conclusion not in {"success", "skipped", "neutral", ""}
+        ):
+            failed_jobs.append((stage_order[stage], job))
+    if not failed_jobs:
         return None
 
-    impl_job = implement[0]
-    conclusion = str(impl_job.get("conclusion") or "")
+    _, failed_job = min(failed_jobs, key=lambda item: item[0])
+    conclusion = str(failed_job.get("conclusion") or "")
     perm_denials = 0
-    error_detail_parts: list[str] = []
+    error_detail_parts = [
+        str(failed_job.get("name") or "").strip().lower(),
+        conclusion.lower(),
+    ]
+    for step in failed_job.get("steps") or []:
+        step_name = str(step.get("name") or "").strip().lower()
+        step_conclusion = str(step.get("conclusion") or "").strip().lower()
+        if step_conclusion != "failure":
+            continue
+        error_detail_parts.append(f"{step_name} failure")
+        if any(
+            signal in step_name
+            for signal in (
+                "tool policy",
+                "tool permission",
+                "not allowed",
+                "permission denied",
+                "allowedtools",
+                "allowed tools",
+            )
+        ):
+            perm_denials += 1
+    return conclusion, perm_denials, "; ".join(error_detail_parts), latest_run_id
 
-    for step in impl_job.get("steps") or []:
-        step_name = str(step.get("name") or "").lower()
-        step_conclusion = str(step.get("conclusion") or "")
-        if step_conclusion == "failure":
-            error_detail_parts.append(step_name)
-            if any(
-                sig in step_name
-                for sig in (
-                    "tool policy",
-                    "tool permission",
-                    "not allowed",
-                    "permission denied",
-                    "allowedtools",
-                    "allowed tools",
-                )
-            ):
-                perm_denials += 1
 
-    return conclusion, perm_denials, "; ".join(error_detail_parts)
+def _reconcile_existing_attempt_before_checkpoint(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    v2_dispatch: Callable[..., bool],
+) -> bool:
+    """Consume an already-dispatched exact attempt before WIP suppression."""
+    root = hardened._retry_root(issue_number, fingerprint)
+    intent_path = f"{root}/retry-{attempt}.json"
+    started_path = f"{root}/retry-{attempt}-started.json"
+    terminal_path = hardened._terminal_path(issue_number, fingerprint, attempt)
+    try:
+        intent = hardened._record_payload(intent_path)
+        started = hardened._record_payload(started_path)
+        terminal = hardened._record_payload(terminal_path)
+    except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
+        return False
+    if intent is None or started is not None or terminal is not None:
+        return False
+    expected_title = hardened._attempt_run_title(issue_number, fingerprint, attempt)
+    default_sha = str(intent.get("default_sha") or "")
+    if (
+        intent.get("issue_number") != issue_number
+        or intent.get("attempt") != attempt
+        or intent.get("request_fingerprint") != fingerprint
+        or intent.get("expected_run_title") != expected_title
+        or intent.get("fixed_workflow") != recovery.QUEUE_WORKFLOW_FILE
+        or not runtime.EXACT_SHA.fullmatch(default_sha)
+        or intent.get("notification") is not False
+    ):
+        raise RuntimeError("Existing Queue retry intent identity is invalid")
+    matches = hardened._matching_dispatch_runs(
+        issue_number, fingerprint, attempt, default_sha
+    )
+    if len(matches) > 1:
+        raise RuntimeError("Existing Queue retry identity is ambiguous")
+    if not matches:
+        return False
+    return bool(v2_dispatch(issue_number, fingerprint, attempt))
+
+
+def _internal_stop_audit(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    failure_class: FailureClass,
+    failure_run_id: int,
+) -> dict[str, Any]:
+    if failure_run_id <= 0:
+        raise RuntimeError("Non-retryable stop omitted its Queue run ID")
+    default_sha = _exact_default_sha()
+    _validated_issue_scope(issue_number)
+    require_no_trusted_alternative(issue_number)
+    recovery._revalidate_request(issue_number, fingerprint)
+    checkpoint = _wip_branch_info(issue_number, strict=True)
+    if _exact_default_sha() != default_sha:
+        raise RuntimeError("Default branch moved during non-retryable stop audit")
+    require_no_trusted_alternative(issue_number)
+    status = build_failure_status(
+        failure_class=failure_class,
+        retry_attempt=attempt - 1,
+        max_retries=recovery.MAX_QUEUE_RECOVERY_ATTEMPTS,
+        checkpoint_sha=checkpoint[1] if checkpoint else None,
+    )
+    return {
+        "checkpoint_branch": checkpoint[0] if checkpoint else None,
+        "checkpoint_sha": checkpoint[1] if checkpoint else None,
+        "default_sha": default_sha,
+        "failure_class": status.failure_class.value,
+        "failure_run_id": failure_run_id,
+        "human_action_required": status.human_action_required,
+        "issue_number": issue_number,
+        "next_automatic_action": status.next_automatic_action,
+        "notification": False,
+        "reason": "QUEUE_PIPELINE_NON_RETRYABLE_STOP",
+        "request_fingerprint": fingerprint,
+        "retry_attempt": status.retry_attempt,
+    }
+
+
+def _record_internal_stop(
+    issue_number: int,
+    fingerprint: str,
+    attempt: int,
+    failure_class: FailureClass,
+    failure_run_id: int,
+) -> bool:
+    first = _internal_stop_audit(
+        issue_number, fingerprint, attempt, failure_class, failure_run_id
+    )
+    second = _internal_stop_audit(
+        issue_number, fingerprint, attempt, failure_class, failure_run_id
+    )
+    if first != second:
+        raise RuntimeError("Non-retryable stop audit changed between live passes")
+    path = f"{hardened._retry_root(issue_number, fingerprint)}/internal-stop.json"
+    return recovery._put_exact_record(
+        path,
+        recovery._canonical_record(second),
+        f"Record non-retryable Queue stop for Issue #{issue_number}",
+    )
 
 
 def _classified_dispatch_retry(
@@ -430,28 +577,28 @@ def _classified_dispatch_retry(
     attempt: int,
     v2_dispatch: Callable[..., bool],
 ) -> bool:
-    """Pre-check failure class and WIP branch before allowing dispatch.
-
-    Returns False without dispatching when:
-    - an existing same-issue WIP/checkpoint branch is detected (requirement 7), or
-    - the latest run's failure class is non-retryable (requirements 4-6).
-    Otherwise delegates to the v2 guarded dispatch.
-    """
-    # Requirement 7: detect existing WIP/checkpoint branch even without a PR.
-    checkpoint = _wip_branch_info(issue_number)
+    """Classify the latest exact-Issue failure before bounded dispatch."""
+    checkpoint = _wip_branch_info(issue_number, strict=True)
     if checkpoint is not None:
+        if _reconcile_existing_attempt_before_checkpoint(
+            issue_number, fingerprint, attempt, v2_dispatch
+        ):
+            return True
         return False
 
-    # Requirements 1-3: inspect the latest Queue run and classify its failure.
     evidence = _latest_run_failure_evidence(issue_number)
-    if evidence is not None:
-        conclusion, perm_denials, error_detail = evidence
-        failure_class = classify_conclusion(conclusion, perm_denials, error_detail)
-    else:
-        failure_class = FailureClass.UNKNOWN
-
-    # Requirements 4-6: only dispatch for retryable automation-owned classes.
-    if not should_auto_retry(failure_class, attempt - 1, recovery.MAX_QUEUE_RECOVERY_ATTEMPTS):
+    failure_class, failure_run_id = _parse_failure_evidence(evidence)
+    if not should_auto_retry(
+        failure_class, attempt - 1, recovery.MAX_QUEUE_RECOVERY_ATTEMPTS
+    ):
+        if failure_run_id is not None:
+            _record_internal_stop(
+                issue_number,
+                fingerprint,
+                attempt,
+                failure_class,
+                failure_run_id,
+            )
         return False
 
     return v2_dispatch(issue_number, fingerprint, attempt)
@@ -464,9 +611,6 @@ def main() -> int:
     hardened._wait_for_queue_implementation_start = wait_for_admitted_implementation
     hardened._connected_exhaustion_snapshot = complete_connected_exhaustion_snapshot
 
-    # Install the classified dispatch wrapper. v2's main() sets recovery._dispatch_retry
-    # to guarded_dispatch_retry before calling recovery.main(). We intercept recovery.main
-    # so we can wrap that assignment with our classification pre-check.
     _original_recovery_main = recovery.main
 
     def _recovery_main_with_classification() -> int:
