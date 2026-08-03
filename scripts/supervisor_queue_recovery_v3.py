@@ -740,7 +740,6 @@ def _classified_dispatch_retry(
     v2_dispatch: Callable[..., bool],
 ) -> bool:
     """Classify the current exact-Issue failure before bounded dispatch or stop."""
-    expected_default_sha = _exact_default_sha()
     checkpoint = _wip_branch_info(issue_number, strict=True)
     reconciled = False
     if checkpoint is not None:
@@ -748,15 +747,14 @@ def _classified_dispatch_retry(
             issue_number, fingerprint, attempt, v2_dispatch
         )
         try:
+            expected_default_sha = _exact_default_sha()
             evidence = _bound_failure_evidence(
                 issue_number, fingerprint, expected_default_sha
             )
         except (OSError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError):
             evidence = None
     else:
-        evidence = _latest_run_failure_evidence(
-            issue_number, fingerprint, expected_default_sha
-        )
+        evidence = _latest_run_failure_evidence(issue_number)
 
     failure_class, failure_run_id = _parse_failure_evidence(evidence)
     if not should_auto_retry(
