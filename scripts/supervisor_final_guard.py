@@ -138,12 +138,16 @@ def _require_live_merge_candidate(
     return issue, changed
 
 
-def _require_pr_only_merge_candidate(pr_number: int, candidate_sha: str) -> None:
+def _require_pr_only_merge_candidate(
+    pr_number: int, candidate_sha: str, verified_issue: int
+) -> None:
     live_pr = runtime.api(f"repos/{runtime.REPO}/pulls/{pr_number}")
     if not isinstance(live_pr.get("labels"), list):
         raise RuntimeError("Final Pull Request omitted explicit label evidence")
     if not runtime.trusted_candidate(live_pr):
         raise RuntimeError("Live Pull Request no longer matches the trusted candidate")
+    if policy.parse_issue_number(live_pr.get("body") or "") != verified_issue:
+        raise RuntimeError("Final Pull Request source Issue binding changed")
     if (
         live_pr.get("state") != "open"
         or live_pr.get("draft") is not False
@@ -151,6 +155,17 @@ def _require_pr_only_merge_candidate(pr_number: int, candidate_sha: str) -> None
         or str((live_pr.get("head") or {}).get("sha") or "") != candidate_sha
     ):
         raise RuntimeError("Final Pull Request-only merge check failed")
+
+
+def _check_run_order(item: dict[str, Any]) -> tuple[str, int]:
+    timestamp = str(
+        item.get("completed_at")
+        or item.get("started_at")
+        or item.get("created_at")
+        or ""
+    )
+    identifier = item.get("id")
+    return timestamp, identifier if isinstance(identifier, int) else -1
 
 
 def _successful_exact_head_check_names(
@@ -168,12 +183,19 @@ def _successful_exact_head_check_names(
         f"repos/{runtime.REPO}/commits/{sha}/check-runs?per_page=100",
         "check_runs",
     )
+    latest_by_name: dict[str, dict[str, Any]] = {}
     for item in check_runs:
-        if item.get("status") != "completed" or item.get("conclusion") != "success":
-            continue
         name = str(item.get("name") or "").strip()
-        if name:
+        if not name:
+            continue
+        current = latest_by_name.get(name)
+        if current is None or _check_run_order(item) > _check_run_order(current):
+            latest_by_name[name] = item
+    for name, item in latest_by_name.items():
+        if item.get("status") == "completed" and item.get("conclusion") == "success":
             names.add(name)
+        else:
+            names.discard(name)
     return names
 
 
@@ -415,7 +437,7 @@ def guarded_gh(*args: str) -> str:
             raise RuntimeError("Trusted source Issue changed during final evidence validation")
 
     _require_unchanged_default(default_sha)
-    _require_pr_only_merge_candidate(pr_number, candidate_sha)
+    _require_pr_only_merge_candidate(pr_number, candidate_sha, verified_issue)
     result = _original_gh(*args)
     _verified_gate = None
     return result
