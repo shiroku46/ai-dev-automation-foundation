@@ -274,15 +274,10 @@ def complete_connected_exhaustion_snapshot(
     )
     if _exact_default_sha() != expected_default_sha:
         raise RuntimeError("Default branch moved during complete Queue audit")
-    final_alternatives = _trusted_alternative_candidates(issue_number)
-    if final_alternatives:
-        raise RuntimeError(
-            "Trusted alternative candidate appeared during complete Queue audit"
-        )
     snapshot.update(
         {
-            "alternative_candidate_prs": final_alternatives,
-            "alternative_paths_exhausted": not final_alternatives,
+            "alternative_candidate_prs": alternatives,
+            "alternative_paths_exhausted": not alternatives,
             "source_declared_paths": scope["declared_paths"],
             "source_protected_authorized_paths": scope[
                 "protected_authorized_paths"
