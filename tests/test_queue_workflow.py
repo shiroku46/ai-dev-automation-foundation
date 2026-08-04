@@ -166,13 +166,19 @@ class QueueWorkflowTest(unittest.TestCase):
         self.assertIn('if event_name in {"issues", "issue_comment"}:', prepare)
         self.assertIn('raise RuntimeError(f"Missing event payload for {event_name}")', prepare)
 
-    def test_manual_dispatch_disables_track_progress(self):
+    def test_implementation_forces_agent_mode_before_verification(self):
         implement = job_block(self.text, "implement", "resolve")
-        self.assertIn(
+        active_lines = {
+            line.strip()
+            for line in implement.splitlines()
+            if not line.lstrip().startswith("#")
+        }
+        self.assertIn("track_progress: false", active_lines)
+        self.assertNotIn("track_progress: true", active_lines)
+        self.assertNotIn(
             "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
-            implement,
+            active_lines,
         )
-        self.assertNotIn("track_progress: true", implement)
 
     def test_candidate_execution_is_confined_to_read_only_verify_job(self):
         verify = job_block(self.text, "verify", "publish")
