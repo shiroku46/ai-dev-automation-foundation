@@ -10,7 +10,7 @@ body:
     attributes:
       label: Repository startup acceptance
       options:
-        - label: Connected GitHub access, Actions/Foundation workflows, Workflow permissions, and harmless Bootstrap acceptance are complete.
+        - label: GitHub Actions and Foundation workflows enabled; connected GitHub access, Workflow permissions, and harmless Bootstrap acceptance are complete.
           required: true
         - label: Read and write permissions is selected and Allow GitHub Actions to create and approve pull requests is enabled.
           required: true
