@@ -85,6 +85,8 @@ When GitHub records automation-authored Pull Request runs as `action_required` b
 
 A valid external audit must identify the exact current 40-character GitHub-visible SHA, be authored through the selected supported Codex or Claude route, contain a substantive result, and report no unresolved blocking finding. Provider setup, quota, connection, account, or generic assistant responses do not count.
 
+The request for the selected provider is preserved as an immutable trusted exact-SHA request comment or equivalent immutable provider-request event. It must identify the selected auditor and exact current SHA. A request for one provider does not authorize or require a routine second-provider request.
+
 The Pull Request body or machine-readable status records implementation route, exact SHA, risk tier, selected auditor, audit state, required checks, observed conclusions, and next automatic action. Stale-SHA, untrusted-author, edited-without-provenance, content-free, or second-provider routine evidence is ignored.
 
 ## Internal stops are durable and non-notifying
@@ -101,7 +103,7 @@ automation-stops/pr-<number>/<exact-sha>/<REASON_CODE>.json
 
 The record contains `notification: false`, `human_action_required: false`, the reason, Issue, Pull Request, exact SHA, bounded detail, selected audit route, and connected evidence. Routine internal stops are never posted as Issue or Pull Request comments and never create or edit routine stop labels.
 
-Audit no-progress is measured from immutable exact-SHA request and result evidence for the selected provider. Native-check and mergeability no-progress use relevant immutable exact-SHA evidence, never Pull Request-wide `updated_at`.
+Audit no-progress is measured from the immutable trusted exact-SHA request comment and immutable result evidence for the selected provider. Native-check and mergeability no-progress use relevant immutable exact-SHA evidence, never Pull Request-wide `updated_at`.
 
 ## Human-only notice boundary
 
