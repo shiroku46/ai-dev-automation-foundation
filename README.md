@@ -30,6 +30,20 @@ No automation writes directly to the default branch. Every changed and renamed p
 
 Provider-reported local commits are not completion until GitHub confirms the expected remote branch SHA. Provider quota, setup, or connection responses are not audit evidence and do not delegate routine development work to the owner.
 
+## Mandatory repository Phase 0
+
+Before the harmless Bootstrap acceptance exercise in a newly bootstrapped repository, complete setup steps 1–5 in [`docs/PROJECT_STARTUP.md`](docs/PROJECT_STARTUP.md). Successful acceptance is the final Phase 0 gate; product Issues and implementation start only afterward.
+
+The exact target repository must have GitHub/Codex access, an exact-repository Codex environment, the required Claude credential when OAuth is used, enabled Actions/workflows, and the following GitHub setting before acceptance:
+
+`Settings` → `Actions` → `General` → `Workflow permissions`
+
+- select **Read and write permissions**;
+- enable **Allow GitHub Actions to create and approve pull requests**;
+- save the setting.
+
+After the exact repository passes acceptance and completes Phase 0, do not request the setup again unless connected evidence shows the setting or integration is no longer usable.
+
 ## Validation
 
 ```bash
