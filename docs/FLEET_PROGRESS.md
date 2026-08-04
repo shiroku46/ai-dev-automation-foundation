@@ -1,81 +1,140 @@
 # Fleet Progress Dashboard
 
-The Fleet Progress Dashboard makes GitHub—not a chat transcript—the durable source of project progress. The first phase is an offline, read-only renderer: a trusted coordinator supplies explicit JSON records, the CLI validates them fail-closed, and the resulting Markdown gives one cross-repository overview.
+The Fleet Progress Dashboard makes GitHub—not chat transcripts or provider reports—the durable source of project progress. This phase is an offline, read-only renderer: a trusted coordinator supplies explicit schema-version-2 JSON records, the CLI validates them fail-closed, and deterministic Markdown presents one cross-repository view.
 
-This phase does **not** query GitHub, mutate a repository, synchronize GitHub Projects, or schedule refreshes. Those capabilities require separate protected authorization.
+This command performs no network request, GitHub mutation, Project synchronization, workflow dispatch, environment inspection, or implicit file write.
 
-## Status source
+## Authoritative evidence
 
-Use GitHub Issues, Pull Requests, exact remote SHAs, check conclusions, and audit evidence to construct the input. Do not treat a provider-reported local commit, a chat summary, or an unverified branch name as completion evidence.
+Construct records from live GitHub evidence:
 
-The input document has this form:
+- trusted source Issue and bounded scope;
+- Pull Request number and current GitHub-visible head SHA;
+- exact-head Foundation and product checks;
+- structured `github-coordinator` review state;
+- unresolved review-thread count reflected in the status decision;
+- current blocker, next automatic action, and genuine human-action boundary.
+
+A chat summary, provider-reported local commit, provider quota message, or unverified branch name is not completion evidence. Codex and Claude may appear only as optional implementation-route metadata; they are never review or merge dependencies.
+
+## Schema version 2
+
+The top-level object contains exactly:
 
 ```json
 {
-  "schema_version": 1,
-  "generated_at": "2026-08-04T05:30:00Z",
-  "projects": [
-    {
-      "repository": "owner/example",
-      "phase": "Phase 1",
-      "issue": 154,
-      "pull_request": 155,
-      "status": "review_required",
-      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "checks": {
-        "CI": "success",
-        "Unit Tests": "success"
-      },
-      "implementation_route": "github-direct",
-      "risk_tier": "standard",
-      "selected_auditor": "codex",
-      "audit_state": "pending",
-      "next_action": "Complete one exact-SHA audit",
-      "blocker": null,
-      "human_action_required": false,
-      "updated_at": "2026-08-04T05:25:07Z"
-    }
-  ]
+  "schema_version": 2,
+  "generated_at": "2026-08-04T09:05:00Z",
+  "projects": []
 }
 ```
 
-## Bounded values
+Each project contains exactly:
 
-`status` accepts:
+```json
+{
+  "repository": "owner/repository",
+  "phase": "Phase 2",
+  "issue": 160,
+  "pull_request": 158,
+  "status": "ready_to_merge",
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "checks": {
+    "CI": "success",
+    "Unit Tests": "success"
+  },
+  "implementation_route": "github-direct",
+  "risk_tier": "protected",
+  "review_route": "github-coordinator",
+  "review_state": "clean",
+  "next_action": "Merge with expected-head protection",
+  "blocker": null,
+  "human_action_required": false,
+  "updated_at": "2026-08-04T09:04:00Z"
+}
+```
 
-- `backlog`, `ready`, `implementing`;
-- `pr_open`, `ci_running`, `review_required`, `fix_required`;
-- `human_action`, `blocked`, `ready_to_merge`;
-- `completed`, `idle`.
+### Bounded values
 
-`implementation_route` accepts `github-direct`, `codex-fallback`, or `claude-fallback`.
+`status`:
 
-`risk_tier` accepts `low`, `standard`, or `protected`.
+- `backlog`
+- `ready`
+- `implementing`
+- `pr_open`
+- `ci_running`
+- `review_required`
+- `fix_required`
+- `human_action`
+- `blocked`
+- `ready_to_merge`
+- `completed`
+- `idle`
 
-`selected_auditor` accepts `none`, `codex`, or `claude`. `audit_state` accepts `not-required`, `required`, `pending`, `clean`, `blocked`, or `route-unavailable`.
+`implementation_route`:
 
-Check conclusions accept `queued`, `in_progress`, `success`, `failure`, `cancelled`, `skipped`, `neutral`, `timed_out`, `action_required`, `stale`, or `missing`.
+- `github-direct`
+- `codex-optional`
+- `claude-optional`
+
+`risk_tier`:
+
+- `low`
+- `standard`
+- `protected`
+
+`review_route` is exactly `github-coordinator`.
+
+`review_state`:
+
+- `required`
+- `pending`
+- `clean`
+- `blocked`
+
+Check conclusions:
+
+- `queued`
+- `in_progress`
+- `success`
+- `failure`
+- `cancelled`
+- `skipped`
+- `neutral`
+- `timed_out`
+- `action_required`
+- `stale`
+- `missing`
+
+Schema version 1 and the former `selected_auditor` / `audit_state` fields are rejected. Provider availability is not a merge-readiness condition.
 
 ## Fail-closed relationships
 
-The validator rejects ambiguous state, including:
+- active Pull Request and merge-readiness statuses require a lowercase 40-character exact head SHA;
+- `pending`, `clean`, and `blocked` review states require an exact head SHA;
+- `review_route` must be `github-coordinator`;
+- `fix_required`, `human_action`, `blocked`, and blocked review require a nonempty blocker;
+- `ready_to_merge`, `completed`, and `idle` require a null blocker;
+- `human_action_required` is true exactly for `status: human_action`;
+- `ready_to_merge` requires at least one check, every check passing, `review_state: clean`, no blocker, and no human action;
+- optional provider implementation routes do not change section placement or review requirements;
+- unknown fields, duplicate JSON keys, duplicate repositories, malformed timestamps, invalid SHAs, excessive input size, excessive projects, and excessive checks fail closed.
 
-- duplicate repositories;
-- non-positive Issue or Pull Request numbers;
-- non-lowercase or non-40-character SHAs;
-- non-UTC timestamps;
-- active PR/review states without an exact remote SHA;
-- blocked, fix-required, or human-action states without a blocker;
-- `human_action_required: true` outside `human_action` status;
-- standard or protected work marked audit-not-required;
-- ready-to-merge work with missing/failing checks or insufficient audit evidence;
-- unknown fields, enum values, check names, or control characters.
+## Dashboard sections
 
-Provider quota or setup failure may be represented as `audit_state: route-unavailable`. That state is automation-owned and does not itself justify `human_action_required: true`.
+The renderer produces, in priority order:
+
+1. Human Action Required
+2. Blocked
+3. Active Implementation and Review
+4. Ready to Merge
+5. Completed or Idle
+
+Provider quota or route unavailability alone never creates a blocked or human-action entry.
 
 ## Commands
 
-Validate without writing:
+Validate without rendering or writing:
 
 ```bash
 python scripts/fleet_progress.py fleet.json --check
@@ -87,26 +146,22 @@ Render to stdout:
 python scripts/fleet_progress.py fleet.json
 ```
 
-Write only to an explicit path:
+Write to one explicit output path:
 
 ```bash
-python scripts/fleet_progress.py fleet.json --output FLEET_STATUS.md
+python scripts/fleet_progress.py fleet.json --output docs/FLEET_STATUS.md
 ```
 
-The renderer performs no network request, executes no external command, and does not inspect environment variables.
+`--check` cannot be combined with `--output`. Without `--output`, the command creates no file.
 
-## Dashboard priority
+## Security and operational boundary
 
-Projects are grouped in this order:
+- input is limited to 2 MiB;
+- project and check counts are bounded;
+- duplicate JSON keys are rejected before validation;
+- errors do not echo input records or credential values;
+- no token, Secret, environment variable, command, URL, endpoint, repository, ref, or provider is selected from input;
+- Markdown cells escape pipes and backslashes;
+- GitHub Issues, Pull Requests, exact-head checks, coordinator-review records, and exact remote SHAs remain authoritative after rendering.
 
-1. Human Action Required;
-2. Blocked or Route Unavailable;
-3. Active Implementation and Review;
-4. Ready to Merge;
-5. Completed or Idle.
-
-Rows are sorted deterministically by repository, Issue, and Pull Request. The Markdown shows a shortened SHA for readability; the JSON source retains the full exact SHA.
-
-## Future protected phase
-
-A later Issue may authorize read-only GitHub collection, GitHub Projects synchronization, scheduled refresh, durable dashboard publication, and Bootstrap propagation. Until then, the generated Markdown is only a projection; GitHub evidence remains authoritative.
+A separate protected phase may collect these records from fixed read-only GitHub API endpoints. It must emit schema version 2 and preserve the same GitHub-only review policy.
