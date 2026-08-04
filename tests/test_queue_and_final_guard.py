@@ -72,7 +72,10 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self.assertIn('"parents": [base_sha]', publish)
         self.assertIn('"draft": True', publish)
         self.assertIn("revalidate_publication_source()", publish)
-        self.assertIn('(result.get("base") or {}).get("sha") != base_sha', publish)
+        self.assertIn("def exact_integration_pr", publish)
+        self.assertIn('existing_commit.get("message") == commit_message', publish)
+        self.assertIn("parents == [base_sha]", publish)
+        self.assertIn("exact_matches", publish)
         self.assertIn('"PATCH", {"title": title, "body": body}', publish)
         self.assertNotIn("json.dumps(tree", publish)
         self.assertNotIn("json.dumps([base_sha])", publish)
@@ -180,10 +183,10 @@ class QueueAndFinalGuardTest(unittest.TestCase):
                         result = {{"sha": "c" * 40}}
                     elif path.endswith("/git/trees"):
                         result = {{"sha": "e" * 40}}
-                    elif path.endswith("/git/commits") and method == "POST":
-                        result = {{"sha": commit}}
                     elif path.endswith("/git/ref/heads/{branch}"):
                         raise SystemExit(1)
+                    elif path.endswith("/git/commits") and method == "POST":
+                        result = {{"sha": commit}}
                     elif path.endswith("/git/refs"):
                         result = {{"object": {{"sha": commit}}}}
                     elif "/pulls?state=open&head=" in path:
@@ -195,8 +198,8 @@ class QueueAndFinalGuardTest(unittest.TestCase):
                             "draft": True,
                             "title": payload["title"],
                             "body": payload["body"],
-                            "base": {{"ref": "main", "sha": base}},
-                            "head": {{"sha": commit}},
+                            "base": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                            "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
                             "html_url": "https://example.invalid/pr/1",
                         }}
                         state_path.write_text(json.dumps(saved))
@@ -310,10 +313,10 @@ class QueueAndFinalGuardTest(unittest.TestCase):
                         result = {{"sha": "c" * 40}}
                     elif path.endswith("/git/trees"):
                         result = {{"sha": "e" * 40}}
-                    elif path.endswith("/git/commits") and method == "POST":
-                        result = {{"sha": commit}}
                     elif path.endswith("/git/ref/heads/{branch}"):
                         raise SystemExit(1)
+                    elif path.endswith("/git/commits") and method == "POST":
+                        result = {{"sha": commit}}
                     else:
                         raise SystemExit("unexpected gh api path: " + path)
                     print(json.dumps(result))
@@ -396,14 +399,16 @@ class QueueAndFinalGuardTest(unittest.TestCase):
                         "draft": True,
                         "title": "edited title",
                         "body": "edited body",
-                        "base": {{"ref": "main", "sha": base}},
-                        "head": {{"sha": commit}},
+                        "base": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                        "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
                         "html_url": "https://example.invalid/pr/7",
                     }}
                     if path.endswith("/git/ref/heads/main"):
                         result = {{"object": {{"sha": base}}}}
                     elif path.endswith("/git/commits/" + base):
                         result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/commits/" + commit):
+                        result = {{"message": "Claude: Issue #135", "tree": {{"sha": "e" * 40}}, "parents": [{{"sha": base}}]}}
                     elif path.endswith("/pulls/42"):
                         result = {{
                             "state": "open",
@@ -414,8 +419,6 @@ class QueueAndFinalGuardTest(unittest.TestCase):
                         result = {{"sha": "c" * 40}}
                     elif path.endswith("/git/trees"):
                         result = {{"sha": "e" * 40}}
-                    elif path.endswith("/git/commits") and method == "POST":
-                        result = {{"sha": commit}}
                     elif path.endswith("/git/ref/heads/{branch}"):
                         result = {{"object": {{"sha": commit}}}}
                     elif "/pulls?state=open&head=" in path:
@@ -467,6 +470,214 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             restored = json.loads(state.read_text())
             self.assertEqual(restored["title"], metadata_patch["payload"]["title"])
             self.assertEqual(restored["body"], body)
+
+    def test_queue_publication_does_not_patch_unrelated_same_head_pr(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            branch = "claude-issue-135-unrelated"
+            commit_sha = "d" * 40
+            payload = b"unrelated\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "unrelated.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload}}) + "\\n")
+                    base = "{base_sha}"
+                    commit = "{commit_sha}"
+                    if path.endswith("/git/ref/heads/main"):
+                        result = {{"object": {{"sha": base}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/commits/" + commit):
+                        result = {{"message": "Claude: Issue #135", "tree": {{"sha": "e" * 40}}, "parents": [{{"sha": base}}]}}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        result = {{"object": {{"sha": commit}}}}
+                    elif "/pulls?state=open&head=" in path:
+                        result = [{{"number": 9}}]
+                    elif path.endswith("/pulls/9") and method == "GET":
+                        result = {{
+                            "number": 9,
+                            "state": "open",
+                            "draft": False,
+                            "title": "unrelated",
+                            "body": "must stay unchanged",
+                            "base": {{"ref": "other", "sha": "f" * 40, "repo": {{"full_name": "example/foundation"}}}},
+                            "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
+                        }}
+                    elif path.endswith("/pulls/9") and method == "PATCH":
+                        raise SystemExit("unrelated PR must not be patched")
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "",
+                    "RECOVERY": "false",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            result = subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertFalse(any(item["path"].endswith("/pulls/9") and item["method"] == "PATCH" for item in requests))
+            self.assertFalse(any(item["path"].endswith("/git/commits") and item["method"] == "POST" for item in requests))
+
+    def test_queue_publication_reuses_existing_exact_ref_without_open_pr(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            branch = "claude-issue-135-retry"
+            commit_sha = "d" * 40
+            payload = b"retry\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "retry.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            state = root / "state.json"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload}}) + "\\n")
+                    state_path = Path(os.environ["GH_TEST_STATE"])
+                    saved = json.loads(state_path.read_text()) if state_path.exists() else {{}}
+                    base = "{base_sha}"
+                    commit = "{commit_sha}"
+                    if path.endswith("/git/ref/heads/main"):
+                        result = {{"object": {{"sha": base}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/commits/" + commit):
+                        result = {{"message": "Claude: Issue #135", "tree": {{"sha": "e" * 40}}, "parents": [{{"sha": base}}]}}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        result = {{"object": {{"sha": commit}}}}
+                    elif path.endswith("/git/commits") and method == "POST":
+                        raise SystemExit("existing candidate commit must be reused")
+                    elif path.endswith("/git/refs") and method == "POST":
+                        raise SystemExit("existing candidate ref must be reused")
+                    elif "/pulls?state=open&head=" in path:
+                        result = []
+                    elif path.endswith("/pulls") and method == "POST":
+                        saved["pr"] = {{
+                            "number": 11,
+                            "state": "open",
+                            "draft": True,
+                            "title": payload["title"],
+                            "body": payload["body"],
+                            "base": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                            "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
+                            "html_url": "https://example.invalid/pr/11",
+                        }}
+                        state_path.write_text(json.dumps(saved))
+                        result = saved["pr"]
+                    elif path.endswith("/pulls/11") and method == "GET":
+                        result = saved["pr"]
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GH_TEST_STATE": str(state),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "",
+                    "RECOVERY": "false",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, check=True)
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertFalse(any(item["path"].endswith("/git/commits") and item["method"] == "POST" for item in requests))
+            self.assertFalse(any(item["path"].endswith("/git/refs") and item["method"] == "POST" for item in requests))
+            self.assertTrue(any(item["path"].endswith("/pulls") and item["method"] == "POST" for item in requests))
 
     def test_queue_failure_is_non_notifying_and_recovery_is_separated_from_merge_supervisor(self):
         queue = self._queue_workflow()
