@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the reviewed public automation foundation into a target repository."""
+"""Render the reviewed Foundation into a target repository byte-for-byte."""
 from __future__ import annotations
 
 import argparse
@@ -7,17 +7,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
-ALLOWLIST = [
+
+MANAGED_FILES = (
     "README.md",
     "LICENSE",
     "AGENTS.md",
     "CLAUDE.md",
     "SECURITY.md",
     "docs/PROJECT_STARTUP.md",
+    "docs/MINIMUM_SAFETY_PROFILE.md",
     "docs/OPERATING_RULES.md",
     "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py",
     "scripts/validate_repository.py",
+    "scripts/queue_failure_classifier.py",
+    "scripts/github_coordinator_supervisor.py",
     "scripts/ai_recovery_supervisor.py",
     "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py",
@@ -25,6 +29,7 @@ ALLOWLIST = [
     "scripts/supervisor_queue_recovery.py",
     "scripts/supervisor_queue_recovery_v2.py",
     "scripts/supervisor_queue_recovery_v3.py",
+    "bootstrap/generator.py",
     ".github/workflows/ci.yml",
     ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml",
@@ -33,67 +38,61 @@ ALLOWLIST = [
     ".github/workflows/supervisor.yml",
     ".github/ISSUE_TEMPLATE/ai-task.yml",
     ".github/pull_request_template.md",
-]
+)
+
+
+def install_checklist(owner: str) -> str:
+    return f"""{GENERATED_TARGET_MARKER}
+# Installation checklist
+
+## Mandatory GitHub Phase 0
+
+- [ ] Connect ChatGPT to GitHub and authorize this exact repository.
+- [ ] Confirm GitHub Actions and the Foundation workflows exist on the default branch.
+- [ ] Open `Settings` → `Actions` → `General` → `Workflow permissions`.
+- [ ] Select **Read and write permissions**.
+- [ ] Enable **Allow GitHub Actions to create and approve pull requests**.
+- [ ] Save the setting.
+- [ ] Optionally set `AUTOMATION_OWNER` to `{owner}` when the repository owner is not the trusted coordinator.
+- [ ] Run `python scripts/public_export_guard.py .`.
+- [ ] Run `python scripts/validate_repository.py`.
+- [ ] Run `python -m unittest discover -s tests` when tests are installed.
+- [ ] Complete one harmless same-repository branch/PR acceptance candidate with exact-head CI, GitHub coordinator review, zero unresolved threads, and expected-head merge.
+
+Codex and Claude setup is optional. Do not wait for a provider environment, credential, quota, account, or connection before GitHub-only acceptance or product development.
+
+## Operating boundary
+
+- [ ] Use one trusted owner-authored Issue with risk tier, bounded paths, required checks, prohibited effects, and rollback.
+- [ ] Inspect open Pull Requests for current and renamed-path collisions before implementation and merge.
+- [ ] Use GitHub-visible commits on one same-repository branch; never push automation changes directly to the default branch.
+- [ ] Require `CI` and `Unit Tests` from the exact current Pull Request head.
+- [ ] Require `review_route: github-coordinator` and zero unresolved review threads.
+- [ ] Standard work requires one exact-head clean coordinator marker.
+- [ ] Protected work requires explicit protected authorization plus clean scope/security and correctness/race markers on the unchanged exact head.
+- [ ] `ai-no-merge` always blocks readiness and merge.
+- [ ] Final merge uses expected-head-SHA protection.
+- [ ] Optional provider execution starts only after an owner-authored standalone `/claude-run` or an explicit owner workflow dispatch.
+- [ ] Provider absence, quota, setup, account, connection, generic output, or stale output remains non-blocking with `human_action_required: false`.
+- [ ] Never output, persist, copy, hash, or infer Secret values.
+- [ ] Never execute proposed-branch code in a job carrying Secrets, OIDC, or repository write permission.
+"""
 
 
 def render(target: Path, owner: str) -> None:
+    target = target.resolve()
+    if target == ROOT.resolve():
+        raise ValueError("target must not be the Foundation source directory")
     target.mkdir(parents=True, exist_ok=True)
-    for relative in ALLOWLIST:
+    for relative in MANAGED_FILES:
         source = ROOT / relative
+        if not source.is_file():
+            raise FileNotFoundError(f"managed Foundation file is missing: {relative}")
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        destination.write_bytes(source.read_bytes())
     (target / "INSTALL_CHECKLIST.md").write_text(
-        f"{GENERATED_TARGET_MARKER}\n"
-        "# Installation checklist\n\n"
-        "## Phase 0 setup prerequisites and final acceptance\n\n"
-        "Complete the setup prerequisites below before the harmless Bootstrap acceptance candidate. Successful acceptance is the final Phase 0 gate and unlocks product work.\n\n"
-        "- [ ] Read `docs/PROJECT_STARTUP.md` for this exact repository.\n"
-        "- [ ] Connect ChatGPT/Codex to GitHub and authorize this exact repository.\n"
-        "- [ ] Create and verify a Codex environment for this exact repository.\n"
-        "- [ ] When Claude OAuth is used, run `claude setup-token` locally and store the value only as the GitHub Actions Secret `CLAUDE_CODE_OAUTH_TOKEN`; never paste, print, log, or commit the value.\n"
-        "- [ ] Confirm GitHub Actions are enabled and the Foundation workflows exist on the default branch.\n"
-        "- [ ] In this exact repository, open `Settings` → `Actions` → `General` → `Workflow permissions`.\n"
-        "- [ ] Select **Read and write permissions**.\n"
-        "- [ ] Enable **Allow GitHub Actions to create and approve pull requests**.\n"
-        "- [ ] Save the Workflow permissions setting.\n"
-        "- [ ] When no repository-settings API is callable, give this non-secret navigation once in the initiating project conversation; do not call `human_only_notice()`, publish an automated GitHub notice, or require an Issue/PR destination for the pre-PR instruction.\n"
-        "- [ ] Confirm automation can create/update a bounded branch and Pull Request, post required comments/labels, update readiness/review state, and complete the expected-head merge path.\n"
-        "- [ ] Complete one harmless Bootstrap acceptance candidate and record only non-secret evidence: repository, acceptance date, Secret name, both Workflow-permissions settings, Issue/PR, exact head SHA, and successful checks/review.\n"
-        "- [ ] Do not create or trigger the first product Issue until acceptance completes Phase 0. Do not request these steps again after acceptance unless connected evidence shows the integration or Workflow permissions are no longer usable.\n\n"
-        "## Foundation safety and merge checks\n\n"
-        f"- [ ] Optionally set repository variable `AUTOMATION_OWNER` to `{owner}`; "
-        "the repository owner is the fail-closed default.\n"
-        "- [ ] Require the trusted source Issue to allowlist every changed and renamed path; bounded patterns such as `tests/**` may be used.\n"
-        "- [ ] Keep the ordinary Issue allowlist independent from the protected-change authorization block; every protected path must appear in both.\n"
-        "- [ ] Confirm the fixed default-branch `trusted-checks.yml` workflow is present.\n"
-        "- [ ] Confirm candidate jobs are read-only and publish no custom checks or statuses.\n"
-        "- [ ] Confirm the supervisor validates immutable workflow-run and exact job evidence.\n"
-        "- [ ] Confirm readiness and merge require successful exact-head native pull-request workflow evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` is installed.\n"
-        "- [ ] Confirm all required native workflow definitions are compared against one stable default-branch commit, and that commit is rechecked after every blob and run query.\n"
-        "- [ ] Confirm each candidate workflow file blob exactly equals the blob from that one stable default-branch commit before native run evidence is trusted.\n"
-        "- [ ] Confirm native runs belong to the exact Pull Request and reject missing, pending, failed, stale-SHA, wrong-workflow, wrong-repository, cross-PR, candidate-modified-workflow, and candidate-authored evidence.\n"
-        "- [ ] Confirm Queue failure creates no routine Issue or Pull Request comment and no failure-state blocked/review label mutation.\n"
-        "- [ ] Confirm Queue recovery is bounded, deterministic, idempotent, non-notifying, and persists only public-safe records on the fixed internal-stop branch.\n"
-        "- [ ] Confirm the supervisor reconciles `Claude Issue Queue` completion through `supervisor_queue_recovery_v3` before the final merge guard.\n"
-        "- [ ] Confirm trusted attestation, native workflow evidence, current source/scope authorization, candidate identity, and merge use one unchanged default-branch SHA.\n"
-        "- [ ] Confirm final merge re-fetches an open, explicitly non-draft, mergeable exact-head Pull Request with explicit label evidence, no `ai-no-merge`, same-repository provenance, and the same authorized source Issue/scope.\n"
-        "- [ ] Confirm the final merge evidence gate is single-use and consumed by the first merge attempt, including a rejected attempt.\n"
-        "- [ ] Confirm the supervisor has only the bounded `contents: write` needed for the fixed `automation-internal-stops` branch.\n"
-        "- [ ] Confirm internal stops are sanitized canonical JSON at `automation-stops/pr-<number>/<sha>/<REASON>.json` and are never posted as Issue or Pull Request comments or represented by routine label mutations.\n"
-        "- [ ] Confirm a failed audit or moved head writes no internal-stop record or close action.\n"
-        "- [ ] Confirm Codex no-progress uses the immutable trusted request timestamp and merge-state no-progress uses the latest immutable clean evidence.\n"
-        "- [ ] Confirm combined Codex comments and reviews are ordered by immutable event time before the latest exact-SHA evidence is selected.\n"
-        "- [ ] Confirm only the three canonical account/provider UI reason codes can create a human-only notice.\n"
-        "- [ ] Confirm account-level repository absence is independently derived from connected GitHub API queries for the exact targets and caller assertions must match that evidence.\n"
-        "- [ ] Confirm credential and integration-reconnection notices fail closed until a reason-specific connected provider evidence adapter exists.\n"
-        "- [ ] Confirm every human-only notice re-derives the connected condition inside the final audit, persists an exact deterministic audit record, and rechecks the condition immediately before publication.\n"
-        "- [ ] Confirm the notice record binds Issue, Pull Request, SHA, attempted connected paths, impossibility evidence, canonical UI action, target/provider, and automatic-resumption condition.\n"
-        "- [ ] Confirm human-only deduplication requires both the exact persisted record and an immutable `github-actions[bot]` comment.\n"
-        "- [ ] Configure `CLAUDE_CODE_OAUTH_TOKEN` only through GitHub/provider UI.\n"
-        "- [ ] Run export guard, validator, and tests.\n"
-        "- [ ] Validate in a disposable E2E repository.\n",
-        encoding="utf-8",
+        install_checklist(owner), encoding="utf-8", newline="\n"
     )
 
 
@@ -102,7 +101,7 @@ def main() -> None:
     parser.add_argument("--target", required=True)
     parser.add_argument("--owner", required=True)
     args = parser.parse_args()
-    render(Path(args.target).resolve(), args.owner)
+    render(Path(args.target), args.owner)
 
 
 if __name__ == "__main__":
