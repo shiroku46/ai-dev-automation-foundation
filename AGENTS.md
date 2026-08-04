@@ -17,6 +17,6 @@
 15. Use Codex or Claude for implementation only as an explicit or bounded fallback when GitHub-direct implementation cannot reasonably perform the authorized change.
 16. Do not ask a person merely to implement, press Merge, Approve, Retry, Close, resolve routine review state, or change routine workflow state.
 17. Before any stop or merge, query repository metadata, the live Pull Request, every changed and renamed path, source Issue scope and protected authorization, fixed workflow identities, native and product checks, selected-auditor evidence and threads, permissions, idempotency, and alternative connected paths.
-18. Persist routine stops only as deterministic sanitized records with `notification: false` and `human_action_required: false`; provider quota exhaustion is a routine internal state.
+18. Persist routine stops only as deterministic sanitized records on the fixed non-default branch `automation-internal-stops`, with `notification: false` and `human_action_required: false`; provider quota exhaustion is a routine internal state.
 19. Human notification is allowed only for the canonical account/provider UI reason codes after connected evidence proves no callable route exists. Quota exhaustion alone is never a human-only reason.
 20. `ai-no-merge` always stops merge execution. Immediately before merge, re-fetch the live PR, head, scope, checks, audit evidence, hold state, and mergeability, then use expected-head-SHA protection.
