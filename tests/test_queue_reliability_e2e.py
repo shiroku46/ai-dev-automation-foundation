@@ -585,5 +585,282 @@ class DuplicateTriggerPreventionTest(unittest.TestCase):
         original.assert_not_called()
 
 
+class FailureClassificationTest(unittest.TestCase):
+    """Issue #146: failure classification connected to Queue recovery supervisor.
+
+    Covers acceptance tests:
+      - max-turn without permission denials is retryable;
+      - max-turn with permission denials becomes non-retrying permission_contract;
+      - Git CONNECT 403 is retryable transport;
+      - expired credential is human-only and not retried;
+      - existing WIP branch suppresses a fresh default-branch retry;
+      - duplicate reconciliation passes do not create duplicate attempts;
+      - status snapshot always includes human_action_required and failure class.
+    """
+
+    def setUp(self):
+        self.module = _load_v3()
+
+    @staticmethod
+    def _env():
+        return patch.dict(os.environ, _base_env(), clear=False)
+
+    def _call_classified(self, evidence, wip=None, attempt=1):
+        """Helper: call _classified_dispatch_retry with mocked evidence and v2 dispatch."""
+        module = self.module
+        dispatch = Mock(return_value=True)
+        with self._env(), patch.object(
+            module, "_wip_branch_info", return_value=wip
+        ), patch.object(module, "_latest_run_failure_evidence", return_value=evidence):
+            result = module._classified_dispatch_retry(12, FINGERPRINT, attempt, dispatch)
+        return result, dispatch
+
+    def test_max_turn_without_permission_denials_is_retryable(self):
+        result, dispatch = self._call_classified(("error_max_turns", 0, ""))
+        self.assertTrue(result)
+        dispatch.assert_called_once_with(12, FINGERPRINT, 1)
+
+    def test_max_turn_with_permission_denials_becomes_permission_contract(self):
+        result, dispatch = self._call_classified(("error_max_turns", 3, "tool policy violated"))
+        self.assertFalse(result)
+        dispatch.assert_not_called()
+
+    def test_git_connect_403_is_retryable_transport(self):
+        result, dispatch = self._call_classified(("failure", 0, "connect tunnel error"))
+        self.assertTrue(result)
+        dispatch.assert_called_once()
+
+    def test_expired_credential_is_human_only_and_not_retried(self):
+        result, dispatch = self._call_classified(("failure", 0, "token expired"))
+        self.assertFalse(result)
+        dispatch.assert_not_called()
+
+    def test_wip_branch_suppresses_fresh_retry(self):
+        result, dispatch = self._call_classified(None, wip=("claude-issue-12-wip", "a" * 40))
+        self.assertFalse(result)
+        dispatch.assert_not_called()
+
+    def test_no_prior_evidence_defaults_to_retryable_unknown(self):
+        """When no Queue run evidence exists, default to UNKNOWN (retryable)."""
+        result, dispatch = self._call_classified(None, wip=None)
+        self.assertTrue(result)
+        dispatch.assert_called_once()
+
+    def test_auth_secret_failure_is_not_retried(self):
+        """auth_secret class is human-only and must not be retried."""
+        result, dispatch = self._call_classified(("failure", 0, "authentication failed"))
+        self.assertFalse(result)
+        dispatch.assert_not_called()
+
+    def test_test_failure_is_not_retried(self):
+        """test_failure is non-retryable (fixable class); must not be retried."""
+        result, dispatch = self._call_classified(("failure", 0, "test assert error"))
+        self.assertFalse(result)
+        dispatch.assert_not_called()
+
+    def test_platform_outage_is_retryable(self):
+        result, dispatch = self._call_classified(("timed_out", 0, ""))
+        self.assertTrue(result)
+        dispatch.assert_called_once()
+
+    def test_wip_branch_check_precedes_failure_classification(self):
+        """WIP branch detection must fire before any API calls for failure evidence."""
+        module = self.module
+        dispatch = Mock()
+        evidence_fn = Mock()
+        with self._env(), patch.object(
+            module, "_wip_branch_info", return_value=("claude-issue-12-branch", "b" * 40)
+        ), patch.object(module, "_latest_run_failure_evidence", evidence_fn):
+            module._classified_dispatch_retry(12, FINGERPRINT, 1, dispatch)
+        evidence_fn.assert_not_called()
+        dispatch.assert_not_called()
+
+    def test_duplicate_classified_calls_do_not_accumulate_dispatches(self):
+        """Calling _classified_dispatch_retry twice for the same non-retryable failure
+        does not dispatch on either call."""
+        module = self.module
+        dispatch = Mock()
+        with self._env(), patch.object(
+            module, "_wip_branch_info", return_value=None
+        ), patch.object(
+            module, "_latest_run_failure_evidence",
+            return_value=("failure", 0, "token expired"),
+        ):
+            r1 = module._classified_dispatch_retry(12, FINGERPRINT, 1, dispatch)
+            r2 = module._classified_dispatch_retry(12, FINGERPRINT, 1, dispatch)
+        self.assertFalse(r1)
+        self.assertFalse(r2)
+        dispatch.assert_not_called()
+
+    def test_status_snapshot_includes_human_action_required_and_failure_class(self):
+        """complete_connected_exhaustion_snapshot must always include both fields."""
+        module = self.module
+        base_snapshot: dict = {
+            "active_queue_run_absent": True,
+            "alternative_paths_exhausted": True,
+            "candidate_pull_request_absent": True,
+            "codex_and_threads": "not-applicable-no-pull-request",
+            "completed": True,
+            "default_sha": DEFAULT_SHA,
+            "fixed_workflow_identity": True,
+            "idempotency_records": ["retry-1.json"],
+            "permission_markers_verified": True,
+            "repository_metadata_verified": True,
+            "request_fingerprint": FINGERPRINT,
+            "run_evidence": [],
+            "source_issue": 12,
+            "source_issue_authorization_verified": True,
+        }
+        with self._env(), patch.object(
+            module, "_exact_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(
+            module,
+            "_validated_issue_scope",
+            return_value={"declared_paths": ["tests/**"], "protected_authorized_paths": []},
+        ), patch.object(
+            module, "_trusted_alternative_candidates", return_value=[]
+        ), patch.object(
+            module, "_original_connected_exhaustion_snapshot", return_value=dict(base_snapshot)
+        ), patch.object(
+            module, "_latest_run_failure_evidence", return_value=None
+        ), patch.object(
+            module, "_wip_branch_info", return_value=None
+        ):
+            snapshot = module.complete_connected_exhaustion_snapshot(
+                12, FINGERPRINT, DEFAULT_SHA, ["retry-1.json"]
+            )
+        self.assertIn("human_action_required", snapshot)
+        self.assertIn("failure_class", snapshot)
+        self.assertIsInstance(snapshot["human_action_required"], bool)
+        self.assertIsInstance(snapshot["failure_class"], str)
+        self.assertIn("retry_attempt", snapshot)
+        self.assertIn("next_automatic_action", snapshot)
+
+    def test_auth_secret_snapshot_sets_human_action_required_true(self):
+        """When failure class is auth_secret, human_action_required must be True."""
+        module = self.module
+        base_snapshot: dict = {
+            "active_queue_run_absent": True,
+            "alternative_paths_exhausted": True,
+            "candidate_pull_request_absent": True,
+            "codex_and_threads": "not-applicable-no-pull-request",
+            "completed": True,
+            "default_sha": DEFAULT_SHA,
+            "fixed_workflow_identity": True,
+            "idempotency_records": ["retry-1.json"],
+            "permission_markers_verified": True,
+            "repository_metadata_verified": True,
+            "request_fingerprint": FINGERPRINT,
+            "run_evidence": [],
+            "source_issue": 12,
+            "source_issue_authorization_verified": True,
+        }
+        with self._env(), patch.object(
+            module, "_exact_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(
+            module,
+            "_validated_issue_scope",
+            return_value={"declared_paths": ["tests/**"], "protected_authorized_paths": []},
+        ), patch.object(
+            module, "_trusted_alternative_candidates", return_value=[]
+        ), patch.object(
+            module, "_original_connected_exhaustion_snapshot", return_value=dict(base_snapshot)
+        ), patch.object(
+            module, "_latest_run_failure_evidence",
+            return_value=("failure", 0, "token expired"),
+        ), patch.object(
+            module, "_wip_branch_info", return_value=None
+        ):
+            snapshot = module.complete_connected_exhaustion_snapshot(
+                12, FINGERPRINT, DEFAULT_SHA, ["retry-1.json"]
+            )
+        self.assertTrue(snapshot["human_action_required"])
+        self.assertEqual(snapshot["failure_class"], "auth_secret")
+
+    def test_non_auth_classes_set_human_action_required_false(self):
+        """Non-auth failure classes must not set human_action_required."""
+        module = self.module
+        base_snapshot: dict = {
+            "active_queue_run_absent": True,
+            "alternative_paths_exhausted": True,
+            "candidate_pull_request_absent": True,
+            "codex_and_threads": "not-applicable-no-pull-request",
+            "completed": True,
+            "default_sha": DEFAULT_SHA,
+            "fixed_workflow_identity": True,
+            "idempotency_records": ["retry-1.json", "retry-2.json", "retry-3.json"],
+            "permission_markers_verified": True,
+            "repository_metadata_verified": True,
+            "request_fingerprint": FINGERPRINT,
+            "run_evidence": [],
+            "source_issue": 12,
+            "source_issue_authorization_verified": True,
+        }
+        retry_records = ["retry-1.json", "retry-2.json", "retry-3.json"]
+        with self._env(), patch.object(
+            module, "_exact_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(
+            module,
+            "_validated_issue_scope",
+            return_value={"declared_paths": ["tests/**"], "protected_authorized_paths": []},
+        ), patch.object(
+            module, "_trusted_alternative_candidates", return_value=[]
+        ), patch.object(
+            module, "_original_connected_exhaustion_snapshot", return_value=dict(base_snapshot)
+        ), patch.object(
+            module, "_latest_run_failure_evidence",
+            return_value=("error_max_turns", 0, ""),
+        ), patch.object(
+            module, "_wip_branch_info", return_value=None
+        ):
+            snapshot = module.complete_connected_exhaustion_snapshot(
+                12, FINGERPRINT, DEFAULT_SHA, retry_records
+            )
+        self.assertFalse(snapshot["human_action_required"])
+        self.assertEqual(snapshot["failure_class"], "max_turns")
+
+    def test_checkpoint_branch_appears_in_snapshot_when_present(self):
+        """When a WIP branch exists, checkpoint_branch and checkpoint_sha appear in snapshot."""
+        module = self.module
+        base_snapshot: dict = {
+            "active_queue_run_absent": True,
+            "alternative_paths_exhausted": True,
+            "candidate_pull_request_absent": True,
+            "codex_and_threads": "not-applicable-no-pull-request",
+            "completed": True,
+            "default_sha": DEFAULT_SHA,
+            "fixed_workflow_identity": True,
+            "idempotency_records": ["retry-1.json"],
+            "permission_markers_verified": True,
+            "repository_metadata_verified": True,
+            "request_fingerprint": FINGERPRINT,
+            "run_evidence": [],
+            "source_issue": 12,
+            "source_issue_authorization_verified": True,
+        }
+        branch_sha = "c" * 40
+        with self._env(), patch.object(
+            module, "_exact_default_sha", return_value=DEFAULT_SHA
+        ), patch.object(
+            module,
+            "_validated_issue_scope",
+            return_value={"declared_paths": ["tests/**"], "protected_authorized_paths": []},
+        ), patch.object(
+            module, "_trusted_alternative_candidates", return_value=[]
+        ), patch.object(
+            module, "_original_connected_exhaustion_snapshot", return_value=dict(base_snapshot)
+        ), patch.object(
+            module, "_latest_run_failure_evidence", return_value=None,
+        ), patch.object(
+            module, "_wip_branch_info",
+            return_value=("claude-issue-12-checkpoint", branch_sha),
+        ):
+            snapshot = module.complete_connected_exhaustion_snapshot(
+                12, FINGERPRINT, DEFAULT_SHA, ["retry-1.json"]
+            )
+        self.assertEqual(snapshot["checkpoint_branch"], "claude-issue-12-checkpoint")
+        self.assertEqual(snapshot["checkpoint_sha"], branch_sha)
+
+
 if __name__ == "__main__":
     unittest.main()
