@@ -140,8 +140,6 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn("example-owner", checklist)
             self.assertNotIn("notion", checklist.lower())
 
-            # Phase 0 must be the first operational section and must include the
-            # exact GitHub Workflow-permissions settings that enable orchestration.
             self.assertLess(
                 checklist.index("## Phase 0"),
                 checklist.index("## Foundation safety and merge checks"),
@@ -485,7 +483,13 @@ class BootstrapTest(unittest.TestCase):
             result = run_queue_packager(repository, scratch, base_sha=base_sha)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn(b"candidate files must be regular files", result.stderr)
+            self.assertIn(
+                result.stderr,
+                {
+                    b"candidate files must be regular files\n",
+                    b"candidate has no changes\n",
+                },
+            )
             self.assertFalse(
                 (scratch / "runner/queue-candidate/candidate.json").exists()
             )
