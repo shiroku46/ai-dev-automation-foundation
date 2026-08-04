@@ -14,11 +14,13 @@ REQUIRED = {
     "docs/OPERATING_RULES.md", "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
     "scripts/queue_failure_classifier.py", "scripts/github_coordinator_supervisor.py",
-    "bootstrap/generator.py", ".github/workflows/ci.yml",
-    ".github/workflows/unit-tests.yml", ".github/workflows/claude-queue.yml",
+    ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
+    ".github/workflows/claude-queue.yml",
     ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
 }
+FOUNDATION_ONLY = {"bootstrap/generator.py"}
+GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 
 
 class ValidationError(AssertionError):
@@ -46,7 +48,13 @@ def job(content: str, name: str, following: str | None = None) -> str:
 
 
 def validate() -> None:
-    missing = sorted(path for path in REQUIRED if not (ROOT / path).is_file())
+    checklist = ROOT / "INSTALL_CHECKLIST.md"
+    generated_target = (
+        checklist.is_file()
+        and GENERATED_TARGET_MARKER in checklist.read_text(encoding="utf-8")
+    )
+    required = REQUIRED if generated_target else REQUIRED | FOUNDATION_ONLY
+    missing = sorted(path for path in required if not (ROOT / path).is_file())
     if missing:
         raise ValidationError("missing files: " + ", ".join(missing))
 
@@ -130,12 +138,13 @@ def validate() -> None:
     pr_template = text(".github/pull_request_template.md")
     require(pr_template, ("implementation_route", "github-direct", "exact_head_sha", "review_route", "github-coordinator", "review_state", "unresolved_review_threads", "human_action_required"), "PR template")
 
-    generator = text("bootstrap/generator.py")
-    require(generator, (
-        "MANAGED_FILES", "write_bytes(source.read_bytes())",
-        "scripts/github_coordinator_supervisor.py", ".github/workflows/supervisor.yml",
-        "Codex and Claude setup is optional",
-    ), "Bootstrap")
+    if not generated_target:
+        generator = text("bootstrap/generator.py")
+        require(generator, (
+            "MANAGED_FILES", "write_bytes(source.read_bytes())",
+            "scripts/github_coordinator_supervisor.py", ".github/workflows/supervisor.yml",
+            "Codex and Claude setup is optional",
+        ), "Bootstrap")
 
 
 def main() -> int:
