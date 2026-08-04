@@ -5,12 +5,74 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from scripts.queue_failure_classifier import check_tool_permission_contract
 from scripts.supervisor_policy import is_protected
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SHA = "d" * 40
 CANDIDATE_SHA = "c" * 40
 ISSUE_NUMBER = 85
+
+
+class ContractPreflightTest(unittest.TestCase):
+    def test_contradictory_contract_is_denied(self):
+        denied = check_tool_permission_contract(
+            ["python3 tests/run_all.py"],
+            [],
+        )
+        self.assertEqual(denied, ["python3 tests/run_all.py"])
+
+    def test_edit_only_contract_passes(self):
+        denied = check_tool_permission_contract([], [])
+        self.assertEqual(denied, [])
+
+    def test_multiple_denied_commands_all_returned(self):
+        denied = check_tool_permission_contract(
+            ["pytest", "npm test"],
+            [],
+        )
+        self.assertEqual(denied, ["pytest", "npm test"])
+
+    def test_allowed_command_is_not_denied(self):
+        denied = check_tool_permission_contract(
+            ["git commit"],
+            ["git commit"],
+        )
+        self.assertEqual(denied, [])
+
+    def test_wip_checkpoint_not_created_on_success(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        implement = queue.split("\n  implement:\n", 1)[1].split("\n  resolve:\n", 1)[0]
+        self.assertIn('conclusion == "success" or branch', implement)
+        self.assertIn("No WIP checkpoint needed", implement)
+
+    def test_wip_checkpoint_not_created_when_branch_exists(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        implement = queue.split("\n  implement:\n", 1)[1].split("\n  resolve:\n", 1)[0]
+        self.assertIn("branch exists", implement)
+
+    def test_preflight_outputs_contract_ok_to_prepare(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        prepare = queue.split("\n  prepare:\n", 1)[1].split("\n  implement:\n", 1)[0]
+        self.assertIn("contract_ok: ${{ steps.preflight.outputs.contract_ok }}", prepare)
+
+    def test_implement_skipped_when_contract_fails(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        implement_header = queue.split("\n  implement:\n", 1)[1].split("\n    runs-on:", 1)[0]
+        self.assertIn("contract_ok == 'true'", implement_header)
+
+    def test_normal_issue_open_path_reaches_implement(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        self.assertIn("github.event_name == 'issues'", queue)
+        self.assertIn("github.event_name == 'issue_comment'", queue)
+
+    def test_manual_dispatch_disables_track_progress_still_holds(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        implement = queue.split("\n  implement:\n", 1)[1].split("\n  resolve:\n", 1)[0]
+        self.assertIn(
+            "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
+            implement,
+        )
 
 
 class QueueAndFinalGuardTest(unittest.TestCase):

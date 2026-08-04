@@ -243,6 +243,53 @@ class QueueWorkflowTest(unittest.TestCase):
             if line.strip().removeprefix("- ").startswith("uses:"):
                 self.assertRegex(line, PIN)
 
+    def test_contract_preflight_is_in_prepare_job(self):
+        prepare = job_block(self.text, "prepare", "implement")
+        self.assertIn("check_tool_permission_contract", prepare)
+        self.assertIn("contract_ok", prepare)
+        self.assertIn("GITHUB_OUTPUT", prepare)
+        self.assertIn("steps.guard.outputs.should_run == 'true'", prepare)
+        self.assertIn("notification: false", prepare)
+
+    def test_implement_requires_contract_ok(self):
+        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn("contract_ok == 'true'", implement)
+
+    def test_implement_prompt_reserves_final_turns(self):
+        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn("reserve the final 5 turns", implement)
+
+    def test_wip_checkpoint_step_has_always_condition(self):
+        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn("persist_checkpoint", implement)
+        self.assertIn("if: always()", implement)
+        self.assertIn("CLAUDE_CONCLUSION", implement)
+        self.assertIn("GENERATED_BRANCH", implement)
+        self.assertIn("diff_hash", implement)
+        self.assertIn("retry_identity", implement)
+        self.assertIn("base_sha", implement)
+        self.assertIn("changed_paths", implement)
+
+    def test_wip_checkpoint_does_not_execute_candidate_code(self):
+        implement = job_block(self.text, "implement", "resolve")
+        # Extract only the persist_checkpoint section
+        persist = implement.split("persist_checkpoint", 1)[1].split("require_branch", 1)[0]
+        self.assertNotIn("python scripts/", persist)
+        self.assertNotIn("from scripts.", persist)
+        self.assertNotIn("actions/checkout", persist)
+        self.assertNotIn("id-token: write", persist)
+        self.assertNotIn("secrets.", persist)
+        self.assertIn("notification: false", persist)
+
+    def test_successful_branch_skips_wip_checkpoint(self):
+        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn('conclusion == "success" or branch', implement)
+
+    def test_unauthorized_paths_skip_wip_artifact(self):
+        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn("unauthorized", implement.lower())
+        self.assertIn("skipping artifact", implement)
+
 
 if __name__ == "__main__":
     unittest.main()

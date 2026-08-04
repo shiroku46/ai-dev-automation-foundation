@@ -69,6 +69,7 @@ jobs:
       issue_number: ${{ steps.guard.outputs.issue_number }}
       should_run: ${{ steps.guard.outputs.should_run }}
       duplicate_skipped: ${{ steps.guard.outputs.duplicate_skipped }}
+      contract_ok: ${{ steps.preflight.outputs.contract_ok }}
     steps:
       - id: guard
         env:
@@ -200,9 +201,79 @@ jobs:
           Queue run: $RUN_URL"
           fi
 
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        if: steps.guard.outputs.should_run == 'true' && steps.guard.outputs.duplicate_skipped != 'true'
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Contract preflight
+        id: preflight
+        if: steps.guard.outputs.should_run == 'true' && steps.guard.outputs.duplicate_skipped != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.guard.outputs.issue_number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          sys.path.insert(0, os.getcwd())
+          from scripts.queue_failure_classifier import check_tool_permission_contract
+
+          issue_number = os.environ["ISSUE_NUMBER"]
+          repository = os.environ["REPOSITORY"]
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          issue_data = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{repository}/issues/{issue_number}"],
+              text=True,
+          ))
+          body = issue_data.get("body") or ""
+
+          # Extract required implementation commands from structured marker
+          required_commands = []
+          match = re.search(
+              r"<!--\s*required-implementation-commands\s*\n(.*?)-->",
+              body,
+              re.S,
+          )
+          if match:
+              required_commands = [
+                  line.strip()
+                  for line in match.group(1).splitlines()
+                  if line.strip()
+              ]
+
+          # Implementation model: Claude edits/commits/pushes only.
+          # allowedTools is Read,Write,Edit,Glob,Grep — no Bash execution permitted.
+          allowed_bash_commands: list[str] = []
+
+          denied = check_tool_permission_contract(required_commands, allowed_bash_commands)
+          contract_ok = not denied
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"contract_ok={str(contract_ok).lower()}\n")
+
+          if not contract_ok:
+              if summary_path:
+                  with open(summary_path, "a") as f:
+                      f.write("## Queue preflight: contract contradiction\n\n")
+                      f.write("- result: `contract_failed`\n")
+                      f.write(f"- denied_commands: `{denied}`\n")
+                      f.write("- model_invocation: `skipped`\n")
+                      f.write("- notification: false\n")
+              print(f"PREFLIGHT FAILED: denied commands: {denied}", flush=True)
+          else:
+              print("PREFLIGHT: tool permission contract ok", flush=True)
+          PY
+
   implement:
     needs: prepare
-    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.duplicate_skipped != 'true'
+    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.duplicate_skipped != 'true' && needs.prepare.outputs.contract_ok == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -230,9 +301,123 @@ jobs:
             Read AGENTS.md, CLAUDE.md, SECURITY.md, and docs/OPERATING_RULES.md.
             Change only authorized paths. Do not execute repository code, merge, deploy,
             access another repository, reveal Secrets, or change repository settings.
+
+            Turn budget: reserve the final 5 turns for path audit, commit, and remote push.
+            After completing each major work unit (a file or logical group), checkpoint by
+            saving your progress. At the 5-turn reserve threshold stop editing and finalize
+            the best authorized checkpoint you have reached.
           claude_args: |
             --max-turns 40
             --allowedTools "Read,Write,Edit,Glob,Grep"
+      - name: Persist WIP checkpoint on partial failure
+        id: persist_checkpoint
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLAUDE_CONCLUSION: ${{ steps.claude.conclusion }}
+          GENERATED_BRANCH: ${{ steps.claude.outputs.branch_name }}
+          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          conclusion = os.environ.get("CLAUDE_CONCLUSION", "")
+          branch = os.environ.get("GENERATED_BRANCH", "")
+          issue_number = os.environ["ISSUE_NUMBER"]
+          repository = os.environ["REPOSITORY"]
+          run_number = os.environ["RUN_NUMBER"]
+          run_id = os.environ["RUN_ID"]
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          # Only persist if claude exited nonzero and no remote branch was created
+          if conclusion == "success" or branch:
+              print("No WIP checkpoint needed: claude succeeded or branch exists")
+              sys.exit(0)
+
+          # Fetch authorized paths from issue body; no repo scripts are imported
+          issue_data = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{repository}/issues/{issue_number}"],
+              text=True,
+          ))
+          body = issue_data.get("body") or ""
+          match = re.search(r"## Allowed paths\s*\n((?:- .+\n?)+)", body)
+          allowed_paths: list[str] = []
+          if match:
+              allowed_paths = [
+                  line.strip().lstrip("-").strip().strip("`")
+                  for line in match.group(1).splitlines()
+                  if line.strip().startswith("-")
+              ]
+
+          if not allowed_paths:
+              print("No authorized paths found in issue; skipping WIP checkpoint")
+              sys.exit(0)
+
+          # Get all working-tree changes; do not execute any candidate code
+          all_changed = subprocess.check_output(
+              ["git", "diff", "--name-only", "HEAD"],
+              text=True,
+          ).strip().splitlines()
+
+          if not all_changed:
+              print("No working-tree changes; skipping WIP checkpoint")
+              sys.exit(0)
+
+          # Unauthorized paths prevent artifact publication
+          unauthorized = [
+              f for f in all_changed
+              if not any(
+                  f == p or f.startswith(p.rstrip("*").rstrip("/") + "/")
+                  for p in allowed_paths
+              )
+          ]
+          if unauthorized:
+              print(f"Unauthorized paths in diff: {unauthorized}; skipping artifact")
+              sys.exit(0)
+
+          diff_content = subprocess.check_output(
+              ["git", "diff", "HEAD", "--"] + allowed_paths,
+              text=True,
+          )
+          if not diff_content.strip():
+              print("No authorized diff content; skipping WIP checkpoint")
+              sys.exit(0)
+
+          base_sha = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          diff_hash = hashlib.sha256(diff_content.encode()).hexdigest()
+          retry_identity = f"issue-{issue_number}-run-{run_number}"
+
+          metadata = {
+              "base_sha": base_sha,
+              "changed_paths": sorted(all_changed),
+              "diff_hash": diff_hash,
+              "retry_identity": retry_identity,
+              "issue_number": issue_number,
+              "run_id": run_id,
+          }
+
+          if summary_path:
+              with open(summary_path, "a") as f:
+                  f.write("## WIP checkpoint\n\n")
+                  f.write(f"- base_sha: `{base_sha}`\n")
+                  f.write(f"- diff_hash: `{diff_hash}`\n")
+                  f.write(f"- retry_identity: `{retry_identity}`\n")
+                  f.write(f"- changed_paths: {sorted(all_changed)}\n")
+                  f.write("- notification: false\n")
+
+          print(f"WIP checkpoint created: {json.dumps(metadata, indent=2)}", flush=True)
+          PY
+
       - name: Require generated branch
         id: require_branch
         env:
