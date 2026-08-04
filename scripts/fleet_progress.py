@@ -102,6 +102,7 @@ class ProjectStatus:
     risk_tier: str
     review_route: str
     review_state: str
+    unresolved_review_threads: int
     next_action: str
     blocker: str | None
     human_action_required: bool
@@ -164,6 +165,12 @@ def _expect_optional_positive_int(value: Any, location: str) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise FleetProgressError(f"{location} must be a positive integer or null")
+    return value
+
+
+def _expect_non_negative_int(value: Any, location: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise FleetProgressError(f"{location} must be a non-negative integer")
     return value
 
 
@@ -235,6 +242,10 @@ def _validate_relationships(project: ProjectStatus, location: str) -> None:
         raise FleetProgressError(
             f"{location}.review_route must be github-coordinator"
         )
+    if project.review_state == "clean" and project.unresolved_review_threads != 0:
+        raise FleetProgressError(
+            f"{location}.unresolved_review_threads must be 0 when review_state is clean"
+        )
     if project.status == "review_required" and project.review_state not in {
         "required",
         "pending",
@@ -253,6 +264,10 @@ def _validate_relationships(project: ProjectStatus, location: str) -> None:
         if project.review_state != "clean":
             raise FleetProgressError(
                 f"{location}.review_state must be clean before ready_to_merge"
+            )
+        if project.unresolved_review_threads != 0:
+            raise FleetProgressError(
+                f"{location}.unresolved_review_threads must be 0 before ready_to_merge"
             )
         if project.blocker is not None or project.human_action_required:
             raise FleetProgressError(
@@ -276,6 +291,7 @@ def _validate_project(value: Any, index: int) -> ProjectStatus:
             "risk_tier",
             "review_route",
             "review_state",
+            "unresolved_review_threads",
             "next_action",
             "blocker",
             "human_action_required",
@@ -323,6 +339,10 @@ def _validate_project(value: Any, index: int) -> ProjectStatus:
         ),
         review_state=_expect_enum(
             project["review_state"], REVIEW_STATES, f"{location}.review_state"
+        ),
+        unresolved_review_threads=_expect_non_negative_int(
+            project["unresolved_review_threads"],
+            f"{location}.unresolved_review_threads",
         ),
         next_action=_expect_text(
             project["next_action"], f"{location}.next_action", max_length=500
@@ -486,7 +506,10 @@ def render_markdown(progress: FleetProgress) -> str:
                     project.head_sha[:12] if project.head_sha else "—",
                     _check_text(project),
                     f"{project.implementation_route} / {project.risk_tier}",
-                    f"{project.review_route} / {project.review_state}",
+                    (
+                        f"{project.review_route} / {project.review_state} / "
+                        f"{project.unresolved_review_threads} unresolved"
+                    ),
                     project.next_action,
                     project.blocker or "—",
                     project.updated_at,
