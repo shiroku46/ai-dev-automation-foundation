@@ -118,7 +118,8 @@ class SupervisorTest(unittest.TestCase):
         scope = parse_task_scope(issue_body(["scripts/app.py"]), [amendment], ["owner"])
         self.assertIn(".github/workflows/supervisor.yml", scope.paths)
         edited = dict(amendment, updated_at="2026-08-05T01:00:00Z")
-        with self.assertRaises(SupervisorError): parse_task_scope(issue_body(["scripts/app.py"]), [edited], ["owner"])
+        edited_scope = parse_task_scope(issue_body(["scripts/app.py"]), [edited], ["owner"])
+        self.assertNotIn(".github/workflows/supervisor.yml", edited_scope.paths)
 
     def test_review_contract_and_unresolved_threads(self):
         self.assertEqual(review_evidence([standard_review()], [], HEAD_SHA, "standard", ["owner"]).state, "clean")
