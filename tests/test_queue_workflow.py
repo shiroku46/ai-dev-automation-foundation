@@ -63,6 +63,16 @@ class OptionalQueueTest(unittest.TestCase):
         ):
             self.assertIn(required, implement)
 
+    def test_checkpoint_patch_includes_authorized_untracked_files(self):
+        implement = block("implement", "verify")
+        self.assertIn('["git", "add", "--all", "--", *paths]', implement)
+        self.assertIn('["git", "diff", "--cached", "--binary", "--no-renames", base, "--"]', implement)
+        self.assertIn("empty staged checkpoint", implement)
+        self.assertLess(
+            implement.index('["git", "add", "--all", "--", *paths]'),
+            implement.index('["git", "diff", "--cached", "--binary", "--no-renames", base, "--"]'),
+        )
+
     def test_verification_has_no_secret_oidc_or_write(self):
         verify = block("verify", "publish")
         for required in (
