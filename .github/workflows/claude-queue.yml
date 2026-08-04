@@ -199,8 +199,20 @@ jobs:
               disk = pathlib.Path(path)
               if disk.exists() and (disk.is_symlink() or not stat.S_ISREG(disk.stat(follow_symlinks=False).st_mode)):
                   raise SystemExit("checkpoint leaves must be regular files")
-          patch = subprocess.check_output(["git", "diff", "--binary", "--no-renames", base, "--"])
-          untracked = [path for path in paths if subprocess.run(["git", "ls-files", "--error-unmatch", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0]
+          untracked = [
+              path for path in paths
+              if subprocess.run(
+                  ["git", "ls-files", "--error-unmatch", path],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode != 0
+          ]
+          subprocess.check_call(["git", "add", "--all", "--", *paths])
+          patch = subprocess.check_output(
+              ["git", "diff", "--cached", "--binary", "--no-renames", base, "--"]
+          )
+          if not patch:
+              raise SystemExit("empty staged checkpoint")
           checkpoint = {
               "version": 1,
               "base_sha": base,
