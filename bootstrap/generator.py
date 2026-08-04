@@ -22,6 +22,8 @@ MANAGED_FILES = (
     ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
 )
+# Compatibility name retained for existing Bootstrap consumers and tests.
+ALLOWLIST = MANAGED_FILES
 
 
 def install_checklist(owner: str) -> str:
@@ -52,6 +54,7 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - [ ] Merge only with expected-head-SHA protection.
 - [ ] Optional provider execution starts only after an owner-authored standalone `/claude-run` or explicit owner dispatch.
 - [ ] Provider failure remains non-blocking with `human_action_required: false` unless a separately proven optional credential UI condition exists.
+- [ ] Persist any routine automation stop only on `automation-internal-stops`; never turn it into a routine Issue or Pull Request comment.
 - [ ] Never output, persist, copy, hash, or infer Secret values.
 - [ ] Never execute proposed-branch code in a job carrying Secrets, OIDC, or repository write permission.
 """
@@ -69,7 +72,9 @@ def render(target: Path, owner: str) -> None:
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
-    (target / "INSTALL_CHECKLIST.md").write_text(install_checklist(owner), encoding="utf-8", newline="\n")
+    (target / "INSTALL_CHECKLIST.md").write_text(
+        install_checklist(owner), encoding="utf-8", newline="\n"
+    )
 
 
 def main() -> None:
