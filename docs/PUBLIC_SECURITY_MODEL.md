@@ -1,33 +1,32 @@
 # Public workflow security model
 
-| Context | Code source | Permissions | Secrets |
+| Context | Code source | Permissions | Secrets / OIDC |
 |---|---|---:|---:|
-| Fork or same-repository Pull Request checks | exact Pull Request head | `contents: read` | none |
-| Queue implementation | default-branch workflow plus bounded Claude write step | bounded repository write | one configured Claude credential |
-| Trusted exact-SHA validation | fixed current default-branch workflow; candidate executes only in isolated jobs | `contents: read` in candidate jobs | none |
-| Reconciliation | current default branch | fixed Actions dispatch write | none |
-| Supervisor | current default branch | bounded Issue/Pull Request/Actions writes | none |
+| Pull Request checks | exact Pull Request head | `contents: read` | none |
+| GitHub coordinator Supervisor | current default branch only | `actions: read`, `issues: read`, bounded `contents: write` / `pull-requests: write` | none |
+| Optional Claude implementation | immutable authorized base | repository/Issue/PR read, OIDC | one optional Claude credential |
+| Optional candidate verification | immutable checkpoint artifact | `contents: read` | none |
+| Optional candidate handoff | verified artifact metadata | `contents: read` | none |
+| CI reconciliation compatibility | current default branch | `actions: read`, `contents: read` | none |
 
-Write-capable jobs never check out or execute a proposed branch. They inspect metadata through fixed GitHub APIs and dispatch only the allowlisted `trusted-checks.yml` workflow on the current default branch for an immutable candidate SHA.
+## GitHub coordinator boundary
 
-## Immutable attestation contract
+GitHub-direct is the ordinary and sufficient route. The Supervisor never checks out or executes Pull Request code. It fails closed unless one exact head has a trusted source Issue, bounded changed and previous paths, explicit protected authorization, no live path collision, unchanged CI/Unit workflow blobs, successful exact-head native runs, risk-tier-required immutable GitHub coordinator review, zero unresolved threads, no `ai-no-merge`, stable source/default/check/review/path evidence, and current mergeability.
 
-The trusted evidence is GitHub-owned workflow-run and workflow-job metadata. The supervisor accepts an attempt only when all of the following remain true:
+Draft candidates are marked Ready only after those gates pass. A complete fresh evaluation follows, then merge uses the exact expected head SHA. Codex and Claude output is never implementation-completion, review, readiness, or merge evidence.
 
-- the workflow ID and path identify `.github/workflows/trusted-checks.yml`;
-- the workflow run used `workflow_dispatch` on the current default branch and its workflow SHA is the current default-branch SHA;
-- the actor is the repository owner, configured owner, or `github-actions[bot]`;
-- the display title contains the exact full candidate SHA and the fixed authorization job proves that SHA is still an eligible same-repository Pull Request head;
-- candidate execution checks out that immutable input SHA with persisted credentials disabled and verifies `git rev-parse HEAD` before validation;
-- exactly one job named `CI / validate` and exactly one job named `Unit Tests / test` belong to the recognized run ID and carry that run's trusted default-branch `head_sha`;
-- the run and both required jobs are completed successfully.
+## Optional provider boundary
 
-Foreign-workflow, wrong-actor, wrong-title, wrong-path, or stale-default-branch runs are rejected before attempt classification and can never authorize progress. Once a run passes those identity gates, missing, duplicate, cancelled, failed, incomplete, wrong-run, or wrong-workflow-SHA job evidence fails closed and consumes the bounded recognized-attempt budget. Candidate-authored commit statuses and custom Check Runs are not merge-authorizing evidence.
+The Claude Queue starts only after an owner-authored standalone `/claude-run` or explicit owner workflow dispatch. Ordinary Issue creation, CI completion, review, schedule, and Supervisor flow do not select a provider.
 
-Actions are pinned to immutable commit SHAs. Candidate scans and recognized retry attempts are bounded. Same-repository provenance and explicit protected-path authorization are mandatory. Idempotency markers prevent duplicate comments and repeated actions. Merge requires clean exact-SHA Codex evidence, mergeability, and `expected_head_sha` protection.
+A default-branch preflight checks any declared command requirements against the edit-only provider tool contract. Contradictions skip model invocation with public-safe, non-notifying evidence. The provider job uses an immutable credential-free checkout, repository read permissions, OIDC only for the provider action, `track_progress: false`, and a final-five-turn checkpoint reserve.
 
-## Exact-base recovery boundary
+Complete or WIP checkpoints contain exact base SHA, bounded retry identity, authorized changed paths, and content/diff digests. They are retained for one day. A separate read-only job verifies successful checkpoint artifacts and runs Foundation validation. Repository publication remains the GitHub-direct coordinator's responsibility; the optional workflow has no repository-write job.
 
-Existing-Pull-Request recovery is authorized only by one strict machine-readable block in the trusted owner-authored source Issue. Comments, event inputs, Pull Request bodies, and candidate content cannot supply or override it. The fixed prepare job proves open state, non-fork same-repository provenance, exact head ref and SHA, and live ref resolution; implementation and publication repeat the movement-sensitive checks.
+Provider failure remains non-blocking. `auth_secret` is human-only only when the optional route was explicitly enabled and a separate connected adapter proved a canonical credential UI action is unavoidable. Without both proofs, `human_action_required` remains false.
 
-Candidate generation is credential-free and repository-read-only. Its only handoff is a digest-bound manifest containing full bytes, modes, deletions, and per-file hashes. Candidate validation is also read-only. The token-bearing publisher consumes only the validated artifact, rechecks its digest and the live base, and writes Git objects and the integration Draft Pull Request through GitHub APIs without checking out or executing the proposed tree. Thus candidate-controlled Git transport and candidate execution never share repository write credentials. Ordinary Queue requests remain on the default branch.
+## Native evidence and Bootstrap parity
+
+`CI` and `Unit Tests` run on the exact candidate with no Secrets, OIDC, or write permission. Candidate-authored status evidence is not merge-authorizing. Actions are pinned to immutable commit SHAs.
+
+Bootstrap copies every managed Foundation file byte-for-byte, including Supervisor, optional Queue, validator, templates, policy, and startup guidance. GitHub-only Phase 0 requires connected repository access, enabled Actions/Foundation workflows, and Workflow permissions; no provider environment or credential is required.
