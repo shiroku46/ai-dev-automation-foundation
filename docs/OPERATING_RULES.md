@@ -87,6 +87,8 @@ A valid external audit must identify the exact current 40-character GitHub-visib
 
 The request for the selected provider is preserved as an immutable trusted exact-SHA request comment or equivalent immutable provider-request event. It must identify the selected auditor and exact current SHA. A request for one provider does not authorize or require a routine second-provider request.
 
+A neutral status or request marker authored by `github-actions[bot]` may preserve exact-SHA state, but it does not select the provider, prove that the provider was reached, or count as completed audit evidence. The coordinating owner or connected coordinator uses the supported selected-provider route.
+
 The Pull Request body or machine-readable status records implementation route, exact SHA, risk tier, selected auditor, audit state, required checks, observed conclusions, and next automatic action. Stale-SHA, untrusted-author, edited-without-provenance, content-free, or second-provider routine evidence is ignored.
 
 ## Internal stops are durable and non-notifying
