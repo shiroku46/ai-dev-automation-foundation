@@ -18,7 +18,7 @@ body:
     id: startup_evidence
     attributes:
       label: Non-secret Phase 0 evidence reference
-      description: Provide acceptance Issue/PR, exact head SHA, successful checks, and coordinator review. Do not provide Secret values.
+      description: Provide acceptance Issue/PR, exact head SHA, successful checks, and coordinator review. Do not provide credential values or Secret values.
     validations:
       required: true
   - type: textarea
