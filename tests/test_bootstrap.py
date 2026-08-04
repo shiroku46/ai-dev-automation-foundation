@@ -1,10 +1,17 @@
+import base64
+import hashlib
+import json
+import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
 from bootstrap.generator import ALLOWLIST, GENERATED_TARGET_MARKER, render
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_validator(target: Path) -> subprocess.CompletedProcess[str]:
@@ -34,6 +41,48 @@ def run_generated_unit_tests_path(target: Path) -> subprocess.CompletedProcess[s
         cwd=target,
         capture_output=True,
         text=True,
+        check=False,
+    )
+
+
+def queue_python_step(step_name: str) -> str:
+    queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+    step = queue.split(f"- name: {step_name}", 1)[1]
+    source = step.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+    return textwrap.dedent(source)
+
+
+def run_queue_materializer(
+    repository: Path,
+    scratch: Path,
+    *,
+    files: list[dict[str, object]],
+) -> subprocess.CompletedProcess[bytes]:
+    base_sha = "a" * 40
+    runner_temp = scratch / "runner"
+    artifact = runner_temp / "queue-candidate"
+    artifact.mkdir(parents=True)
+    candidate = {
+        "version": 1,
+        "base_sha": base_sha,
+        "branch_name": "claude-issue-135-symlink-test",
+        "files": files,
+    }
+    raw = json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
+    (artifact / "candidate.json").write_bytes(raw)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RUNNER_TEMP": str(runner_temp),
+            "EXPECTED_DIGEST": hashlib.sha256(raw).hexdigest(),
+            "BASE_SHA": base_sha,
+        }
+    )
+    return subprocess.run(
+        [sys.executable, "-c", queue_python_step("Verify digest and materialize complete candidate bytes")],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
         check=False,
     )
 
@@ -152,11 +201,90 @@ class BootstrapTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             render(target, "example-owner")
-            source = Path(__file__).resolve().parents[1] / ".github/workflows/claude-queue.yml"
+            source = ROOT / ".github/workflows/claude-queue.yml"
             self.assertEqual(
                 (target / ".github/workflows/claude-queue.yml").read_bytes(),
                 source.read_bytes(),
             )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
+    def test_queue_materializer_replaces_leaf_symlink_without_following(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            repository = scratch / "repo"
+            repository.mkdir()
+            outside = scratch / "outside.txt"
+            outside.write_bytes(b"outside remains unchanged\n")
+            target = repository / "tracked-link.txt"
+            target.symlink_to(outside)
+            replacement = b"verified candidate bytes\n"
+            result = run_queue_materializer(
+                repository,
+                scratch,
+                files=[
+                    {
+                        "path": "tracked-link.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": hashlib.sha256(replacement).hexdigest(),
+                        "content_base64": base64.b64encode(replacement).decode(),
+                    }
+                ],
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertEqual(outside.read_bytes(), b"outside remains unchanged\n")
+            self.assertFalse(target.is_symlink())
+            self.assertEqual(target.read_bytes(), replacement)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
+    def test_queue_materializer_deletes_dangling_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            repository = scratch / "repo"
+            repository.mkdir()
+            target = repository / "dangling-link.txt"
+            target.symlink_to(scratch / "missing-target")
+            result = run_queue_materializer(
+                repository,
+                scratch,
+                files=[
+                    {
+                        "path": "dangling-link.txt",
+                        "mode": None,
+                        "deleted": True,
+                        "sha256": hashlib.sha256(b"").hexdigest(),
+                        "content_base64": "",
+                    }
+                ],
+            )
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertFalse(os.path.lexists(target))
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
+    def test_queue_materializer_rejects_symlink_parent_without_writing_outside(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            repository = scratch / "repo"
+            repository.mkdir()
+            outside = scratch / "outside"
+            outside.mkdir()
+            (repository / "subdir").symlink_to(outside, target_is_directory=True)
+            payload = b"must not escape\n"
+            result = run_queue_materializer(
+                repository,
+                scratch,
+                files=[
+                    {
+                        "path": "subdir/escaped.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((outside / "escaped.txt").exists())
 
 
 if __name__ == "__main__":
