@@ -286,6 +286,21 @@ class BootstrapTest(unittest.TestCase):
                 source.read_bytes(),
             )
 
+    def test_queue_candidate_generation_forces_read_only_agent_mode(self):
+        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(
+            encoding="utf-8"
+        )
+        implement = queue.split("\n  implement:\n", 1)[1].split(
+            "\n  resolve:\n", 1
+        )[0]
+        self.assertIn("track_progress: false", implement)
+        self.assertNotIn("github.event_name != 'workflow_dispatch'", implement)
+        self.assertIn("contents: read", implement)
+        self.assertIn("pull-requests: read", implement)
+        self.assertIn("issues: read", implement)
+        self.assertNotIn("contents: write", implement)
+        self.assertNotIn("pull-requests: write", implement)
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
     def test_queue_materializer_replaces_leaf_symlink_without_following(self):
         with tempfile.TemporaryDirectory() as directory:
