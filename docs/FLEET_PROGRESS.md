@@ -1,8 +1,8 @@
 # Fleet Progress Dashboard
 
-The Fleet Progress Dashboard makes GitHub—not chat transcripts or provider reports—the durable source of project progress. This phase is an offline, read-only renderer: a trusted coordinator supplies explicit schema-version-2 JSON records, the CLI validates them fail-closed, and deterministic Markdown presents one cross-repository view.
+The Fleet Progress Dashboard makes GitHub—not chat transcripts or provider reports—the durable source of project progress. A trusted coordinator can validate explicit schema-version-2 JSON records, render deterministic Markdown, or use the protected read-only collector to derive those records from bounded live GitHub evidence.
 
-This command performs no network request, GitHub mutation, Project synchronization, workflow dispatch, environment inspection, or implicit file write.
+The renderer performs no network request or GitHub mutation. The collector performs no GitHub mutation, Project synchronization, workflow dispatch, repository-setting change, deployment, billing, production, or destructive operation.
 
 ## Authoritative evidence
 
@@ -137,7 +137,7 @@ The renderer produces, in priority order:
 
 The Review column displays the review route, review state, and unresolved-thread count. Provider quota or route unavailability alone never creates a blocked or human-action entry.
 
-## Commands
+## Offline renderer commands
 
 Validate without rendering or writing:
 
@@ -159,14 +159,110 @@ python scripts/fleet_progress.py fleet.json --output docs/FLEET_STATUS.md
 
 `--check` cannot be combined with `--output`. Without `--output`, the command creates no file.
 
+## Read-only GitHub collector
+
+`scripts/fleet_collect_github.py` validates one bounded configuration and emits a schema-version-2 Fleet Progress document. It derives current PR/head state, exact-head workflow conclusions, trusted coordinator-review markers, and authoritative unresolved review-thread count.
+
+### Collector configuration
+
+```json
+{
+  "schema_version": 2,
+  "projects": [
+    {
+      "repository": "owner/repository",
+      "phase": "Phase 2",
+      "issue": 160,
+      "pull_request": 158,
+      "required_workflows": ["CI", "Unit Tests"],
+      "implementation_route": "github-direct",
+      "risk_tier": "protected",
+      "trusted_coordinators": ["owner-login"],
+      "next_action": "Merge with expected-head protection",
+      "blocker": null,
+      "human_action_required": false,
+      "baseline_status": null
+    }
+  ]
+}
+```
+
+For a project with no Pull Request, set `pull_request` to null, `required_workflows` to an empty array, and `baseline_status` to `backlog`, `ready`, or `idle`. Non-PR entries perform no network request.
+
+`selected_auditor` and `audit_state` are invalid configuration fields. `trusted_coordinators` identifies GitHub logins whose unedited exact-head coordinator-review markers may count.
+
+### Coordinator markers
+
+Low and standard clean review:
+
+```text
+<!-- foundation-coordinator-review:<40-character-sha>:clean -->
+```
+
+Protected clean review requires both:
+
+```text
+<!-- foundation-coordinator-review:<40-character-sha>:scope-security:clean -->
+<!-- foundation-coordinator-review:<40-character-sha>:correctness-race:clean -->
+```
+
+Corresponding `blocked` markers produce `review_state: blocked`. Markers count only when authored by a configured trusted coordinator, unedited, bound to the exact current head, and accompanied by a nonempty review summary. Stale, edited, untrusted, content-free, malformed, or duplicate-ambiguous markers do not produce clean state.
+
+### Collector commands
+
+Validate configuration without a network request or output write:
+
+```bash
+python scripts/fleet_collect_github.py fleet-config.json --check-config
+```
+
+Collect to stdout:
+
+```bash
+GH_TOKEN=... python scripts/fleet_collect_github.py fleet-config.json
+```
+
+Write to one explicit output path:
+
+```bash
+GH_TOKEN=... python scripts/fleet_collect_github.py fleet-config.json --output fleet.json
+```
+
+`GH_TOKEN` or `GITHUB_TOKEN` is required only for Pull Request records because authoritative review-thread state is read through GitHub GraphQL. If both variables are set, their values must match. Token values are used only in Authorization headers and are never printed, hashed, returned, or persisted.
+
+### Fixed network boundary
+
+The collector constructs only:
+
+- HTTPS GET `/repos/{owner}/{repository}/pulls/{positive-number}` with no query;
+- HTTPS GET `/repos/{owner}/{repository}/actions/runs` with exactly `event=pull_request`, validated exact `head_sha`, `per_page=100`, and bounded `page`;
+- HTTPS POST `https://api.github.com/graphql` containing one source-code-constant read-only query for the same repository/PR review threads and top-level comments.
+
+The GraphQL source contains no mutation and cannot be selected or modified through configuration, CLI input, environment variables, Issue text, or API responses. Variables are limited to validated owner, repository, positive PR number, and bounded response-provided pagination cursors.
+
+Workflow and review pagination is complete and bounded. Repository, PR, head, event, workflow-run repository, comment author, timestamps, cursors, page counts, node counts, and response sizes are validated. Incomplete, moved, mismatched, duplicate, malformed, or excessive evidence fails closed.
+
+The collector never prints or hashes response bodies. Errors expose only bounded classifications and never token or response content.
+
+### Conservative state derivation
+
+- failed required checks produce `fix_required`;
+- missing or `action_required` checks produce `blocked`;
+- pending checks produce `ci_running`;
+- a current-head blocked coordinator marker produces `blocked` with `human_action_required: false`;
+- missing, incomplete, ambiguous, or unresolved review evidence produces `review_required`;
+- draft PRs with clean review remain `pr_open`;
+- non-draft PRs become `ready_to_merge` only with all checks passing, clean risk-tier-required coordinator review, and zero unresolved threads;
+- optional provider routes never change review state, blocker, or human-action state;
+- every generated document is validated through `fleet_progress.py` before stdout or explicit output write.
+
 ## Security and operational boundary
 
-- input is limited to 2 MiB;
-- project and check counts are bounded;
+- renderer input is limited to 2 MiB;
+- collector configuration is limited to 256 KiB;
+- project, workflow, coordinator, page, node, response, and check counts are bounded;
 - duplicate JSON keys are rejected before validation;
-- errors do not echo input records or credential values;
-- no token, Secret, environment variable, command, URL, endpoint, repository, ref, or provider is selected from input;
+- errors do not echo input records, response bodies, or credential values;
+- no token, Secret, arbitrary environment variable, command, URL, endpoint, repository, ref, workflow, provider, method, header, or GraphQL source is selected from untrusted input;
 - Markdown cells escape pipes and backslashes;
-- GitHub Issues, Pull Requests, exact-head checks, coordinator-review records, unresolved-thread state, and exact remote SHAs remain authoritative after rendering.
-
-A separate protected phase may collect these records from fixed read-only GitHub API endpoints. It must emit schema version 2 and preserve the same GitHub-only review policy.
+- GitHub Issues, Pull Requests, exact-head checks, coordinator-review records, unresolved-thread state, and exact remote SHAs remain authoritative after collection and rendering.
