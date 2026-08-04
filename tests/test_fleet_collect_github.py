@@ -4,13 +4,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import os
 import tempfile
 import unittest
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from scripts.fleet_collect_github import (
     GRAPHQL_REVIEW_QUERY,
@@ -51,20 +50,34 @@ def config_document(*projects, schema_version=2):
     return {"schema_version": schema_version, "projects": list(projects)}
 
 
-def pull_payload(*, draft=False, state="open", merged=False, sha=SHA):
+def pull_payload(
+    *,
+    draft=False,
+    state="open",
+    merged=False,
+    sha=SHA,
+    updated="2026-08-04T09:40:00Z",
+):
     return {
         "number": 12,
         "state": state,
         "draft": draft,
         "merged": merged,
         "merged_at": "2026-08-04T09:50:00Z" if merged else None,
-        "updated_at": "2026-08-04T09:40:00Z",
+        "updated_at": updated,
         "head": {"sha": sha, "repo": {"full_name": REPO}},
         "base": {"repo": {"full_name": REPO}},
     }
 
 
-def run_payload(name, *, state="success", run_id=1, sha=SHA, updated="2026-08-04T09:45:00Z"):
+def run_payload(
+    name,
+    *,
+    state="success",
+    run_id=1,
+    sha=SHA,
+    updated="2026-08-04T09:45:00Z",
+):
     if state in {"queued", "in_progress"}:
         status = state
         conclusion = None
@@ -87,29 +100,67 @@ def marker_body(marker):
     return f"{marker}\n\nReview summary: exact-head scope, checks, and correctness are clean."
 
 
-def review_comment(marker, *, login="trusted-owner", edited=False):
+def review_comment(
+    marker,
+    *,
+    node_id="C1",
+    login="trusted-owner",
+    edited=False,
+):
     return {
+        "id": node_id,
         "body": marker_body(marker),
         "createdAt": "2026-08-04T09:47:00Z",
-        "updatedAt": "2026-08-04T09:48:00Z" if edited else "2026-08-04T09:47:00Z",
+        "updatedAt": (
+            "2026-08-04T09:48:00Z"
+            if edited
+            else "2026-08-04T09:47:00Z"
+        ),
         "author": {"login": login},
     }
 
 
-def thread(*, resolved=True, updated="2026-08-04T09:46:00Z"):
+def thread(
+    *,
+    node_id="T1",
+    resolved=True,
+    updated="2026-08-04T09:46:00Z",
+):
     return {
+        "id": node_id,
         "isResolved": resolved,
         "comments": {"nodes": [{"updatedAt": updated}]},
     }
 
 
-def graphql_payload(*, threads=None, comments=None, thread_next=False, comment_next=False, thread_cursor=None, comment_cursor=None):
+def graphql_payload(
+    *,
+    threads=None,
+    comments=None,
+    thread_next=False,
+    comment_next=False,
+    thread_cursor=None,
+    comment_cursor=None,
+    sha=SHA,
+    updated="2026-08-04T09:40:00Z",
+    state="OPEN",
+    draft=False,
+    merged=False,
+    repository=REPO,
+):
     return {
         "data": {
             "repository": {
-                "nameWithOwner": REPO,
+                "nameWithOwner": repository,
                 "pullRequest": {
                     "number": 12,
+                    "headRefOid": sha,
+                    "state": state,
+                    "isDraft": draft,
+                    "merged": merged,
+                    "updatedAt": updated,
+                    "headRepository": {"nameWithOwner": repository},
+                    "baseRepository": {"nameWithOwner": repository},
                     "reviewThreads": {
                         "nodes": list(threads or []),
                         "pageInfo": {
@@ -166,20 +217,66 @@ class NoNetworkApi:
     def get_workflow_runs(self, repository, sha):
         raise AssertionError("baseline collection must not call GitHub")
 
-    def get_review_evidence(self, repository, number):
+    def get_review_evidence(self, repository, number, expected_sha):
         raise AssertionError("baseline collection must not call GitHub")
 
 
-def api_for_standard_clean(*, draft=False, threads=None, comments=None, route_runs=None, token="token"):
-    comments = comments or [
-        review_comment(f"<!-- foundation-coordinator-review:{SHA}:clean -->")
+def standard_comment():
+    return review_comment(
+        f"<!-- foundation-coordinator-review:{SHA}:clean -->"
+    )
+
+
+def run_page(runs):
+    return {"total_count": len(runs), "workflow_runs": list(runs)}
+
+
+def api_for_stable_collection(
+    *,
+    draft=False,
+    threads=None,
+    comments=None,
+    runs=None,
+    token="token",
+    second_runs=None,
+    second_threads=None,
+    second_comments=None,
+    final_pull=None,
+):
+    first_runs = runs or [
+        run_payload("CI", run_id=1),
+        run_payload("Unit Tests", run_id=2),
     ]
-    runs = route_runs or [run_payload("CI", run_id=1), run_payload("Unit Tests", run_id=2)]
+    final_runs = second_runs or first_runs
+    first_threads = list(threads or [])
+    final_threads = (
+        list(second_threads)
+        if second_threads is not None
+        else first_threads
+    )
+    first_comments = list(comments or [standard_comment()])
+    final_comments = (
+        list(second_comments)
+        if second_comments is not None
+        else first_comments
+    )
+    pull = pull_payload(draft=draft)
     opener = RecordingOpener(
         [
-            pull_payload(draft=draft),
-            {"total_count": len(runs), "workflow_runs": runs},
-            graphql_payload(threads=threads or [], comments=comments),
+            pull,
+            run_page(first_runs),
+            graphql_payload(
+                threads=first_threads,
+                comments=first_comments,
+                draft=draft,
+            ),
+            run_page(final_runs),
+            graphql_payload(
+                threads=final_threads,
+                comments=final_comments,
+                draft=draft,
+            ),
+            final_pull or pull,
         ]
     )
     return GitHubApi(token, opener), opener
@@ -202,7 +299,9 @@ class ConfigValidationTest(unittest.TestCase):
     def test_optional_provider_routes_are_valid_metadata(self):
         for route in ("codex-optional", "claude-optional"):
             with self.subTest(route=route):
-                validate_config(config_document(config_project(implementation_route=route)))
+                validate_config(
+                    config_document(config_project(implementation_route=route))
+                )
 
     def test_duplicate_coordinator_and_repository_are_rejected(self):
         with self.assertRaisesRegex(FleetCollectorError, "duplicate login"):
@@ -213,7 +312,10 @@ class ConfigValidationTest(unittest.TestCase):
             )
         with self.assertRaisesRegex(FleetCollectorError, "duplicate repository"):
             validate_config(
-                config_document(config_project(), config_project(repository="Example/Project"))
+                config_document(
+                    config_project(),
+                    config_project(repository="Example/Project"),
+                )
             )
 
     def test_non_pr_configuration_is_strict(self):
@@ -251,7 +353,10 @@ class TokenAndEndpointTest(unittest.TestCase):
             resolve_token({"GH_TOKEN": "one", "GITHUB_TOKEN": "two"})
         with self.assertRaisesRegex(FleetCollectorError, "invalid"):
             resolve_token({"GH_TOKEN": "secret\nvalue"})
-        self.assertEqual(resolve_token({"GH_TOKEN": "same", "GITHUB_TOKEN": "same"}), "same")
+        self.assertEqual(
+            resolve_token({"GH_TOKEN": "same", "GITHUB_TOKEN": "same"}),
+            "same",
+        )
 
     def test_rest_endpoint_and_query_are_fixed(self):
         api = GitHubApi(None, RecordingOpener([]))
@@ -260,15 +365,25 @@ class TokenAndEndpointTest(unittest.TestCase):
         with self.assertRaisesRegex(FleetCollectorError, "fixed contract"):
             api._rest_get(
                 "/repos/example/project/actions/runs",
-                {"event": "push", "head_sha": SHA, "per_page": "100", "page": "1"},
+                {
+                    "event": "push",
+                    "head_sha": SHA,
+                    "per_page": "100",
+                    "page": "1",
+                },
             )
 
     def test_graphql_requires_token_and_uses_static_query(self):
         with self.assertRaisesRegex(FleetCollectorError, "token is required"):
-            GitHubApi(None, RecordingOpener([])).get_review_evidence(REPO, 12)
+            GitHubApi(None, RecordingOpener([])).get_review_evidence(
+                REPO,
+                12,
+                SHA,
+            )
         opener = RecordingOpener([graphql_payload()])
         api = GitHubApi("token", opener)
-        api.get_review_evidence(REPO, 12)
+        evidence = api.get_review_evidence(REPO, 12, SHA)
+        self.assertEqual(evidence["snapshot"]["sha"], SHA)
         request, timeout = opener.requests[0]
         self.assertEqual(request.full_url, "https://api.github.com/graphql")
         self.assertEqual(request.get_method(), "POST")
@@ -288,15 +403,37 @@ class TokenAndEndpointTest(unittest.TestCase):
         )
         api = GitHubApi("super-secret-token", RecordingOpener([error]))
         with self.assertRaises(FleetCollectorError) as captured:
-            api.get_review_evidence(REPO, 12)
+            api.get_review_evidence(REPO, 12, SHA)
         message = str(captured.exception)
         self.assertNotIn("super-secret-token", message)
         self.assertNotIn("secret-body", message)
 
+    def test_graphql_identity_mismatch_fails_closed(self):
+        api = GitHubApi(
+            "token",
+            RecordingOpener([graphql_payload(sha="b" * 40)]),
+        )
+        with self.assertRaisesRegex(FleetCollectorError, "head moved"):
+            api.get_review_evidence(REPO, 12, SHA)
+
+    def test_duplicate_graphql_nodes_fail_closed(self):
+        opener = RecordingOpener(
+            [
+                graphql_payload(
+                    threads=[thread(node_id="T1")],
+                    thread_next=True,
+                    thread_cursor="next-thread",
+                ),
+                graphql_payload(threads=[thread(node_id="T1")]),
+            ]
+        )
+        with self.assertRaisesRegex(FleetCollectorError, "duplicate node"):
+            GitHubApi("token", opener).get_review_evidence(REPO, 12, SHA)
+
 
 class CollectionTest(unittest.TestCase):
     def test_standard_clean_record_is_ready_to_merge(self):
-        api, _ = api_for_standard_clean()
+        api, _ = api_for_stable_collection()
         payload = collect_document(
             validate_config(config_document(config_project())),
             api,
@@ -312,9 +449,11 @@ class CollectionTest(unittest.TestCase):
         self.assertNotIn("audit_state", record)
 
     def test_draft_with_clean_review_remains_pr_open(self):
-        api, _ = api_for_standard_clean(draft=True)
+        api, _ = api_for_stable_collection(draft=True)
         record = collect_document(
-            validate_config(config_document(config_project())), api, now=lambda: NOW
+            validate_config(config_document(config_project())),
+            api,
+            now=lambda: NOW,
         )["projects"][0]
         self.assertEqual(record["status"], "pr_open")
         self.assertEqual(record["review_state"], "clean")
@@ -323,15 +462,19 @@ class CollectionTest(unittest.TestCase):
         project = config_project(risk_tier="protected")
         comments = [
             review_comment(
-                f"<!-- foundation-coordinator-review:{SHA}:scope-security:clean -->"
+                f"<!-- foundation-coordinator-review:{SHA}:scope-security:clean -->",
+                node_id="C1",
             ),
             review_comment(
-                f"<!-- foundation-coordinator-review:{SHA}:correctness-race:clean -->"
+                f"<!-- foundation-coordinator-review:{SHA}:correctness-race:clean -->",
+                node_id="C2",
             ),
         ]
-        api, _ = api_for_standard_clean(comments=comments)
+        api, _ = api_for_stable_collection(comments=comments)
         record = collect_document(
-            validate_config(config_document(project)), api, now=lambda: NOW
+            validate_config(config_document(project)),
+            api,
+            now=lambda: NOW,
         )["projects"][0]
         self.assertEqual(record["review_state"], "clean")
         self.assertEqual(record["status"], "ready_to_merge")
@@ -343,17 +486,23 @@ class CollectionTest(unittest.TestCase):
                 f"<!-- foundation-coordinator-review:{SHA}:scope-security:clean -->"
             )
         ]
-        api, _ = api_for_standard_clean(comments=comments)
+        api, _ = api_for_stable_collection(comments=comments)
         record = collect_document(
-            validate_config(config_document(project)), api, now=lambda: NOW
+            validate_config(config_document(project)),
+            api,
+            now=lambda: NOW,
         )["projects"][0]
         self.assertEqual(record["review_state"], "pending")
         self.assertEqual(record["status"], "review_required")
 
     def test_unresolved_thread_prevents_clean_state(self):
-        api, _ = api_for_standard_clean(threads=[thread(resolved=False)])
+        api, _ = api_for_stable_collection(
+            threads=[thread(resolved=False)]
+        )
         record = collect_document(
-            validate_config(config_document(config_project())), api, now=lambda: NOW
+            validate_config(config_document(config_project())),
+            api,
+            now=lambda: NOW,
         )["projects"][0]
         self.assertEqual(record["unresolved_review_threads"], 1)
         self.assertEqual(record["review_state"], "pending")
@@ -361,11 +510,15 @@ class CollectionTest(unittest.TestCase):
 
     def test_blocked_marker_creates_automation_owned_blocker(self):
         comments = [
-            review_comment(f"<!-- foundation-coordinator-review:{SHA}:blocked -->")
+            review_comment(
+                f"<!-- foundation-coordinator-review:{SHA}:blocked -->"
+            )
         ]
-        api, _ = api_for_standard_clean(comments=comments)
+        api, _ = api_for_stable_collection(comments=comments)
         record = collect_document(
-            validate_config(config_document(config_project())), api, now=lambda: NOW
+            validate_config(config_document(config_project())),
+            api,
+            now=lambda: NOW,
         )["projects"][0]
         self.assertEqual(record["review_state"], "blocked")
         self.assertEqual(record["status"], "blocked")
@@ -374,17 +527,37 @@ class CollectionTest(unittest.TestCase):
 
     def test_edited_untrusted_stale_and_duplicate_markers_do_not_clean(self):
         cases = [
-            [review_comment(f"<!-- foundation-coordinator-review:{SHA}:clean -->", edited=True)],
-            [review_comment(f"<!-- foundation-coordinator-review:{SHA}:clean -->", login="outsider")],
-            [review_comment(f"<!-- foundation-coordinator-review:{'b' * 40}:clean -->")],
             [
-                review_comment(f"<!-- foundation-coordinator-review:{SHA}:clean -->"),
-                review_comment(f"<!-- foundation-coordinator-review:{SHA}:clean -->"),
+                review_comment(
+                    f"<!-- foundation-coordinator-review:{SHA}:clean -->",
+                    edited=True,
+                )
+            ],
+            [
+                review_comment(
+                    f"<!-- foundation-coordinator-review:{SHA}:clean -->",
+                    login="outsider",
+                )
+            ],
+            [
+                review_comment(
+                    f"<!-- foundation-coordinator-review:{'b' * 40}:clean -->"
+                )
+            ],
+            [
+                review_comment(
+                    f"<!-- foundation-coordinator-review:{SHA}:clean -->",
+                    node_id="C1",
+                ),
+                review_comment(
+                    f"<!-- foundation-coordinator-review:{SHA}:clean -->",
+                    node_id="C2",
+                ),
             ],
         ]
         for comments in cases:
             with self.subTest(comments=comments):
-                api, _ = api_for_standard_clean(comments=comments)
+                api, _ = api_for_stable_collection(comments=comments)
                 record = collect_document(
                     validate_config(config_document(config_project())),
                     api,
@@ -396,10 +569,12 @@ class CollectionTest(unittest.TestCase):
     def test_optional_provider_route_does_not_affect_status(self):
         for route in ("codex-optional", "claude-optional"):
             with self.subTest(route=route):
-                api, _ = api_for_standard_clean()
+                api, _ = api_for_stable_collection()
                 record = collect_document(
                     validate_config(
-                        config_document(config_project(implementation_route=route))
+                        config_document(
+                            config_project(implementation_route=route)
+                        )
                     ),
                     api,
                     now=lambda: NOW,
@@ -419,7 +594,7 @@ class CollectionTest(unittest.TestCase):
                     run_payload("CI", state=state, run_id=1),
                     run_payload("Unit Tests", run_id=2),
                 ]
-                api, _ = api_for_standard_clean(route_runs=runs)
+                api, _ = api_for_stable_collection(runs=runs)
                 record = collect_document(
                     validate_config(config_document(config_project())),
                     api,
@@ -432,7 +607,7 @@ class CollectionTest(unittest.TestCase):
             run_payload("CI", run_id=1, sha="b" * 40),
             run_payload("Unit Tests", run_id=2),
         ]
-        api, _ = api_for_standard_clean(route_runs=runs)
+        api, _ = api_for_stable_collection(runs=runs)
         with self.assertRaisesRegex(FleetCollectorError, "different identity"):
             collect_document(
                 validate_config(config_document(config_project())),
@@ -440,21 +615,26 @@ class CollectionTest(unittest.TestCase):
                 now=lambda: NOW,
             )
 
-    def test_workflow_pagination_is_complete(self):
-        first_page = [run_payload("Other", run_id=index + 1) for index in range(100)]
-        second_page = [run_payload("CI", run_id=101), run_payload("Unit Tests", run_id=102)]
+    def test_workflow_pagination_is_complete_for_both_passes(self):
+        first_page = [
+            run_payload("Other", run_id=index + 1)
+            for index in range(100)
+        ]
+        second_page = [
+            run_payload("CI", run_id=101),
+            run_payload("Unit Tests", run_id=102),
+        ]
+        graph = graphql_payload(comments=[standard_comment()])
         opener = RecordingOpener(
             [
                 pull_payload(),
                 {"total_count": 102, "workflow_runs": first_page},
                 {"total_count": 102, "workflow_runs": second_page},
-                graphql_payload(
-                    comments=[
-                        review_comment(
-                            f"<!-- foundation-coordinator-review:{SHA}:clean -->"
-                        )
-                    ]
-                ),
+                graph,
+                {"total_count": 102, "workflow_runs": first_page},
+                {"total_count": 102, "workflow_runs": second_page},
+                graph,
+                pull_payload(),
             ]
         )
         record = collect_document(
@@ -463,10 +643,13 @@ class CollectionTest(unittest.TestCase):
             now=lambda: NOW,
         )["projects"][0]
         self.assertEqual(record["status"], "ready_to_merge")
-        self.assertEqual(len(opener.requests), 4)
+        self.assertEqual(len(opener.requests), 8)
 
     def test_incomplete_workflow_pagination_fails_closed(self):
-        first_page = [run_payload("Other", run_id=index + 1) for index in range(100)]
+        first_page = [
+            run_payload("Other", run_id=index + 1)
+            for index in range(100)
+        ]
         opener = RecordingOpener(
             [
                 pull_payload(),
@@ -482,30 +665,35 @@ class CollectionTest(unittest.TestCase):
             )
 
     def test_graphql_review_thread_pagination_is_complete(self):
+        graph_page_one = graphql_payload(
+            threads=[thread(node_id="T1")],
+            comments=[standard_comment()],
+            thread_next=True,
+            thread_cursor="thread-page-2",
+        )
+        graph_page_two = graphql_payload(
+            threads=[
+                thread(
+                    node_id="T2",
+                    updated="2026-08-04T09:49:00Z",
+                )
+            ],
+            comments=[],
+        )
+        runs = [
+            run_payload("CI", run_id=1),
+            run_payload("Unit Tests", run_id=2),
+        ]
         opener = RecordingOpener(
             [
                 pull_payload(),
-                {
-                    "total_count": 2,
-                    "workflow_runs": [
-                        run_payload("CI", run_id=1),
-                        run_payload("Unit Tests", run_id=2),
-                    ],
-                },
-                graphql_payload(
-                    threads=[thread(resolved=True)],
-                    comments=[
-                        review_comment(
-                            f"<!-- foundation-coordinator-review:{SHA}:clean -->"
-                        )
-                    ],
-                    thread_next=True,
-                    thread_cursor="thread-page-2",
-                ),
-                graphql_payload(
-                    threads=[thread(resolved=True, updated="2026-08-04T09:49:00Z")],
-                    comments=[],
-                ),
+                run_page(runs),
+                graph_page_one,
+                graph_page_two,
+                run_page(runs),
+                graph_page_one,
+                graph_page_two,
+                pull_payload(),
             ]
         )
         record = collect_document(
@@ -515,6 +703,58 @@ class CollectionTest(unittest.TestCase):
         )["projects"][0]
         self.assertEqual(record["review_state"], "clean")
         self.assertEqual(record["unresolved_review_threads"], 0)
+
+    def test_head_movement_during_collection_fails_closed(self):
+        api, _ = api_for_stable_collection(
+            final_pull=pull_payload(sha="b" * 40)
+        )
+        with self.assertRaisesRegex(FleetCollectorError, "moved during collection"):
+            collect_document(
+                validate_config(config_document(config_project())),
+                api,
+                now=lambda: NOW,
+            )
+
+    def test_check_movement_during_collection_fails_closed(self):
+        final_runs = [
+            run_payload("CI", state="failure", run_id=1),
+            run_payload("Unit Tests", run_id=2),
+        ]
+        api, _ = api_for_stable_collection(second_runs=final_runs)
+        with self.assertRaisesRegex(FleetCollectorError, "workflow evidence moved"):
+            collect_document(
+                validate_config(config_document(config_project())),
+                api,
+                now=lambda: NOW,
+            )
+
+    def test_review_movement_during_collection_fails_closed(self):
+        api, _ = api_for_stable_collection(second_comments=[])
+        with self.assertRaisesRegex(FleetCollectorError, "review evidence moved"):
+            collect_document(
+                validate_config(config_document(config_project())),
+                api,
+                now=lambda: NOW,
+            )
+
+    def test_graphql_and_rest_snapshot_disagreement_fails_closed(self):
+        runs = [
+            run_payload("CI", run_id=1),
+            run_payload("Unit Tests", run_id=2),
+        ]
+        opener = RecordingOpener(
+            [
+                pull_payload(),
+                run_page(runs),
+                graphql_payload(updated="2026-08-04T09:41:00Z"),
+            ]
+        )
+        with self.assertRaisesRegex(FleetCollectorError, "disagree"):
+            collect_document(
+                validate_config(config_document(config_project())),
+                GitHubApi("token", opener),
+                now=lambda: NOW,
+            )
 
     def test_baseline_record_performs_no_network(self):
         project = config_project(
@@ -537,24 +777,42 @@ class CommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / "config.json"
-            path.write_text(json.dumps(config_document(config_project())), encoding="utf-8")
+            path.write_text(
+                json.dumps(config_document(config_project())),
+                encoding="utf-8",
+            )
             stdout = io.StringIO()
-            with patch("scripts.fleet_collect_github.GitHubApi") as api_class, contextlib.redirect_stdout(stdout):
+            with patch(
+                "scripts.fleet_collect_github.GitHubApi"
+            ) as api_class, contextlib.redirect_stdout(stdout):
                 result = main([str(path), "--check-config"])
             self.assertEqual(result, 0)
             api_class.assert_not_called()
-            self.assertEqual(sorted(item.name for item in root.iterdir()), ["config.json"])
+            self.assertEqual(
+                sorted(item.name for item in root.iterdir()),
+                ["config.json"],
+            )
             self.assertIn("valid: 1 project configurations", stdout.getvalue())
 
     def test_check_config_and_output_are_mutually_exclusive(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
-            path.write_text(json.dumps(config_document(config_project())), encoding="utf-8")
+            path.write_text(
+                json.dumps(config_document(config_project())),
+                encoding="utf-8",
+            )
             with self.assertRaises(SystemExit):
-                main([str(path), "--check-config", "--output", str(path.with_suffix(".out"))])
+                main(
+                    [
+                        str(path),
+                        "--check-config",
+                        "--output",
+                        str(path.with_suffix(".out")),
+                    ]
+                )
 
     def test_pr_collection_without_token_fails_safely(self):
-        api, opener = api_for_standard_clean(token=None)
+        api, opener = api_for_stable_collection(token=None)
         with self.assertRaisesRegex(FleetCollectorError, "token is required"):
             collect_document(
                 validate_config(config_document(config_project())),
