@@ -1,4 +1,8 @@
-"""Tests for optional-provider failure classification and permission preflight."""
+"""Tests for optional-provider failure classification and permission preflight.
+
+This file also provides a metadata-only Phase 2 checkpoint so Pull Request checks
+are bound to the final GitHub-only workflow candidate rather than stale heads.
+"""
 import unittest
 
 from scripts.queue_failure_classifier import (
