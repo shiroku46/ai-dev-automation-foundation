@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Classify Queue implementation failures and enforce permission-contract preflight.
+"""Classify optional-provider failures and validate edit-only tool contracts.
 
-Only AUTH_SECRET sets human_action_required=True. Transport, platform, max-turn,
-permission-contract, test, and unknown failures remain automation-owned.
+Provider failure is never a GitHub-direct completion or merge gate. AUTH_SECRET
+becomes human-only only when the optional route was explicitly enabled *and* a
+separate connected adapter proved that one canonical credential UI action is
+unavoidable. Generic errors, quota, setup, account and connection text are not
+that proof.
 """
 from __future__ import annotations
 
@@ -29,13 +32,9 @@ RETRYABLE_CLASSES: frozenset[FailureClass] = frozenset(
         FailureClass.UNKNOWN,
     }
 )
-HUMAN_ONLY_CLASSES: frozenset[FailureClass] = frozenset({FailureClass.AUTH_SECRET})
 FIXABLE_CLASSES: frozenset[FailureClass] = frozenset(
     {FailureClass.PERMISSION_CONTRACT, FailureClass.TEST_FAILURE}
 )
-
-# Required commands are single-command specifications, never shell programs.
-# Reject operators, substitutions, redirects, and line breaks before prefix matching.
 SHELL_CONTROL_PATTERN = re.compile(r"(?:&&|\|\||[;&|`<>]|\$\(|[\r\n])")
 
 
@@ -70,15 +69,7 @@ def classify_conclusion(
     permission_denials_count: int = 0,
     error_detail: str = "",
 ) -> FailureClass:
-    """Map raw Queue evidence to one deterministic failure class.
-
-    Explicit tool-policy evidence overrides terminal max-turn conclusions.
-    Explicit network/tunnel transport evidence overrides incidental HTTP 403 text.
-    Authentication evidence overrides generic Git command context, so a Git push
-    that fails because a token expired remains human-only rather than retryable.
-    """
     low = (error_detail or "").lower()
-
     policy_signals = (
         "tool policy",
         "tool permission",
@@ -91,11 +82,9 @@ def classify_conclusion(
     )
     if permission_denials_count > 0 or any(signal in low for signal in policy_signals):
         return FailureClass.PERMISSION_CONTRACT
-
     if conclusion == "error_max_turns":
         return FailureClass.MAX_TURNS
-
-    explicit_transport_signals = (
+    transport_signals = (
         "connect tunnel",
         "git transport",
         "transport error",
@@ -105,9 +94,8 @@ def classify_conclusion(
         "network is unreachable",
         "remote ref",
     )
-    if any(signal in low for signal in explicit_transport_signals):
+    if any(signal in low for signal in transport_signals):
         return FailureClass.GIT_TRANSPORT
-
     auth_signals = (
         "401",
         "403",
@@ -121,33 +109,45 @@ def classify_conclusion(
     )
     if any(signal in low for signal in auth_signals):
         return FailureClass.AUTH_SECRET
-
     if any(signal in low for signal in ("git push", "git fetch", "git clone")):
         return FailureClass.GIT_TRANSPORT
-
     if "test" in low and any(signal in low for signal in ("fail", "error", "assert")):
         return FailureClass.TEST_FAILURE
-
     if conclusion == "timed_out" or any(
         signal in low for signal in ("timeout", "runner", "service unavailable", "503")
     ):
         return FailureClass.PLATFORM_OUTAGE
-
     return FailureClass.UNKNOWN
 
 
-def is_human_only_failure(failure_class: FailureClass) -> bool:
-    return failure_class in HUMAN_ONLY_CLASSES
+def is_human_only_failure(
+    failure_class: FailureClass,
+    *,
+    optional_provider_explicitly_enabled: bool = False,
+    credential_ui_only_proven: bool = False,
+) -> bool:
+    return (
+        failure_class is FailureClass.AUTH_SECRET
+        and optional_provider_explicitly_enabled
+        and credential_ui_only_proven
+    )
 
 
 def should_auto_retry(
     failure_class: FailureClass,
     retry_attempt: int,
     max_retries: int,
+    *,
+    optional_provider_explicitly_enabled: bool = False,
+    credential_ui_only_proven: bool = False,
 ) -> bool:
-    if is_human_only_failure(failure_class):
+    if is_human_only_failure(
+        failure_class,
+        optional_provider_explicitly_enabled=optional_provider_explicitly_enabled,
+        credential_ui_only_proven=credential_ui_only_proven,
+    ):
         return False
-    if failure_class in FIXABLE_CLASSES:
+    if failure_class in FIXABLE_CLASSES or failure_class is FailureClass.AUTH_SECRET:
         return False
     return retry_attempt < max_retries and failure_class in RETRYABLE_CLASSES
 
@@ -156,28 +156,19 @@ def check_tool_permission_contract(
     required_commands: list[str],
     allowed_bash_commands: list[str],
 ) -> list[str]:
-    """Return required commands that the current tool policy does not permit.
-
-    A bare required executable is satisfied when any allowed specification uses
-    that executable. A required command with arguments must match an allowed
-    command exactly or extend an argument-bearing allowlist entry at a token
-    boundary. Shell control operators, substitutions, redirects, and line breaks
-    are rejected before matching, so one allowlisted command cannot append another.
-    """
+    """Return commands outside the bounded single-command allowlist."""
     allowed_specs = [
         " ".join(command.strip().lower().split())
         for command in allowed_bash_commands
         if command.strip()
     ]
     allowed_bases = {spec.split()[0] for spec in allowed_specs}
-
     denied: list[str] = []
     for command in required_commands:
         raw = command.strip()
         if not raw or SHELL_CONTROL_PATTERN.search(raw):
             denied.append(command)
             continue
-
         normalized = " ".join(raw.lower().split())
         parts = normalized.split()
         if len(parts) == 1:
@@ -199,18 +190,31 @@ def build_failure_status(
     max_retries: int,
     checkpoint_sha: str | None = None,
     checkpoint_artifact: str | None = None,
+    *,
+    optional_provider_explicitly_enabled: bool = False,
+    credential_ui_only_proven: bool = False,
 ) -> FailureStatus:
-    human_required = is_human_only_failure(failure_class)
-
+    human_required = is_human_only_failure(
+        failure_class,
+        optional_provider_explicitly_enabled=optional_provider_explicitly_enabled,
+        credential_ui_only_proven=credential_ui_only_proven,
+    )
     if human_required:
-        next_action = "human UI action required; automation paused"
-    elif should_auto_retry(failure_class, retry_attempt, max_retries):
-        next_action = f"automatic retry {retry_attempt + 1} of {max_retries}"
+        next_action = "complete the proven optional-provider credential UI action"
+    elif failure_class is FailureClass.AUTH_SECRET:
+        next_action = "optional provider route unavailable; continue GitHub-direct work"
+    elif should_auto_retry(
+        failure_class,
+        retry_attempt,
+        max_retries,
+        optional_provider_explicitly_enabled=optional_provider_explicitly_enabled,
+        credential_ui_only_proven=credential_ui_only_proven,
+    ):
+        next_action = f"optional provider retry {retry_attempt + 1} of {max_retries}"
     elif retry_attempt >= max_retries and failure_class in RETRYABLE_CLASSES:
-        next_action = "retry budget exhausted; recording automation incident"
+        next_action = "optional retry budget exhausted; continue GitHub-direct work"
     else:
-        next_action = "deterministic fix required; recording automation incident"
-
+        next_action = "record the optional-route incident; continue GitHub-direct work"
     return FailureStatus(
         failure_class=failure_class,
         retry_attempt=retry_attempt,
