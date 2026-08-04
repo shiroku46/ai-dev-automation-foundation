@@ -158,12 +158,7 @@ def _require_pr_only_merge_candidate(
 
 
 def _check_run_order(item: dict[str, Any]) -> tuple[str, int]:
-    timestamp = str(
-        item.get("completed_at")
-        or item.get("started_at")
-        or item.get("created_at")
-        or ""
-    )
+    timestamp = str(item.get("created_at") or "")
     identifier = item.get("id")
     return timestamp, identifier if isinstance(identifier, int) else -1
 
