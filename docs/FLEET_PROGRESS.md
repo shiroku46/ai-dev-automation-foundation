@@ -12,7 +12,7 @@ Construct records from live GitHub evidence:
 - Pull Request number and current GitHub-visible head SHA;
 - exact-head Foundation and product checks;
 - structured `github-coordinator` review state;
-- unresolved review-thread count reflected in the status decision;
+- exact unresolved review-thread count;
 - current blocker, next automatic action, and genuine human-action boundary.
 
 A chat summary, provider-reported local commit, provider quota message, or unverified branch name is not completion evidence. Codex and Claude may appear only as optional implementation-route metadata; they are never review or merge dependencies.
@@ -47,6 +47,7 @@ Each project contains exactly:
   "risk_tier": "protected",
   "review_route": "github-coordinator",
   "review_state": "clean",
+  "unresolved_review_threads": 0,
   "next_action": "Merge with expected-head protection",
   "blocker": null,
   "human_action_required": false,
@@ -92,6 +93,8 @@ Each project contains exactly:
 - `clean`
 - `blocked`
 
+`unresolved_review_threads` is a non-negative integer obtained from the live Pull Request review-thread state.
+
 Check conclusions:
 
 - `queued`
@@ -113,10 +116,12 @@ Schema version 1 and the former `selected_auditor` / `audit_state` fields are re
 - active Pull Request and merge-readiness statuses require a lowercase 40-character exact head SHA;
 - `pending`, `clean`, and `blocked` review states require an exact head SHA;
 - `review_route` must be `github-coordinator`;
+- `unresolved_review_threads` must be present, non-negative, and not a boolean;
+- `review_state: clean` requires `unresolved_review_threads: 0`;
 - `fix_required`, `human_action`, `blocked`, and blocked review require a nonempty blocker;
 - `ready_to_merge`, `completed`, and `idle` require a null blocker;
 - `human_action_required` is true exactly for `status: human_action`;
-- `ready_to_merge` requires at least one check, every check passing, `review_state: clean`, no blocker, and no human action;
+- `ready_to_merge` requires at least one check, every check passing, `review_state: clean`, `unresolved_review_threads: 0`, no blocker, and no human action;
 - optional provider implementation routes do not change section placement or review requirements;
 - unknown fields, duplicate JSON keys, duplicate repositories, malformed timestamps, invalid SHAs, excessive input size, excessive projects, and excessive checks fail closed.
 
@@ -130,7 +135,7 @@ The renderer produces, in priority order:
 4. Ready to Merge
 5. Completed or Idle
 
-Provider quota or route unavailability alone never creates a blocked or human-action entry.
+The Review column displays the review route, review state, and unresolved-thread count. Provider quota or route unavailability alone never creates a blocked or human-action entry.
 
 ## Commands
 
@@ -162,6 +167,6 @@ python scripts/fleet_progress.py fleet.json --output docs/FLEET_STATUS.md
 - errors do not echo input records or credential values;
 - no token, Secret, environment variable, command, URL, endpoint, repository, ref, or provider is selected from input;
 - Markdown cells escape pipes and backslashes;
-- GitHub Issues, Pull Requests, exact-head checks, coordinator-review records, and exact remote SHAs remain authoritative after rendering.
+- GitHub Issues, Pull Requests, exact-head checks, coordinator-review records, unresolved-thread state, and exact remote SHAs remain authoritative after rendering.
 
 A separate protected phase may collect these records from fixed read-only GitHub API endpoints. It must emit schema version 2 and preserve the same GitHub-only review policy.
