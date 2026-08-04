@@ -24,7 +24,7 @@ The setup prerequisites also include exact-repository GitHub/Codex access, an ex
 
 Do not retry a stalled write-capable workflow or ask the owner to repost commands until the Workflow-permissions setting has been checked. After acceptance, do not request the setup again unless connected evidence shows that it was reset or the integration is no longer usable.
 
-## Ordinary GitHub-centered flow
+## Ordinary flow
 
 1. Phase 0 acceptance for the exact repository is already complete and recorded without Secret values.
 2. A trusted owner-authored Issue states the goal, risk tier, acceptance criteria, every allowed changed or renamed path, prohibited effects, and validation.
