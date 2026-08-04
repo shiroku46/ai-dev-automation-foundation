@@ -293,8 +293,16 @@ class BootstrapTest(unittest.TestCase):
         implement = queue.split("\n  implement:\n", 1)[1].split(
             "\n  resolve:\n", 1
         )[0]
-        self.assertIn("track_progress: false", implement)
-        self.assertNotIn("github.event_name != 'workflow_dispatch'", implement)
+        active_lines = {
+            line.strip()
+            for line in implement.splitlines()
+            if not line.lstrip().startswith("#")
+        }
+        self.assertIn("track_progress: false", active_lines)
+        self.assertNotIn(
+            "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
+            active_lines,
+        )
         self.assertIn("contents: read", implement)
         self.assertIn("pull-requests: read", implement)
         self.assertIn("issues: read", implement)
