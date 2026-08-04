@@ -1,22 +1,26 @@
 name: AI implementation task
-description: One bounded implementation request
+description: One bounded GitHub-only implementation request
 title: "[Task] "
 body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub-direct implementation and exact-head GitHub coordinator review are the default. Codex and Claude are optional helpers only.
   - type: checkboxes
     id: startup_acceptance
     attributes:
       label: Repository startup acceptance
-      description: Confirm non-secret Phase 0 evidence for this exact repository before product work. Never include token or Secret values.
+      description: Confirm non-secret Phase 0 evidence for this exact repository before product work.
       options:
-        - label: GitHub/Codex access, the exact-repository Codex environment, required Secret name, Actions/workflows, and harmless Bootstrap acceptance are complete.
+        - label: Connected GitHub access, Actions/Foundation workflows, Workflow permissions, and harmless Bootstrap acceptance are complete.
           required: true
-        - label: Under Settings → Actions → General → Workflow permissions, Read and write permissions is selected and Allow GitHub Actions to create and approve pull requests is enabled.
+        - label: Read and write permissions is selected and Allow GitHub Actions to create and approve pull requests is enabled.
           required: true
   - type: textarea
     id: startup_evidence
     attributes:
       label: Non-secret Phase 0 evidence reference
-      description: Provide the acceptance Issue/PR or status reference, exact head SHA, and successful check names. Do not provide credential values.
+      description: Provide the acceptance Issue/PR, exact head SHA, successful checks, and coordinator-review reference. Do not provide credentials or Secret values.
     validations:
       required: true
   - type: textarea
@@ -25,27 +29,62 @@ body:
       label: Goal
     validations:
       required: true
-  - type: textarea
-    id: acceptance
+  - type: dropdown
+    id: risk_tier
     attributes:
-      label: Acceptance criteria
+      label: Risk tier
+      options:
+        - low
+        - standard
+        - protected
     validations:
       required: true
   - type: textarea
     id: scope
     attributes:
       label: Allowed paths
+      description: List exact repository-relative paths or bounded suffix patterns such as tests/**.
+      placeholder: |
+        - scripts/example.py
+        - tests/**
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Required checks
+      description: List exact workflow/check names. Foundation defaults are CI and Unit Tests.
+      value: |
+        - CI
+        - Unit Tests
     validations:
       required: true
   - type: textarea
     id: prohibited
     attributes:
       label: Prohibited effects
+      description: State forbidden permissions, Secret/OIDC use, deployments, settings, billing, production, destructive effects, and scope expansion.
     validations:
       required: true
   - type: textarea
-    id: validation
+    id: rollback
     attributes:
-      label: Required validation
+      label: Rollback
+      description: State the history-preserving rollback procedure.
+      value: Revert the eventual merge commit; never force-rewrite shared history.
     validations:
       required: true
+  - type: textarea
+    id: protected_authorization
+    attributes:
+      label: Protected authorization when applicable
+      description: For protected work, include one foundation-protected-authorization block with category, exact paths, operation, prohibited, validation, and rollback.
+      render: markdown
+  - type: checkboxes
+    id: optional_provider
+    attributes:
+      label: Optional provider route
+      description: Leave unchecked for normal GitHub-only development.
+      options:
+        - label: I explicitly request an optional provider helper for this Issue. Provider unavailability must remain non-blocking.
+          required: false
