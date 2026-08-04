@@ -65,6 +65,7 @@ CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
+NODE_ID_RE = re.compile(r"^[A-Za-z0-9_:\-=]{1,256}$")
 PULL_PATH_RE = re.compile(
     r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pulls/[1-9][0-9]*$"
 )
@@ -107,8 +108,16 @@ query FleetReviewEvidence(
     nameWithOwner
     pullRequest(number: $number) {
       number
+      headRefOid
+      state
+      isDraft
+      merged
+      updatedAt
+      headRepository { nameWithOwner }
+      baseRepository { nameWithOwner }
       reviewThreads(first: 100, after: $threadsCursor) {
         nodes {
+          id
           isResolved
           comments(last: 1) {
             nodes { updatedAt }
@@ -118,6 +127,7 @@ query FleetReviewEvidence(
       }
       comments(first: 100, after: $commentsCursor) {
         nodes {
+          id
           body
           createdAt
           updatedAt
@@ -222,6 +232,12 @@ def _now(clock: Callable[[], datetime]) -> str:
 
 def _max_timestamp(values: Sequence[str], fallback: str) -> str:
     return max(values, key=_dt) if values else fallback
+
+
+def _node_id(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not NODE_ID_RE.fullmatch(value):
+        raise FleetCollectorError(f"{where} is invalid")
+    return value
 
 
 def validate_config(value: Any) -> tuple[dict[str, Any], ...]:
@@ -621,9 +637,13 @@ class GitHubApi:
         self,
         repository: str,
         number: int,
+        expected_sha: str,
     ) -> Mapping[str, Any]:
-        if not REPOSITORY_RE.fullmatch(repository):
-            raise FleetCollectorError("invalid review-evidence repository identity")
+        if (
+            not REPOSITORY_RE.fullmatch(repository)
+            or not SHA_RE.fullmatch(expected_sha)
+        ):
+            raise FleetCollectorError("invalid review-evidence identity")
         owner, name = repository.split("/", 1)
         threads_cursor: str | None = None
         comments_cursor: str | None = None
@@ -633,6 +653,9 @@ class GitHubApi:
         comment_nodes: list[Mapping[str, Any]] = []
         seen_thread_cursors: set[str] = set()
         seen_comment_cursors: set[str] = set()
+        seen_thread_ids: set[str] = set()
+        seen_comment_ids: set[str] = set()
+        expected_snapshot: Mapping[str, Any] | None = None
 
         for _ in range(MAX_REVIEW_PAGES):
             response = self._graphql(
@@ -653,8 +676,18 @@ class GitHubApi:
                 repository_data.get("pullRequest"),
                 "GraphQL Pull Request",
             )
-            if pull.get("number") != number:
-                raise FleetCollectorError("GraphQL Pull Request identity mismatch")
+            snapshot = _graphql_pull_snapshot(
+                pull,
+                repository,
+                number,
+                expected_sha,
+            )
+            if expected_snapshot is None:
+                expected_snapshot = snapshot
+            elif snapshot != expected_snapshot:
+                raise FleetCollectorError(
+                    "GraphQL Pull Request identity changed during pagination"
+                )
 
             if not threads_done:
                 connection = _obj(
@@ -668,9 +701,15 @@ class GitHubApi:
                 )
                 if not isinstance(nodes, list) or len(nodes) > 100:
                     raise FleetCollectorError("GraphQL reviewThreads page is invalid")
-                thread_nodes.extend(
-                    _obj(node, "GraphQL review thread") for node in nodes
-                )
+                for node in nodes:
+                    item = _obj(node, "GraphQL review thread")
+                    node_id = _node_id(item.get("id"), "review thread id")
+                    if node_id in seen_thread_ids:
+                        raise FleetCollectorError(
+                            "GraphQL review thread pagination contained a duplicate node"
+                        )
+                    seen_thread_ids.add(node_id)
+                    thread_nodes.append(item)
                 if len(thread_nodes) > MAX_REVIEW_THREADS:
                     raise FleetCollectorError("review-thread evidence exceeded its bound")
                 threads_done, threads_cursor = _advance_page(
@@ -692,9 +731,15 @@ class GitHubApi:
                 )
                 if not isinstance(nodes, list) or len(nodes) > 100:
                     raise FleetCollectorError("GraphQL comments page is invalid")
-                comment_nodes.extend(
-                    _obj(node, "GraphQL coordinator comment") for node in nodes
-                )
+                for node in nodes:
+                    item = _obj(node, "GraphQL coordinator comment")
+                    node_id = _node_id(item.get("id"), "coordinator comment id")
+                    if node_id in seen_comment_ids:
+                        raise FleetCollectorError(
+                            "GraphQL comment pagination contained a duplicate node"
+                        )
+                    seen_comment_ids.add(node_id)
+                    comment_nodes.append(item)
                 if len(comment_nodes) > MAX_REVIEW_COMMENTS:
                     raise FleetCollectorError("review-comment evidence exceeded its bound")
                 comments_done, comments_cursor = _advance_page(
@@ -705,7 +750,13 @@ class GitHubApi:
                 )
 
             if threads_done and comments_done:
-                return {"threads": thread_nodes, "comments": comment_nodes}
+                if expected_snapshot is None:
+                    raise FleetCollectorError("GraphQL Pull Request snapshot is absent")
+                return {
+                    "snapshot": expected_snapshot,
+                    "threads": thread_nodes,
+                    "comments": comment_nodes,
+                }
         raise FleetCollectorError("GraphQL review evidence pagination exceeded its bound")
 
 
@@ -734,6 +785,55 @@ def _advance_page(
         raise FleetCollectorError(f"GraphQL {where} pagination cursor is invalid")
     seen.add(end_cursor)
     return False, end_cursor
+
+
+def _normalize_state(state: Any, merged: Any, where: str) -> tuple[str, bool]:
+    if not isinstance(merged, bool):
+        raise FleetCollectorError(f"{where} merged evidence is invalid")
+    if state == "OPEN" and not merged:
+        return "open", False
+    if state == "CLOSED" and not merged:
+        return "closed", False
+    if state == "MERGED" and merged:
+        return "closed", True
+    raise FleetCollectorError(f"{where} state and merged evidence conflict")
+
+
+def _graphql_pull_snapshot(
+    pull: Mapping[str, Any],
+    repository: str,
+    number: int,
+    expected_sha: str,
+) -> dict[str, Any]:
+    if pull.get("number") != number or not isinstance(pull.get("isDraft"), bool):
+        raise FleetCollectorError("GraphQL Pull Request identity is invalid")
+    sha = pull.get("headRefOid")
+    if sha != expected_sha or not isinstance(sha, str) or not SHA_RE.fullmatch(sha):
+        raise FleetCollectorError("GraphQL Pull Request head moved or is invalid")
+    head_repo = _obj(pull.get("headRepository"), "GraphQL headRepository")
+    base_repo = _obj(pull.get("baseRepository"), "GraphQL baseRepository")
+    if (
+        str(head_repo.get("nameWithOwner") or "").casefold()
+        != repository.casefold()
+        or str(base_repo.get("nameWithOwner") or "").casefold()
+        != repository.casefold()
+    ):
+        raise FleetCollectorError("GraphQL Pull Request repository identity mismatch")
+    state, merged = _normalize_state(
+        pull.get("state"),
+        pull.get("merged"),
+        "GraphQL Pull Request",
+    )
+    return {
+        "state": state,
+        "merged": merged,
+        "draft": pull["isDraft"],
+        "sha": sha,
+        "updated_at": _timestamp(
+            pull.get("updatedAt"),
+            "GraphQL Pull Request updatedAt",
+        ),
+    }
 
 
 def _pull(data: Mapping[str, Any], project: Mapping[str, Any]) -> dict[str, Any]:
@@ -819,7 +919,7 @@ def _checks(
     data: Mapping[str, Any],
     project: Mapping[str, Any],
     sha: str,
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[dict[str, str], tuple[str, ...]]:
     repository = project["repository"]
     required = set(project["required_workflows"])
     runs = data.get("workflow_runs")
@@ -873,14 +973,14 @@ def _checks(
             timestamps.append(selected[name][3])
         else:
             checks[name] = "missing"
-    return checks, timestamps
+    return checks, tuple(timestamps)
 
 
 def _review_evidence(
     data: Mapping[str, Any],
     project: Mapping[str, Any],
     sha: str,
-) -> tuple[str, int, list[str]]:
+) -> tuple[str, int, tuple[str, ...]]:
     threads = data.get("threads")
     comments = data.get("comments")
     if not isinstance(threads, list) or not isinstance(comments, list):
@@ -975,9 +1075,9 @@ def _review_evidence(
     )
     risk = project["risk_tier"]
     if blocked_count:
-        return "blocked", unresolved, timestamps
+        return "blocked", unresolved, tuple(sorted(set(timestamps), key=_dt))
     if unresolved:
-        return "pending", unresolved, timestamps
+        return "pending", unresolved, tuple(sorted(set(timestamps), key=_dt))
     if risk == "protected":
         clean = (
             pass_clean["scope-security"] == 1
@@ -986,15 +1086,23 @@ def _review_evidence(
             and not ambiguous
         )
         if clean:
-            return "clean", unresolved, timestamps
+            return "clean", unresolved, tuple(sorted(set(timestamps), key=_dt))
         saw_any = saw_current_reference or any(pass_clean.values()) or general_clean > 0
-        return ("pending" if saw_any else "required"), unresolved, timestamps
+        return (
+            "pending" if saw_any else "required",
+            unresolved,
+            tuple(sorted(set(timestamps), key=_dt)),
+        )
 
     clean = general_clean == 1 and not any(pass_clean.values()) and not ambiguous
     if clean:
-        return "clean", unresolved, timestamps
+        return "clean", unresolved, tuple(sorted(set(timestamps), key=_dt))
     saw_any = saw_current_reference or general_clean > 0 or any(pass_clean.values())
-    return ("pending" if saw_any else "required"), unresolved, timestamps
+    return (
+        "pending" if saw_any else "required",
+        unresolved,
+        tuple(sorted(set(timestamps), key=_dt)),
+    )
 
 
 def _status(
@@ -1062,6 +1170,79 @@ def _status(
     )
 
 
+def _stable_connected_evidence(
+    project: Mapping[str, Any],
+    api: GitHubApi,
+) -> tuple[dict[str, Any], dict[str, str], tuple[str, ...], str, int, tuple[str, ...]]:
+    repository = project["repository"]
+    number = project["pull_request"]
+    initial_pull = _pull(api.get_pull(repository, number), project)
+    initial_checks, initial_workflow_times = _checks(
+        api.get_workflow_runs(repository, initial_pull["sha"]),
+        project,
+        initial_pull["sha"],
+    )
+    initial_review_data = api.get_review_evidence(
+        repository,
+        number,
+        initial_pull["sha"],
+    )
+    if initial_review_data.get("snapshot") != initial_pull:
+        raise FleetCollectorError(
+            f"GraphQL and REST Pull Request evidence disagree for {repository}"
+        )
+    initial_review = _review_evidence(
+        initial_review_data,
+        project,
+        initial_pull["sha"],
+    )
+
+    final_checks, final_workflow_times = _checks(
+        api.get_workflow_runs(repository, initial_pull["sha"]),
+        project,
+        initial_pull["sha"],
+    )
+    final_review_data = api.get_review_evidence(
+        repository,
+        number,
+        initial_pull["sha"],
+    )
+    if final_review_data.get("snapshot") != initial_pull:
+        raise FleetCollectorError(
+            f"Pull Request evidence moved during final review collection for {repository}"
+        )
+    final_review = _review_evidence(
+        final_review_data,
+        project,
+        initial_pull["sha"],
+    )
+    final_pull = _pull(api.get_pull(repository, number), project)
+
+    if final_pull != initial_pull:
+        raise FleetCollectorError(
+            f"Pull Request evidence moved during collection for {repository}"
+        )
+    if (
+        final_checks != initial_checks
+        or final_workflow_times != initial_workflow_times
+    ):
+        raise FleetCollectorError(
+            f"exact-head workflow evidence moved during collection for {repository}"
+        )
+    if final_review != initial_review:
+        raise FleetCollectorError(
+            f"coordinator review evidence moved during collection for {repository}"
+        )
+    return (
+        final_pull,
+        final_checks,
+        final_workflow_times,
+        final_review[0],
+        final_review[1],
+        final_review[2],
+    )
+
+
 def collect_document(
     projects: Sequence[Mapping[str, Any]],
     api: GitHubApi,
@@ -1094,23 +1275,14 @@ def collect_document(
             )
             continue
 
-        pull = _pull(
-            api.get_pull(project["repository"], project["pull_request"]),
-            project,
-        )
-        checks, workflow_times = _checks(
-            api.get_workflow_runs(project["repository"], pull["sha"]),
-            project,
-            pull["sha"],
-        )
-        review_state, unresolved, review_times = _review_evidence(
-            api.get_review_evidence(
-                project["repository"],
-                project["pull_request"],
-            ),
-            project,
-            pull["sha"],
-        )
+        (
+            pull,
+            checks,
+            workflow_times,
+            review_state,
+            unresolved,
+            review_times,
+        ) = _stable_connected_evidence(project, api)
         status, blocker, human_action = _status(
             project,
             pull,
