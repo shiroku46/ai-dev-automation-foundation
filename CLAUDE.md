@@ -38,6 +38,6 @@ A separate read-only job performs exact-head validation. Review and merge remain
 
 Every changed and renamed path must match the trusted Issue scope. Protected categories require explicit protected authorization. Missing, pending, failed, stale, cross-Pull-Request, wrong-workflow, wrong-repository, candidate-modified-workflow, or candidate-authored evidence is absent.
 
-Do not convert routine technical state into a human request. Quota exhaustion, no progress, stale or missing evidence, mergeability, review findings, ambiguity, path denial, and protected-path denial are internal states. Provider quota exhaustion alone is not a human-only reason.
+Do not convert routine technical state into a human request. Quota exhaustion, no progress, stale or missing evidence, mergeability, review findings, ambiguity, path denial, and protected-path denial are internal states. Provider quota exhaustion alone is not a human-only reason. Routine sanitized stop records remain on the fixed non-default branch `automation-internal-stops` and do not notify the owner.
 
 A human-only notice is valid only for the canonical account/provider UI reason codes after connected evidence proves the UI action is unavoidable. Final merge requires one live recheck and expected-head-SHA protection.
