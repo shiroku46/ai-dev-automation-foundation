@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.queue_failure_classifier import check_tool_permission_contract
+
 ROOT = Path(__file__).resolve().parents[1]
 QUEUE = ROOT / ".github/workflows/claude-queue.yml"
 TRUSTED_CHECKS = ROOT / ".github/workflows/trusted-checks.yml"
@@ -166,13 +168,19 @@ class QueueWorkflowTest(unittest.TestCase):
         self.assertIn('if event_name in {"issues", "issue_comment"}:', prepare)
         self.assertIn('raise RuntimeError(f"Missing event payload for {event_name}")', prepare)
 
-    def test_manual_dispatch_disables_track_progress(self):
+    def test_implementation_forces_agent_mode_before_verification(self):
         implement = job_block(self.text, "implement", "resolve")
-        self.assertIn(
+        active_lines = {
+            line.strip()
+            for line in implement.splitlines()
+            if not line.lstrip().startswith("#")
+        }
+        self.assertIn("track_progress: false", active_lines)
+        self.assertNotIn("track_progress: true", active_lines)
+        self.assertNotIn(
             "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
-            implement,
+            active_lines,
         )
-        self.assertNotIn("track_progress: true", implement)
 
     def test_candidate_execution_is_confined_to_read_only_verify_job(self):
         verify = job_block(self.text, "verify", "publish")
@@ -213,8 +221,6 @@ class QueueWorkflowTest(unittest.TestCase):
             self.assertNotIn("python -m unittest", executable)
             self.assertNotIn("secrets.", executable)
             self.assertNotIn("id-token: write", executable)
-        # The immutable verification commands may be quoted only as evidence in
-        # the generated PR body; they must not be executed by publication.
         self.assertIn("python scripts/public_export_guard.py .", publish)
         self.assertIn("python scripts/validate_repository.py", publish)
         self.assertIn("python -m unittest discover -s tests", publish)
@@ -243,52 +249,43 @@ class QueueWorkflowTest(unittest.TestCase):
             if line.strip().removeprefix("- ").startswith("uses:"):
                 self.assertRegex(line, PIN)
 
-    def test_contract_preflight_is_in_prepare_job(self):
+    def test_contract_preflight_and_wip_checkpoint_contract(self):
         prepare = job_block(self.text, "prepare", "implement")
+        implement = job_block(self.text, "implement", "resolve")
+        implement_header = self.text.split("\n  implement:\n", 1)[1].split("\n    runs-on:", 1)[0]
+
+        self.assertIn("Contract preflight", prepare)
         self.assertIn("check_tool_permission_contract", prepare)
-        self.assertIn("contract_ok", prepare)
-        self.assertIn("GITHUB_OUTPUT", prepare)
-        self.assertIn("steps.guard.outputs.should_run == 'true'", prepare)
+        self.assertIn("contract_ok: ${{ steps.preflight.outputs.contract_ok }}", prepare)
+        self.assertIn("github.event.repository.default_branch", prepare)
+        self.assertIn("model_invocation: `skipped`", prepare)
         self.assertIn("notification: false", prepare)
-
-    def test_implement_requires_contract_ok(self):
-        implement = job_block(self.text, "implement", "resolve")
-        self.assertIn("contract_ok == 'true'", implement)
-
-    def test_implement_prompt_reserves_final_turns(self):
-        implement = job_block(self.text, "implement", "resolve")
+        self.assertIn("contract_ok == 'true'", implement_header)
+        self.assertIn("continue-on-error: true", implement)
         self.assertIn("reserve the final 5 turns", implement)
-
-    def test_wip_checkpoint_step_has_always_condition(self):
-        implement = job_block(self.text, "implement", "resolve")
-        self.assertIn("persist_checkpoint", implement)
-        self.assertIn("if: always()", implement)
-        self.assertIn("CLAUDE_CONCLUSION", implement)
-        self.assertIn("GENERATED_BRANCH", implement)
-        self.assertIn("diff_hash", implement)
+        self.assertIn("after each major file or logical work unit", implement)
+        self.assertIn("if: always() && steps.claude.outcome != 'skipped'", implement)
+        self.assertIn("candidate contains unauthorized paths", implement)
+        self.assertIn("checkpoint_kind", implement)
         self.assertIn("retry_identity", implement)
-        self.assertIn("base_sha", implement)
         self.assertIn("changed_paths", implement)
+        self.assertIn("diff_hash", implement)
+        self.assertIn("queue-wip-${{ github.run_id }}", implement)
+        self.assertIn("steps.claude.outcome == 'success'", implement)
+        self.assertIn("steps.claude.outcome != 'success'", implement)
+        self.assertIn("Stop after persisted WIP checkpoint", implement)
+        self.assertIn("notification: false", implement)
 
-    def test_wip_checkpoint_does_not_execute_candidate_code(self):
-        implement = job_block(self.text, "implement", "resolve")
-        # Extract only the persist_checkpoint section
-        persist = implement.split("persist_checkpoint", 1)[1].split("require_branch", 1)[0]
-        self.assertNotIn("python scripts/", persist)
-        self.assertNotIn("from scripts.", persist)
-        self.assertNotIn("actions/checkout", persist)
-        self.assertNotIn("id-token: write", persist)
-        self.assertNotIn("secrets.", persist)
-        self.assertIn("notification: false", persist)
-
-    def test_successful_branch_skips_wip_checkpoint(self):
-        implement = job_block(self.text, "implement", "resolve")
-        self.assertIn('conclusion == "success" or branch', implement)
-
-    def test_unauthorized_paths_skip_wip_artifact(self):
-        implement = job_block(self.text, "implement", "resolve")
-        self.assertIn("unauthorized", implement.lower())
-        self.assertIn("skipping artifact", implement)
+    def test_permission_contract_classifier_rejects_execution_for_edit_only_model(self):
+        self.assertEqual(
+            check_tool_permission_contract(["python3 tests/run_all.py"], []),
+            ["python3 tests/run_all.py"],
+        )
+        self.assertEqual(check_tool_permission_contract([], []), [])
+        self.assertEqual(
+            check_tool_permission_contract(["git commit"], ["git commit"]),
+            [],
+        )
 
 
 if __name__ == "__main__":

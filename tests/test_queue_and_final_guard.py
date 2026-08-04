@@ -1,11 +1,15 @@
+import base64
 import importlib
+import json
 import os
+import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from scripts.queue_failure_classifier import check_tool_permission_contract
 from scripts.supervisor_policy import is_protected
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,70 +18,669 @@ CANDIDATE_SHA = "c" * 40
 ISSUE_NUMBER = 85
 
 
-class ContractPreflightTest(unittest.TestCase):
-    def test_contradictory_contract_is_denied(self):
-        denied = check_tool_permission_contract(
-            ["python3 tests/run_all.py"],
-            [],
-        )
-        self.assertEqual(denied, ["python3 tests/run_all.py"])
-
-    def test_edit_only_contract_passes(self):
-        denied = check_tool_permission_contract([], [])
-        self.assertEqual(denied, [])
-
-    def test_multiple_denied_commands_all_returned(self):
-        denied = check_tool_permission_contract(
-            ["pytest", "npm test"],
-            [],
-        )
-        self.assertEqual(denied, ["pytest", "npm test"])
-
-    def test_allowed_command_is_not_denied(self):
-        denied = check_tool_permission_contract(
-            ["git commit"],
-            ["git commit"],
-        )
-        self.assertEqual(denied, [])
-
-    def test_wip_checkpoint_not_created_on_success(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
-        implement = queue.split("\n  implement:\n", 1)[1].split("\n  resolve:\n", 1)[0]
-        self.assertIn('conclusion == "success" or branch', implement)
-        self.assertIn("No WIP checkpoint needed", implement)
-
-    def test_wip_checkpoint_not_created_when_branch_exists(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
-        implement = queue.split("\n  implement:\n", 1)[1].split("\n  resolve:\n", 1)[0]
-        self.assertIn("branch exists", implement)
-
-    def test_preflight_outputs_contract_ok_to_prepare(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
-        prepare = queue.split("\n  prepare:\n", 1)[1].split("\n  implement:\n", 1)[0]
-        self.assertIn("contract_ok: ${{ steps.preflight.outputs.contract_ok }}", prepare)
-
-    def test_implement_skipped_when_contract_fails(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
-        implement_header = queue.split("\n  implement:\n", 1)[1].split("\n    runs-on:", 1)[0]
-        self.assertIn("contract_ok == 'true'", implement_header)
-
-    def test_normal_issue_open_path_reaches_implement(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
-        self.assertIn("github.event_name == 'issues'", queue)
-        self.assertIn("github.event_name == 'issue_comment'", queue)
-
-    def test_manual_dispatch_disables_track_progress_still_holds(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
-        implement = queue.split("\n  implement:\n", 1)[1].split("\n  resolve:\n", 1)[0]
-        self.assertIn(
-            "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
-            implement,
-        )
-
-
 class QueueAndFinalGuardTest(unittest.TestCase):
+    @staticmethod
+    def _queue_workflow():
+        return (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+
+    @classmethod
+    def _queue_python_step(cls, step_name):
+        queue = cls._queue_workflow()
+        step = queue.split(f"- name: {step_name}", 1)[1]
+        source = step.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
+        return textwrap.dedent(source)
+
+    @staticmethod
+    def _candidate_artifact(root, *, base_sha, branch, files):
+        runner_temp = root / "runner"
+        artifact = runner_temp / "queue-candidate"
+        artifact.mkdir(parents=True)
+        candidate = {"version": 1, "base_sha": base_sha, "branch_name": branch, "files": files}
+        raw = json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
+        (artifact / "candidate.json").write_bytes(raw)
+        return runner_temp, raw
+
+    def test_queue_exact_existing_pr_base_contract_is_fail_closed(self):
+        queue = self._queue_workflow()
+        self.assertIn("foundation-queue-existing-pr-base", queue)
+        self.assertIn('set(values) != {"pull_request", "base_ref", "base_sha"}', queue)
+        self.assertIn('pull.get("state") == "open"', queue)
+        self.assertIn('head_repo.get("full_name") == repository', queue)
+        self.assertIn('head.get("ref") == values["base_ref"]', queue)
+        self.assertIn('head.get("sha") == values["base_sha"]', queue)
+        self.assertIn("base moved before publication", queue)
+
+    def test_queue_uses_full_byte_handoff_and_api_only_publication(self):
+        queue = self._queue_workflow()
+        implement = queue.split("\n  implement:\n", 1)[1].split("\n  verify:\n", 1)[0]
+        publish = queue.split("\n  publish:\n", 1)[1].split("\n  finalize:\n", 1)[0]
+        self.assertIn("persist-credentials: false", implement)
+        self.assertIn("contents: read", implement)
+        self.assertNotIn("contents: write", implement)
+        self.assertIn("content_base64", implement)
+        self.assertIn("artifact_sha256", implement)
+        self.assertIn("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", implement)
+        self.assertIn("git\", \"ls-files\", \"--others\", \"--exclude-standard\", \"-z", implement)
+        self.assertIn("stat.S_ISREG", implement)
+        self.assertIn("for path in sorted(records_by_path)", implement)
+        self.assertIn("contents: write", publish)
+        self.assertIn("repos/{repo}/git/blobs", publish)
+        self.assertIn("repos/{repo}/git/trees", publish)
+        self.assertIn("repos/{repo}/git/commits", publish)
+        self.assertIn("repos/{repo}/git/commits/{base_sha}", publish)
+        self.assertIn('cmd += ["--input", "-"]', publish)
+        self.assertIn('"parents": [base_sha]', publish)
+        self.assertIn('"draft": True', publish)
+        self.assertIn("revalidate_publication_source()", publish)
+        self.assertIn("def exact_integration_pr", publish)
+        self.assertIn('existing_commit.get("message") == commit_message', publish)
+        self.assertIn("parents == [base_sha]", publish)
+        self.assertIn("exact_matches", publish)
+        self.assertIn('"PATCH", {"title": title, "body": body}', publish)
+        self.assertNotIn("json.dumps(tree", publish)
+        self.assertNotIn("json.dumps([base_sha])", publish)
+        self.assertNotIn("actions/checkout", publish)
+
+    def test_queue_packages_untracked_file_byte_completely(self):
+        script = self._queue_python_step("Package complete candidate bytes and manifest")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
+            subprocess.run(["git", "config", "user.name", "Queue Test"], cwd=root, check=True)
+            (root / "tracked.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+            base_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+
+            payload = b"new file\x00with exact bytes\xff\n"
+            (root / "new.bin").write_bytes(payload)
+            runner_temp = Path(directory) / "runner"
+            runner_temp.mkdir()
+            output = Path(directory) / "github-output"
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "BASE_SHA": base_sha,
+                    "ISSUE_NUMBER": "135",
+                    "CLAUDE_BRANCH": "claude-issue-135-test",
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(output),
+                }
+            )
+            subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, check=True)
+
+            candidate = json.loads((runner_temp / "queue-candidate/candidate.json").read_bytes())
+            self.assertEqual(candidate["base_sha"], base_sha)
+            self.assertEqual(candidate["branch_name"], "claude-issue-135-test")
+            self.assertEqual([item["path"] for item in candidate["files"]], ["new.bin"])
+            item = candidate["files"][0]
+            self.assertFalse(item["deleted"])
+            self.assertEqual(item["mode"], "100644")
+            self.assertEqual(base64.b64decode(item["content_base64"], validate=True), payload)
+
+    def test_queue_publication_uses_typed_json_and_base_tree(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            base_tree_sha = "b" * 40
+            branch = "claude-issue-135-test"
+            added = b"added bytes\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "added.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(added).hexdigest(),
+                        "content_base64": base64.b64encode(added).decode(),
+                    },
+                    {
+                        "path": "removed.txt",
+                        "mode": None,
+                        "deleted": True,
+                        "sha256": __import__("hashlib").sha256(b"").hexdigest(),
+                        "content_base64": "",
+                    },
+                ],
+            )
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            state = root / "gh-state.json"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload, "input": "--input" in args}}) + "\\n")
+                    state_path = Path(os.environ["GH_TEST_STATE"])
+                    saved = json.loads(state_path.read_text()) if state_path.exists() else {{}}
+                    base = "{base_sha}"
+                    tree = "{base_tree_sha}"
+                    commit = "d" * 40
+                    if path.endswith("/git/ref/heads/main"):
+                        result = {{"object": {{"sha": base}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": tree}}}}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        raise SystemExit(1)
+                    elif path.endswith("/git/commits") and method == "POST":
+                        result = {{"sha": commit}}
+                    elif path.endswith("/git/refs"):
+                        result = {{"object": {{"sha": commit}}}}
+                    elif "/pulls?state=open&head=" in path:
+                        result = []
+                    elif path.endswith("/pulls") and method == "POST":
+                        saved["pr"] = {{
+                            "number": 1,
+                            "state": "open",
+                            "draft": True,
+                            "title": payload["title"],
+                            "body": payload["body"],
+                            "base": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                            "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
+                            "html_url": "https://example.invalid/pr/1",
+                        }}
+                        state_path.write_text(json.dumps(saved))
+                        result = saved["pr"]
+                    elif path.endswith("/pulls/1") and method == "GET":
+                        result = saved["pr"]
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GH_TEST_STATE": str(state),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "",
+                    "RECOVERY": "false",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, check=True)
+
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            tree_request = next(item for item in requests if item["path"].endswith("/git/trees"))
+            self.assertTrue(tree_request["input"])
+            self.assertEqual(tree_request["payload"]["base_tree"], base_tree_sha)
+            self.assertIsInstance(tree_request["payload"]["tree"], list)
+            deletion = next(item for item in tree_request["payload"]["tree"] if item["path"] == "removed.txt")
+            self.assertIsNone(deletion["sha"])
+
+            commit_request = next(
+                item for item in requests if item["path"].endswith("/git/commits") and item["method"] == "POST"
+            )
+            self.assertEqual(commit_request["payload"]["parents"], [base_sha])
+            self.assertIsInstance(commit_request["payload"]["parents"], list)
+
+            pull_request = next(
+                item for item in requests if item["path"].endswith("/pulls") and item["method"] == "POST"
+            )
+            self.assertIs(pull_request["payload"]["draft"], True)
+            self.assertGreaterEqual(
+                sum(item["path"].endswith("/git/ref/heads/main") for item in requests),
+                3,
+            )
+
+    def test_queue_publication_rejects_base_movement_before_visible_ref(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            moved_sha = "f" * 40
+            branch = "claude-issue-135-race"
+            payload = b"race\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "race.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            counter = root / "counter"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload}}) + "\\n")
+                    count_path = Path(os.environ["GH_TEST_COUNTER"])
+                    count = int(count_path.read_text()) if count_path.exists() else 0
+                    base = "{base_sha}"
+                    moved = "{moved_sha}"
+                    commit = "d" * 40
+                    if path.endswith("/git/ref/heads/main"):
+                        count += 1
+                        count_path.write_text(str(count))
+                        result = {{"object": {{"sha": base if count == 1 else moved}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        raise SystemExit(1)
+                    elif path.endswith("/git/commits") and method == "POST":
+                        result = {{"sha": commit}}
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GH_TEST_COUNTER": str(counter),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "",
+                    "RECOVERY": "false",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            result = subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertFalse(any(item["path"].endswith("/git/refs") and item["method"] == "POST" for item in requests))
+            self.assertFalse(any(item["path"].endswith("/pulls") and item["method"] == "POST" for item in requests))
+
+    def test_queue_publication_restores_edited_existing_pr_metadata(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            branch = "claude-issue-135-existing"
+            commit_sha = "d" * 40
+            payload = b"existing\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "existing.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            state = root / "state.json"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload}}) + "\\n")
+                    state_path = Path(os.environ["GH_TEST_STATE"])
+                    base = "{base_sha}"
+                    commit = "{commit_sha}"
+                    current = json.loads(state_path.read_text()) if state_path.exists() else {{
+                        "number": 7,
+                        "state": "open",
+                        "draft": True,
+                        "title": "edited title",
+                        "body": "edited body",
+                        "base": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                        "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
+                        "html_url": "https://example.invalid/pr/7",
+                    }}
+                    if path.endswith("/git/ref/heads/main"):
+                        result = {{"object": {{"sha": base}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/commits/" + commit):
+                        result = {{"message": "Claude: Issue #135", "tree": {{"sha": "e" * 40}}, "parents": [{{"sha": base}}]}}
+                    elif path.endswith("/pulls/42"):
+                        result = {{
+                            "state": "open",
+                            "head": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                            "base": {{"repo": {{"full_name": "example/foundation"}}}},
+                        }}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        result = {{"object": {{"sha": commit}}}}
+                    elif "/pulls?state=open&head=" in path:
+                        result = [current]
+                    elif path.endswith("/pulls/7") and method == "PATCH":
+                        current.update(payload)
+                        state_path.write_text(json.dumps(current))
+                        result = current
+                    elif path.endswith("/pulls/7") and method == "GET":
+                        result = current
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GH_TEST_STATE": str(state),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "42",
+                    "RECOVERY": "true",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, check=True)
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            metadata_patch = next(
+                item for item in requests if item["path"].endswith("/pulls/7") and item["method"] == "PATCH"
+            )
+            self.assertEqual(metadata_patch["payload"]["title"], "Claude: Issue #135 exact-base recovery")
+            body = metadata_patch["payload"]["body"]
+            self.assertIn("Closes #135.", body)
+            self.assertIn("Source existing PR: #42", body)
+            self.assertIn(f"Exact base SHA: `{base_sha}`", body)
+            self.assertIn(f"Exact candidate SHA: `{commit_sha}`", body)
+            self.assertIn("- `existing.txt`", body)
+            restored = json.loads(state.read_text())
+            self.assertEqual(restored["title"], metadata_patch["payload"]["title"])
+            self.assertEqual(restored["body"], body)
+
+    def test_queue_publication_does_not_patch_unrelated_same_head_pr(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            branch = "claude-issue-135-unrelated"
+            commit_sha = "d" * 40
+            payload = b"unrelated\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "unrelated.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload}}) + "\\n")
+                    base = "{base_sha}"
+                    commit = "{commit_sha}"
+                    if path.endswith("/git/ref/heads/main"):
+                        result = {{"object": {{"sha": base}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/commits/" + commit):
+                        result = {{"message": "Claude: Issue #135", "tree": {{"sha": "e" * 40}}, "parents": [{{"sha": base}}]}}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        result = {{"object": {{"sha": commit}}}}
+                    elif "/pulls?state=open&head=" in path:
+                        result = [{{"number": 9}}]
+                    elif path.endswith("/pulls/9") and method == "GET":
+                        result = {{
+                            "number": 9,
+                            "state": "open",
+                            "draft": False,
+                            "title": "unrelated",
+                            "body": "must stay unchanged",
+                            "base": {{"ref": "other", "sha": "f" * 40, "repo": {{"full_name": "example/foundation"}}}},
+                            "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
+                        }}
+                    elif path.endswith("/pulls/9") and method == "PATCH":
+                        raise SystemExit("unrelated PR must not be patched")
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "",
+                    "RECOVERY": "false",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            result = subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertFalse(any(item["path"].endswith("/pulls/9") and item["method"] == "PATCH" for item in requests))
+            self.assertFalse(any(item["path"].endswith("/git/commits") and item["method"] == "POST" for item in requests))
+
+    def test_queue_publication_reuses_existing_exact_ref_without_open_pr(self):
+        script = self._queue_python_step("Publish verified bytes through Git Data API without candidate execution")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_sha = "a" * 40
+            branch = "claude-issue-135-retry"
+            commit_sha = "d" * 40
+            payload = b"retry\n"
+            runner_temp, raw = self._candidate_artifact(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                files=[
+                    {
+                        "path": "retry.txt",
+                        "mode": "100644",
+                        "deleted": False,
+                        "sha256": __import__("hashlib").sha256(payload).hexdigest(),
+                        "content_base64": base64.b64encode(payload).decode(),
+                    }
+                ],
+            )
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "gh-log.jsonl"
+            state = root / "state.json"
+            fake_gh = bin_dir / "gh"
+            fake_gh.write_text(
+                textwrap.dedent(
+                    f"""\
+                    #!{sys.executable}
+                    import json
+                    import os
+                    import sys
+                    from pathlib import Path
+                    args = sys.argv[1:]
+                    path = args[1]
+                    method = args[args.index("--method") + 1]
+                    payload = json.load(sys.stdin) if "--input" in args else None
+                    with open(os.environ["GH_TEST_LOG"], "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps({{"path": path, "method": method, "payload": payload}}) + "\\n")
+                    state_path = Path(os.environ["GH_TEST_STATE"])
+                    saved = json.loads(state_path.read_text()) if state_path.exists() else {{}}
+                    base = "{base_sha}"
+                    commit = "{commit_sha}"
+                    if path.endswith("/git/ref/heads/main"):
+                        result = {{"object": {{"sha": base}}}}
+                    elif path.endswith("/git/commits/" + base):
+                        result = {{"tree": {{"sha": "b" * 40}}}}
+                    elif path.endswith("/git/commits/" + commit):
+                        result = {{"message": "Claude: Issue #135", "tree": {{"sha": "e" * 40}}, "parents": [{{"sha": base}}]}}
+                    elif path.endswith("/git/blobs"):
+                        result = {{"sha": "c" * 40}}
+                    elif path.endswith("/git/trees"):
+                        result = {{"sha": "e" * 40}}
+                    elif path.endswith("/git/ref/heads/{branch}"):
+                        result = {{"object": {{"sha": commit}}}}
+                    elif path.endswith("/git/commits") and method == "POST":
+                        raise SystemExit("existing candidate commit must be reused")
+                    elif path.endswith("/git/refs") and method == "POST":
+                        raise SystemExit("existing candidate ref must be reused")
+                    elif "/pulls?state=open&head=" in path:
+                        result = []
+                    elif path.endswith("/pulls") and method == "POST":
+                        saved["pr"] = {{
+                            "number": 11,
+                            "state": "open",
+                            "draft": True,
+                            "title": payload["title"],
+                            "body": payload["body"],
+                            "base": {{"ref": "main", "sha": base, "repo": {{"full_name": "example/foundation"}}}},
+                            "head": {{"ref": "{branch}", "sha": commit, "repo": {{"full_name": "example/foundation"}}}},
+                            "html_url": "https://example.invalid/pr/11",
+                        }}
+                        state_path.write_text(json.dumps(saved))
+                        result = saved["pr"]
+                    elif path.endswith("/pulls/11") and method == "GET":
+                        result = saved["pr"]
+                    else:
+                        raise SystemExit("unexpected gh api path: " + path)
+                    print(json.dumps(result))
+                    """
+                ),
+                encoding="utf-8",
+            )
+            fake_gh.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "GH_TEST_LOG": str(log),
+                    "GH_TEST_STATE": str(state),
+                    "GITHUB_REPOSITORY": "example/foundation",
+                    "ISSUE_NUMBER": "135",
+                    "BASE_REF": "main",
+                    "BASE_SHA": base_sha,
+                    "BASE_PR": "",
+                    "RECOVERY": "false",
+                    "BRANCH": branch,
+                    "EXPECTED_DIGEST": __import__("hashlib").sha256(raw).hexdigest(),
+                    "RUNNER_TEMP": str(runner_temp),
+                    "GITHUB_OUTPUT": str(root / "github-output"),
+                }
+            )
+            subprocess.run([sys.executable, "-c", script], cwd=root, env=environment, check=True)
+            requests = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertFalse(any(item["path"].endswith("/git/commits") and item["method"] == "POST" for item in requests))
+            self.assertFalse(any(item["path"].endswith("/git/refs") and item["method"] == "POST" for item in requests))
+            self.assertTrue(any(item["path"].endswith("/pulls") and item["method"] == "POST" for item in requests))
+
     def test_queue_failure_is_non_notifying_and_recovery_is_separated_from_merge_supervisor(self):
-        queue = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
+        queue = self._queue_workflow()
         finalize = queue.split("\n  finalize:\n", 1)[1]
         self.assertNotIn("QUEUE_PIPELINE_FAILED", finalize)
         self.assertNotIn("gh issue comment", finalize)

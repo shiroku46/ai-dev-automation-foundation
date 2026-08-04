@@ -174,3 +174,11 @@ automation-stops/pr-<number>/<exact-sha>/<HUMAN_ONLY_REASON>.notice.json
 ```
 
 The live destination is revalidated before persistence and before publication. Routine technical failures, provider limits, missing evidence, merge state, path denial, untrusted evidence, unsupported assertions, or unresolved ambiguity cannot use the human-only formatter. Automation resumes automatically when the audited UI condition changes; a new owner message is not required.
+
+## Trusted exact-base recovery for an existing Pull Request
+
+An owner-authored Issue may contain exactly one `foundation-queue-existing-pr-base` HTML comment with exactly the keys `pull_request`, `base_ref`, and `base_sha`. The Queue rejects duplicate or malformed blocks and requires a lowercase 40-character SHA. In its fixed default-branch prepare job it freshly verifies that the referenced Pull Request is open, its head and base repositories are this repository (so a fork or cross-repository head is rejected), and its live head ref and SHA exactly match the request. The ref must independently resolve to that SHA.
+
+The implementation job revalidates that identity immediately before work, checks out the immutable SHA with persisted credentials disabled, and creates only a separate generated fix branch identity. It has read-only repository permissions and cannot publish with Git transport. Instead it hands off a canonical SHA-256-bound artifact containing the exact base, path manifest, modes, deletions, per-file digests, and complete base64 file bytes. A separate read-only job verifies and materializes those bytes before running validation.
+
+Only after successful validation does a fixed default-branch publication job receive `contents: write`. It never checks out or executes candidate code. It revalidates the source Pull Request and unmoved base, verifies the artifact and every file digest, and uses the Git Data API to create blobs, a tree, commit, and separate generated ref. It creates or reuses one Draft integration Pull Request whose base is the verified existing branch and records the source Issue and Pull Request, exact base and candidate SHAs, and changed paths. Any movement or identity mismatch stops before publication. Without a valid owner-authored block, the Queue retains its ordinary immutable default-branch base and target behavior.
