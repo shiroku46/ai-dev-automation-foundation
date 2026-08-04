@@ -53,6 +53,17 @@ class BootstrapTest(unittest.TestCase):
             self.assertIn("automation-internal-stops", checklist)
             self.assertIn("human_action_required: false", checklist)
 
+    def test_install_checklist_has_bounded_queue_recovery_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render(target, "owner")
+            checklist = (target / "INSTALL_CHECKLIST.md").read_text(encoding="utf-8")
+            self.assertIn("## Bounded Queue recovery migration", checklist)
+            self.assertIn("rerun the Bootstrap renderer", checklist)
+            self.assertIn("copy every managed file byte-for-byte", checklist)
+            self.assertIn("one classifier-approved bounded retry", checklist)
+            self.assertIn("Do not copy only the reconciliation workflow", checklist)
+
     def test_generated_target_validator_passes(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
@@ -72,6 +83,25 @@ class BootstrapTest(unittest.TestCase):
                 ".github/workflows/supervisor.yml",
             ):
                 self.assertEqual((target / relative).read_bytes(), (ROOT / relative).read_bytes())
+
+    def test_generated_reconciliation_has_checkpoint_and_retry_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render(target, "owner")
+            workflow = (target / ".github/workflows/ci-reconcile.yml").read_text(encoding="utf-8")
+            for marker in (
+                'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]',
+                "schedule:",
+                "queue_recovery:",
+                "queue-complete-",
+                "queue-wip-",
+                '["git", "apply", "--check"',
+                '["git", "commit-tree"',
+                "should_auto_retry",
+                "candidate_execution_with_write_token: `false`",
+                "human_action_required: `false`",
+            ):
+                self.assertIn(marker, workflow)
 
     def test_tampering_or_missing_managed_file_fails_validation(self):
         with tempfile.TemporaryDirectory() as directory:
