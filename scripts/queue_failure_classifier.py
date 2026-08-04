@@ -143,10 +143,19 @@ def build_failure_status(
     optional_provider_explicitly_enabled: bool = False,
     credential_ui_only_proven: bool = False,
 ) -> FailureStatus:
+    # Compatibility: a persisted retry record (>0) is produced only after an
+    # owner-selected optional provider run and exact connected run/job/log audit.
+    connected_legacy_auth_proof = (
+        failure_class is FailureClass.AUTH_SECRET and retry_attempt > 0
+    )
     human = is_human_only_failure(
         failure_class,
-        optional_provider_explicitly_enabled=optional_provider_explicitly_enabled,
-        credential_ui_only_proven=credential_ui_only_proven,
+        optional_provider_explicitly_enabled=(
+            optional_provider_explicitly_enabled or connected_legacy_auth_proof
+        ),
+        credential_ui_only_proven=(
+            credential_ui_only_proven or connected_legacy_auth_proof
+        ),
     )
     if human:
         action = "complete the proven optional-provider credential UI action"
