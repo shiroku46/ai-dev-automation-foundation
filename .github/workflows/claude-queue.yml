@@ -454,24 +454,104 @@ jobs:
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, os, pathlib
+          import base64, errno, hashlib, json, os, pathlib, stat
+
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-candidate"
           raw = (root / "candidate.json").read_bytes()
-          if hashlib.sha256(raw).hexdigest() != os.environ["EXPECTED_DIGEST"]: raise SystemExit("artifact digest mismatch")
-          data=json.loads(raw)
-          if data.get("base_sha") != os.environ["BASE_SHA"]: raise SystemExit("base mismatch")
-          seen=set()
+          if hashlib.sha256(raw).hexdigest() != os.environ["EXPECTED_DIGEST"]:
+              raise SystemExit("artifact digest mismatch")
+          data = json.loads(raw)
+          if data.get("base_sha") != os.environ["BASE_SHA"]:
+              raise SystemExit("base mismatch")
+          if not hasattr(os, "O_NOFOLLOW"):
+              raise SystemExit("no-follow file creation is unavailable")
+
+          directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+          if hasattr(os, "O_CLOEXEC"):
+              directory_flags |= os.O_CLOEXEC
+
+          def open_parent(parts):
+              current = os.open(".", directory_flags)
+              try:
+                  for part in parts:
+                      try:
+                          child = os.open(part, directory_flags, dir_fd=current)
+                      except FileNotFoundError:
+                          os.mkdir(part, 0o755, dir_fd=current)
+                          child = os.open(part, directory_flags, dir_fd=current)
+                      except OSError as exc:
+                          if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                              raise SystemExit("candidate parent must be a real directory") from exc
+                          raise
+                      os.close(current)
+                      current = child
+                  return current
+              except BaseException:
+                  os.close(current)
+                  raise
+
+          def unlink_leaf(parent_fd, leaf):
+              try:
+                  info = os.stat(leaf, dir_fd=parent_fd, follow_symlinks=False)
+              except FileNotFoundError:
+                  return
+              if stat.S_ISDIR(info.st_mode):
+                  raise SystemExit("candidate leaf must not be a directory")
+              os.unlink(leaf, dir_fd=parent_fd)
+
+          def write_leaf(parent_fd, leaf, content, mode):
+              unlink_leaf(parent_fd, leaf)
+              flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+              if hasattr(os, "O_CLOEXEC"):
+                  flags |= os.O_CLOEXEC
+              descriptor = os.open(leaf, flags, mode, dir_fd=parent_fd)
+              try:
+                  remaining = memoryview(content)
+                  while remaining:
+                      written = os.write(descriptor, remaining)
+                      if written <= 0:
+                          raise SystemExit("candidate write failed")
+                      remaining = remaining[written:]
+                  os.fchmod(descriptor, mode)
+              finally:
+                  os.close(descriptor)
+
+          seen = set()
           for item in data.get("files", []):
-              path=item.get("path", ""); target=pathlib.Path(path)
-              if not path or path in seen or target.is_absolute() or ".." in target.parts: raise SystemExit("unsafe manifest")
-              seen.add(path); content=base64.b64decode(item["content_base64"], validate=True)
-              if hashlib.sha256(content).hexdigest() != item["sha256"]: raise SystemExit("file digest mismatch")
-              if item["deleted"]:
-                  if target.exists(): target.unlink()
-              else:
-                  target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(content)
-                  target.chmod(0o755 if item["mode"] == "100755" else 0o644)
-          if not seen: raise SystemExit("empty manifest")
+              path = item.get("path", "")
+              pure = pathlib.PurePosixPath(path)
+              if (
+                  not path
+                  or path in seen
+                  or pure.is_absolute()
+                  or ".." in pure.parts
+                  or not pure.name
+              ):
+                  raise SystemExit("unsafe manifest")
+              seen.add(path)
+              content = base64.b64decode(item["content_base64"], validate=True)
+              if hashlib.sha256(content).hexdigest() != item["sha256"]:
+                  raise SystemExit("file digest mismatch")
+              parent_fd = open_parent(pure.parts[:-1])
+              try:
+                  if item["deleted"]:
+                      if item.get("mode") is not None:
+                          raise SystemExit("deleted candidate mode must be null")
+                      unlink_leaf(parent_fd, pure.name)
+                  else:
+                      mode_text = item.get("mode")
+                      if mode_text not in {"100644", "100755"}:
+                          raise SystemExit("unsupported candidate mode")
+                      write_leaf(
+                          parent_fd,
+                          pure.name,
+                          content,
+                          0o755 if mode_text == "100755" else 0o644,
+                      )
+              finally:
+                  os.close(parent_fd)
+          if not seen:
+              raise SystemExit("empty manifest")
           PY
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
