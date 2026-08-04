@@ -1,84 +1,46 @@
 name: Claude Issue Queue
-run-name: Claude Issue Queue issue-${{ inputs.issue_number || github.event.issue.number || 'event' }} request-${{ inputs.request_fingerprint || 'event' }} attempt-${{ inputs.recovery_attempt || '0' }}
+run-name: Optional Claude issue-${{ inputs.issue_number || github.event.issue.number || 'event' }}
 
 on:
-  issues:
-    types: [opened]
   issue_comment:
     types: [created]
   workflow_dispatch:
     inputs:
       issue_number:
-        description: Trusted Issue number
+        description: Trusted Issue number for an explicitly optional provider run
         required: true
-        type: string
-      trusted_supervisor:
-        description: True only for a fixed default-branch recovery dispatch
-        required: false
-        default: false
-        type: boolean
-      trusted_run_id:
-        description: Trusted reconciliation workflow run ID when dispatched by github-actions[bot]
-        required: false
-        default: ""
-        type: string
-      request_fingerprint:
-        description: Exact Queue request fingerprint for supervisor recovery
-        required: false
-        default: ""
-        type: string
-      recovery_attempt:
-        description: Positive bounded recovery attempt number
-        required: false
-        default: ""
         type: string
 
 concurrency:
-  group: claude-issue-${{ inputs.issue_number || github.event.issue.number }}
+  group: optional-claude-${{ inputs.issue_number || github.event.issue.number }}
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
   prepare:
-    if: |
-      (
-        (github.event_name == 'issues' || github.event_name == 'issue_comment') &&
-        (
-          github.actor == github.repository_owner ||
-          (vars.AUTOMATION_OWNER != '' && github.actor == vars.AUTOMATION_OWNER)
-        )
-      ) ||
-      (
-        github.event_name == 'workflow_dispatch' &&
-        github.ref_name == github.event.repository.default_branch &&
-        (
-          github.actor == github.repository_owner ||
-          (vars.AUTOMATION_OWNER != '' && github.actor == vars.AUTOMATION_OWNER) ||
-          github.actor == 'github-actions[bot]'
-        )
-      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: read
       contents: read
-      issues: write
+      issues: read
       pull-requests: read
     outputs:
       issue_number: ${{ steps.guard.outputs.issue_number }}
+      base_sha: ${{ steps.guard.outputs.base_sha }}
+      contract_ok: ${{ steps.guard.outputs.contract_ok }}
       should_run: ${{ steps.guard.outputs.should_run }}
-      duplicate_skipped: ${{ steps.guard.outputs.duplicate_skipped }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - id: guard
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
-          TRUSTED_SUPERVISOR: ${{ inputs.trusted_supervisor }}
-          TRUSTED_RUN_ID: ${{ inputs.trusted_run_id }}
-          REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
-          RECOVERY_ATTEMPT: ${{ inputs.recovery_attempt }}
           ACTOR: ${{ github.actor }}
           OWNER: ${{ github.repository_owner }}
           CONFIGURED_OWNER: ${{ vars.AUTOMATION_OWNER }}
@@ -86,317 +48,396 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           python3 - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
+          import json, os, re, subprocess
           from pathlib import Path
+          from scripts.queue_failure_classifier import check_tool_permission_contract
 
-          event_name = os.environ["EVENT_NAME"]
-          event = {}
-          if event_name in {"issues", "issue_comment"}:
-              event_path = os.environ.get("GITHUB_EVENT_PATH", "")
-              if not event_path:
-                  raise RuntimeError(f"Missing event payload for {event_name}")
-              event = json.loads(Path(event_path).read_text())
+          event = json.loads(Path(os.environ["EVENT_PATH"]).read_text(encoding="utf-8"))
+          owner = os.environ["CONFIGURED_OWNER"] or os.environ["OWNER"]
           actor = os.environ["ACTOR"]
-          owner = os.environ["OWNER"]
-          configured_owner = os.environ.get("CONFIGURED_OWNER", "")
-          repository = os.environ["REPOSITORY"]
-          default_branch = os.environ["DEFAULT_BRANCH"]
           trigger = "/claude-run"
-          issue_number = ""
-          allowed = False
-          duplicate = False
-
-          def api(path: str):
-              return json.loads(
-                  subprocess.check_output(
-                      ["gh", "api", "-H", "Accept: application/vnd.github+json", path],
-                      text=True,
-                  )
-              )
-
-          if event_name == "issue_comment":
+          issue_number = None
+          allowed = actor.casefold() == owner.casefold()
+          if os.environ["EVENT_NAME"] == "issue_comment":
               issue = event.get("issue") or {}
-              body = ((event.get("comment") or {}).get("body") or "")
-              issue_number = str(issue.get("number") or "")
-              allowed = not issue.get("pull_request") and body.strip() == trigger
-          elif event_name == "issues":
-              issue = event.get("issue") or {}
-              issue_number = str(issue.get("number") or "")
-              body = issue.get("body") or ""
-              lines = [
-                  line.strip()
-                  for line in re.sub(r"<!--.*?-->", "", body, flags=re.S).splitlines()
-                  if line.strip()
-              ]
-              allowed = bool(lines and lines[0] == trigger)
-          elif event_name == "workflow_dispatch":
-              issue_number = os.environ.get("DISPATCH_ISSUE", "")
-              owner_dispatch = actor == owner or bool(configured_owner and actor == configured_owner)
-              if owner_dispatch:
-                  allowed = issue_number.isdigit()
-              elif actor == "github-actions[bot]":
-                  run_id = os.environ.get("TRUSTED_RUN_ID", "")
-                  fingerprint = os.environ.get("REQUEST_FINGERPRINT", "")
-                  attempt = os.environ.get("RECOVERY_ATTEMPT", "")
-                  trusted = os.environ.get("TRUSTED_SUPERVISOR", "").lower() == "true"
-                  exact_recovery = bool(
-                      re.fullmatch(r"[0-9a-f]{20}", fingerprint)
-                      and attempt.isdigit()
-                      and int(attempt) > 0
-                  )
-                  if trusted and exact_recovery and issue_number.isdigit() and run_id.isdigit():
-                      snapshot = api(f"repos/{repository}/actions/runs/{run_id}")
-                      default_sha = api(f"repos/{repository}/commits/{default_branch}")["sha"]
-                      expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"
-                      allowed = (
-                          (snapshot.get("repository") or {}).get("full_name") == repository
-                          and snapshot.get("path") == expected_path
-                          and snapshot.get("head_branch") == default_branch
-                          and snapshot.get("head_sha") == default_sha
-                          and snapshot.get("status") in {"queued", "in_progress"}
-                          and snapshot.get("event") in {"workflow_run", "schedule", "workflow_dispatch"}
-                      )
-
-          if issue_number.isdigit() and allowed:
-              issue_snapshot = api(f"repos/{repository}/issues/{issue_number}")
-              issue_author = (issue_snapshot.get("user") or {}).get("login") or ""
-              trusted_authors = {owner}
-              if configured_owner:
-                  trusted_authors.add(configured_owner)
-              allowed = not issue_snapshot.get("pull_request") and issue_author in trusted_authors
+              body = (event.get("comment") or {}).get("body")
+              allowed = allowed and not issue.get("pull_request") and body.strip() == trigger
+              issue_number = issue.get("number")
+          elif os.environ["EVENT_NAME"] == "workflow_dispatch":
+              raw = os.environ.get("DISPATCH_ISSUE", "")
+              allowed = allowed and raw.isdigit() and int(raw) > 0
+              issue_number = int(raw) if raw.isdigit() else None
           else:
               allowed = False
-
+          if not isinstance(issue_number, int) or issue_number <= 0:
+              allowed = False
+          issue = {}
+          base_sha = ""
+          contract_ok = False
           if allowed:
-              pulls = api(f"repos/{repository}/pulls?state=open&per_page=100")
-              prefix = f"claude-issue-{issue_number}-"
-              duplicate = any(
-                  ((pull.get("head") or {}).get("ref") or "").startswith(prefix)
-                  and (((pull.get("head") or {}).get("repo") or {}).get("full_name") == repository)
-                  for pull in pulls
+              issue = json.loads(subprocess.check_output(
+                  ["gh", "api", f"repos/{os.environ['REPOSITORY']}/issues/{issue_number}"],
+                  text=True,
+              ))
+              issue_author = ((issue.get("user") or {}).get("login") or "").casefold()
+              allowed = issue.get("state") == "open" and not issue.get("pull_request") and issue_author == owner.casefold()
+          if allowed:
+              base_sha = json.loads(subprocess.check_output(
+                  ["gh", "api", f"repos/{os.environ['REPOSITORY']}/commits/{os.environ['DEFAULT_BRANCH']}"],
+                  text=True,
+              ))["sha"]
+              body = issue.get("body") or ""
+              marker = re.search(
+                  r"(?ms)<!--\s*foundation-provider-required-commands\s*\n(.*?)\n\s*-->",
+                  body,
               )
-
+              required_commands = [] if marker is None else [
+                  line.strip() for line in marker.group(1).splitlines() if line.strip()
+              ]
+              denied = check_tool_permission_contract(required_commands, [])
+              contract_ok = not denied
+              if denied:
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+                      summary.write("## Optional provider preflight\n\n")
+                      summary.write("- result: `contract_failed`\n")
+                      summary.write(f"- denied_command_count: `{len(denied)}`\n")
+                      summary.write("- model_invocation: `skipped`\n")
+                      summary.write("- notification: false\n")
+                      summary.write("- human_action_required: false\n")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"issue_number={issue_number}\n")
+              output.write(f"issue_number={issue_number or ''}\n")
+              output.write(f"base_sha={base_sha}\n")
+              output.write(f"contract_ok={str(contract_ok).lower()}\n")
               output.write(f"should_run={str(allowed).lower()}\n")
-              output.write(f"duplicate_skipped={str(duplicate).lower()}\n")
           PY
-
-      - name: Record duplicate skip
-        if: steps.guard.outputs.should_run == 'true' && steps.guard.outputs.duplicate_skipped == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ steps.guard.outputs.issue_number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          marker="<!-- foundation-queue-duplicate:$ISSUE_NUMBER -->"
-          if ! gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER/comments?per_page=100" --jq '.[].body' | grep -Fq "$marker"; then
-            gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$marker
-          A Claude Queue Pull Request is already open for this Issue. Duplicate execution was skipped.
-
-          Queue run: $RUN_URL"
-          fi
 
   implement:
     needs: prepare
-    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.duplicate_skipped != 'true'
+    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.contract_ok == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+      contents: read
+      issues: read
+      pull-requests: read
       actions: read
       id-token: write
     outputs:
-      branch_name: ${{ steps.require_branch.outputs.branch_name }}
+      artifact_sha256: ${{ steps.package.outputs.artifact_sha256 }}
+      branch_name: ${{ steps.package.outputs.branch_name }}
+      checkpoint_kind: ${{ steps.package.outputs.checkpoint_kind }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.prepare.outputs.base_sha }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: Require immutable credential-free base
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          git config --local remote.origin.pushurl disabled://optional-provider-publication-uses-api
       - id: claude
+        continue-on-error: true
         uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           base_branch: ${{ github.event.repository.default_branch }}
           branch_prefix: claude-issue-${{ needs.prepare.outputs.issue_number }}-
-          track_progress: ${{ github.event_name != 'workflow_dispatch' }}
+          track_progress: false
           prompt: |
-            Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written.
-            Read AGENTS.md, CLAUDE.md, SECURITY.md, and docs/OPERATING_RULES.md.
-            Change only authorized paths. Do not execute repository code, merge, deploy,
-            access another repository, reveal Secrets, or change repository settings.
+            Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written from immutable base ${{ needs.prepare.outputs.base_sha }}.
+            Read AGENTS.md, CLAUDE.md, SECURITY.md, docs/PROJECT_STARTUP.md, and docs/OPERATING_RULES.md.
+            Change only authorized paths. Do not push, merge, deploy, access another repository,
+            reveal Secrets, execute repository code, or change repository settings.
+
+            Turn budget: reserve the final 5 turns for path audit and durable worktree checkpoint packaging.
+            Save the worktree after each major file or logical work unit. At the reserve threshold,
+            stop editing and leave the best authorized checkpoint. The fixed verification and Git Data
+            publication jobs handle publication after validation.
           claude_args: |
             --max-turns 40
             --allowedTools "Read,Write,Edit,Glob,Grep"
-      - name: Require generated branch
-        id: require_branch
-        env:
-          BRANCH: ${{ steps.claude.outputs.branch_name }}
-        run: |
-          test -n "$BRANCH"
-          case "$BRANCH" in
-            claude-issue-${{ needs.prepare.outputs.issue_number }}-*) ;;
-            *) echo "Unexpected Queue branch: $BRANCH" >&2; exit 1 ;;
-          esac
-          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
-
-  resolve:
-    needs: implement
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      branch_sha: ${{ steps.resolve.outputs.branch_sha }}
-    steps:
-      - name: Resolve generated branch to one immutable SHA
-        id: resolve
+      - id: package
+        name: Package authorized complete or WIP checkpoint bytes
+        if: always() && steps.claude.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ needs.implement.outputs.branch_name }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          branch_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$BRANCH" --jq .sha)
-          printf '%s' "$branch_sha" | grep -Eq '^[0-9a-f]{40}$'
-          echo "branch_sha=$branch_sha" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, re, stat, subprocess
+
+          base = os.environ["BASE_SHA"]
+          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != base:
+              raise SystemExit("provider changed HEAD")
+          issue = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{os.environ['REPOSITORY']}/issues/{os.environ['ISSUE_NUMBER']}"],
+              text=True,
+          ))
+          body = issue.get("body") or ""
+          match = re.search(r"(?ms)^## (?:Exact )?Allowed paths\s*\n(.*?)(?=^## |\Z)", body)
+          rules = [] if match is None else [
+              line.strip()[2:].strip().strip("`")
+              for line in match.group(1).splitlines()
+              if line.strip().startswith("- ")
+          ]
+          if not rules:
+              raise SystemExit("authorized paths unavailable")
+          def allowed(path):
+              return any(
+                  path == rule or (
+                      rule.endswith("/**") and
+                      (path == rule[:-3].rstrip("/") or path.startswith(rule[:-3].rstrip("/") + "/"))
+                  )
+                  for rule in rules
+              )
+          names = subprocess.check_output(
+              ["git", "diff", "--name-only", "--no-renames", "-z", base, "--"]
+          names += subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"])
+          paths = sorted({item.decode("utf-8") for item in names.split(b"\0") if item})
+          if not paths or any(not allowed(path) for path in paths):
+              raise SystemExit("empty or unauthorized checkpoint")
+          files = []
+          for path in paths:
+              pure = pathlib.PurePosixPath(path)
+              if pure.is_absolute() or ".." in pure.parts:
+                  raise SystemExit("unsafe path")
+              disk = pathlib.Path(path)
+              if disk.is_symlink():
+                  raise SystemExit("checkpoint symlink is prohibited")
+              if disk.exists():
+                  info = disk.stat(follow_symlinks=False)
+                  if not stat.S_ISREG(info.st_mode):
+                      raise SystemExit("checkpoint leaves must be regular files")
+                  content = disk.read_bytes()
+                  mode = "100755" if info.st_mode & stat.S_IXUSR else "100644"
+                  deleted = False
+              else:
+                  content = b""
+                  mode = None
+                  deleted = True
+              files.append({
+                  "path": path,
+                  "mode": mode,
+                  "deleted": deleted,
+                  "sha256": hashlib.sha256(content).hexdigest(),
+                  "content_base64": base64.b64encode(content).decode("ascii"),
+              })
+          kind = "complete" if os.environ["CLAUDE_OUTCOME"] == "success" else "wip"
+          branch = f"claude-issue-{os.environ['ISSUE_NUMBER']}-run-{os.environ['RUN_ID']}"
+          payload = {
+              "version": 1,
+              "base_sha": base,
+              "branch_name": branch,
+              "checkpoint_kind": kind,
+              "retry_identity": f"run-{os.environ['RUN_ID']}-attempt-{os.environ['RUN_ATTEMPT']}",
+              "changed_paths": paths,
+              "files": files,
+          }
+          raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+          digest = hashlib.sha256(raw).hexdigest()
+          target = pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-candidate"
+          target.mkdir()
+          (target / "candidate.json").write_bytes(raw)
+          (target / "candidate.sha256").write_text(digest + "  candidate.json\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"artifact_sha256={digest}\n")
+              output.write(f"branch_name={branch}\n")
+              output.write(f"checkpoint_kind={kind}\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Optional provider checkpoint\n\n")
+              summary.write(f"- checkpoint_kind: `{kind}`\n")
+              summary.write(f"- base_sha: `{base}`\n")
+              summary.write(f"- diff_hash: `{digest}`\n")
+              summary.write(f"- changed_path_count: `{len(paths)}`\n")
+              summary.write("- notification: false\n")
+              summary.write("- human_action_required: false\n")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: steps.package.outcome == 'success'
+        with:
+          name: queue-${{ steps.package.outputs.checkpoint_kind }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/queue-candidate
+          if-no-files-found: error
+          retention-days: 1
 
   verify:
-    needs: resolve
+    needs: [prepare, implement]
+    if: needs.implement.outputs.checkpoint_kind == 'complete'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-    env:
-      TARGET_SHA: ${{ needs.resolve.outputs.branch_sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ env.TARGET_SHA }}
+          ref: ${{ needs.prepare.outputs.base_sha }}
           persist-credentials: false
-      - name: Verify immutable checked-out SHA
-        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: queue-complete-${{ github.run_id }}
+          path: ${{ runner.temp }}/queue-candidate
+      - name: Verify artifact digest and materialize candidate
+        env:
+          EXPECTED_DIGEST: ${{ needs.implement.outputs.artifact_sha256 }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-candidate"
+          raw = (root / "candidate.json").read_bytes()
+          if hashlib.sha256(raw).hexdigest() != os.environ["EXPECTED_DIGEST"]:
+              raise SystemExit("artifact digest mismatch")
+          data = json.loads(raw)
+          if data.get("base_sha") != os.environ["BASE_SHA"]:
+              raise SystemExit("artifact base mismatch")
+          for item in data.get("files", []):
+              path = pathlib.Path(item["path"])
+              content = base64.b64decode(item["content_base64"], validate=True)
+              if hashlib.sha256(content).hexdigest() != item["sha256"]:
+                  raise SystemExit("file digest mismatch")
+              if item["deleted"]:
+                  if path.exists() or path.is_symlink():
+                      path.unlink()
+              else:
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(content)
+                  path.chmod(0o755 if item["mode"] == "100755" else 0o644)
+          PY
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.12"
       - run: python scripts/public_export_guard.py .
       - run: python scripts/validate_repository.py
-      - name: Run source tests or generated-target validation
-        run: |
+      - run: |
           if [ -d tests ]; then
             python -m unittest discover -s tests
-          else
-            python scripts/public_export_guard.py .
-            python scripts/validate_repository.py
           fi
 
   publish:
-    needs: [prepare, implement, resolve, verify]
-    if: |
-      needs.prepare.outputs.should_run == 'true' &&
-      needs.prepare.outputs.duplicate_skipped != 'true' &&
-      needs.implement.result == 'success' &&
-      needs.resolve.result == 'success' &&
-      needs.verify.result == 'success'
+    needs: [prepare, implement, verify]
+    if: needs.verify.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
     outputs:
+      branch_sha: ${{ steps.publish.outputs.branch_sha }}
       pr_url: ${{ steps.publish.outputs.pr_url }}
     steps:
-      - name: Publish one immutable Draft Pull Request without executing branch code
-        id: publish
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: queue-complete-${{ github.run_id }}
+          path: ${{ runner.temp }}/queue-candidate
+      - id: publish
+        name: Publish verified Git objects without candidate execution
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
           BRANCH: ${{ needs.implement.outputs.branch_name }}
-          TARGET_SHA: ${{ needs.resolve.outputs.branch_sha }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_DIGEST: ${{ needs.implement.outputs.artifact_sha256 }}
         run: |
-          set -euo pipefail
-          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$BRANCH" --jq .sha)
-          test "$current_sha" = "$TARGET_SHA"
-
-          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --head "$BRANCH" --json url --jq '.[0].url // ""')
-          if [ -n "$existing" ]; then
-            pr_url="$existing"
-          else
-            changed=$(gh api "repos/$GITHUB_REPOSITORY/compare/$DEFAULT_BRANCH...$TARGET_SHA" --jq '.files[].filename' | sed 's/^/- `/' | sed 's/$/`/')
-            test -n "$changed"
-            cat > "$RUNNER_TEMP/queue-pr.md" <<EOF
-          Closes #$ISSUE_NUMBER.
-
-          ## Exact changed paths
-
-          $changed
-
-          ## Immutable Queue verification
-
-          - verified head SHA: \`$TARGET_SHA\`
-          - \`python scripts/public_export_guard.py .\`
-          - \`python scripts/validate_repository.py\`
-          - \`python -m unittest discover -s tests\`
-          - verification ran in a separate \`contents: read\` job with persisted credentials disabled
-
-          ## Security boundaries
-
-          - proposed-branch code did not execute in this publication job
-          - no merge or deployment was performed
-          - native Pull Request checks, trusted exact-SHA attestations, Codex review, and the supervisor remain required
-          EOF
-            pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" --draft --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "Claude: Issue #$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/queue-pr.md")
-          fi
-
-          snapshot=$(gh pr view "$pr_url" --repo "$GITHUB_REPOSITORY" --json headRefOid,state,isDraft --jq '[.headRefOid,.state,(.isDraft|tostring)]|@tsv')
-          IFS=$'\t' read -r pr_sha pr_state pr_draft <<< "$snapshot"
-          test "$pr_sha" = "$TARGET_SHA"
-          test "$pr_state" = "OPEN"
-          test "$pr_draft" = "true"
-          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, hashlib
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-candidate"
+          raw = (root / "candidate.json").read_bytes()
+          if hashlib.sha256(raw).hexdigest() != os.environ["EXPECTED_DIGEST"]:
+              raise SystemExit("artifact digest mismatch")
+          data = json.loads(raw)
+          if data.get("base_sha") != os.environ["BASE_SHA"] or data.get("branch_name") != os.environ["BRANCH"]:
+              raise SystemExit("artifact identity mismatch")
+          repo = os.environ["REPOSITORY"]
+          def api(path, method="GET", payload=None):
+              command = ["gh", "api", "--method", method, path]
+              if payload is not None:
+                  command += ["--input", "-"]
+              result = subprocess.run(
+                  command,
+                  input=None if payload is None else json.dumps(payload),
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  check=True,
+              )
+              return json.loads(result.stdout or "null")
+          base = api(f"repos/{repo}/git/commits/{os.environ['BASE_SHA']}")
+          tree = []
+          for item in data["files"]:
+              if item["deleted"]:
+                  tree.append({"path": item["path"], "mode": "100644", "type": "blob", "sha": None})
+              else:
+                  blob = api(f"repos/{repo}/git/blobs", "POST", {
+                      "content": item["content_base64"], "encoding": "base64"
+                  })
+                  tree.append({
+                      "path": item["path"], "mode": item["mode"], "type": "blob", "sha": blob["sha"]
+                  })
+          tree_obj = api(f"repos/{repo}/git/trees", "POST", {
+              "base_tree": base["tree"]["sha"], "tree": tree
+          })
+          commit = api(f"repos/{repo}/git/commits", "POST", {
+              "message": f"Optional Claude: Issue #{os.environ['ISSUE_NUMBER']}",
+              "tree": tree_obj["sha"],
+              "parents": [os.environ["BASE_SHA"]],
+          })
+          branch = os.environ["BRANCH"]
+          api(f"repos/{repo}/git/refs", "POST", {
+              "ref": f"refs/heads/{branch}", "sha": commit["sha"]
+          })
+          title = f"Optional Claude: Issue #{os.environ['ISSUE_NUMBER']}"
+          body = (
+              f"Closes #{os.environ['ISSUE_NUMBER']}.\n\n"
+              f"Exact base SHA: `{os.environ['BASE_SHA']}`\n"
+              f"Exact candidate SHA: `{commit['sha']}`\n\n"
+              "Candidate bytes were validated in a read-only job and published through Git Data API."
+          )
+          created = api(f"repos/{repo}/pulls", "POST", {
+              "title": title,
+              "head": branch,
+              "base": api(f"repos/{repo}")["default_branch"],
+              "body": body,
+              "draft": True,
+          })
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"branch_sha={commit['sha']}\n")
+              output.write(f"pr_url={created['html_url']}\n")
+          PY
 
   finalize:
-    needs: [prepare, implement, resolve, verify, publish]
+    needs: [prepare, implement, verify, publish]
     if: always() && needs.prepare.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      issues: write
-      pull-requests: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
-      DUPLICATE_SKIPPED: ${{ needs.prepare.outputs.duplicate_skipped }}
-      IMPLEMENT_RESULT: ${{ needs.implement.result }}
-      RESOLVE_RESULT: ${{ needs.resolve.result }}
-      VERIFY_RESULT: ${{ needs.verify.result }}
-      PUBLISH_RESULT: ${{ needs.publish.result }}
-      TARGET_SHA: ${{ needs.resolve.outputs.branch_sha }}
+    permissions: {}
     steps:
-      - name: Publish successful Queue state or retain non-notifying failure evidence
+      - name: Record public-safe optional route state
+        env:
+          CONTRACT_OK: ${{ needs.prepare.outputs.contract_ok }}
+          IMPLEMENT_RESULT: ${{ needs.implement.result }}
+          CHECKPOINT_KIND: ${{ needs.implement.outputs.checkpoint_kind }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          PR_URL: ${{ needs.publish.outputs.pr_url }}
         run: |
-          set -euo pipefail
-          gh label create ai-review --repo "$GITHUB_REPOSITORY" --color 0E8A16 --description "Automation candidate awaits exact-SHA evidence" --force
-
-          if [ "$DUPLICATE_SKIPPED" = "true" ]; then
-            exit 0
-          fi
-
-          if [ "$IMPLEMENT_RESULT" = success ] && [ "$RESOLVE_RESULT" = success ] && [ "$VERIFY_RESULT" = success ] && [ "$PUBLISH_RESULT" = success ]; then
-            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label ai-review --remove-label ai-blocked || true
-            exit 0
-          fi
-
           {
-            echo "## Queue pipeline incomplete"
+            echo "## Optional Claude route"
             echo
-            echo "- issue: #$ISSUE_NUMBER"
-            echo "- immutable_sha: ${TARGET_SHA:-unavailable}"
-            echo "- stages: implement=$IMPLEMENT_RESULT resolve=$RESOLVE_RESULT verify=$VERIFY_RESULT publish=$PUBLISH_RESULT"
+            echo "- contract_ok: \`${CONTRACT_OK:-false}\`"
+            echo "- implementation_result: \`${IMPLEMENT_RESULT:-skipped}\`"
+            echo "- checkpoint_kind: \`${CHECKPOINT_KIND:-none}\`"
+            echo "- verify_result: \`${VERIFY_RESULT:-skipped}\`"
+            echo "- publish_result: \`${PUBLISH_RESULT:-skipped}\`"
+            echo "- candidate_pr: \`${PR_URL:-none}\`"
             echo "- notification: false"
-            echo "- next: merged default-branch reconciliation performs the bounded self-resolution audit and internal-stop decision"
+            echo "- human_action_required: false"
+            echo "- next_action: Continue GitHub-direct work when this optional route is unavailable."
           } >> "$GITHUB_STEP_SUMMARY"
