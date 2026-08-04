@@ -40,6 +40,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_PATH: ${{ github.event_path }}
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
+          REF_NAME: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
           OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
           REPOSITORY: ${{ github.repository }}
@@ -61,7 +62,12 @@ jobs:
               number = issue.get("number")
           elif os.environ["EVENT_NAME"] == "workflow_dispatch":
               raw = os.environ.get("DISPATCH_ISSUE", "")
-              allowed = allowed and raw.isdigit() and int(raw) > 0
+              allowed = (
+                  allowed
+                  and os.environ.get("REF_NAME") == os.environ["DEFAULT_BRANCH"]
+                  and raw.isdigit()
+                  and int(raw) > 0
+              )
               number = int(raw) if raw.isdigit() else None
           else:
               allowed = False
