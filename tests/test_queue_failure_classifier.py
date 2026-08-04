@@ -1,4 +1,7 @@
-"""Tests for optional-provider failure classification and permission preflight."""
+"""Tests for optional-provider failure classification and permission preflight.
+
+This metadata checkpoint binds CI to the complete replacement branch contents.
+"""
 import unittest
 
 from scripts.queue_failure_classifier import (
