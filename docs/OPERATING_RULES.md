@@ -139,6 +139,8 @@ The Pull Request body or machine-readable status records:
 
 Legacy provider fields may remain during migration, but `selected_auditor: none` and provider `route-unavailable` do not block completion. Provider output that is stale, untrusted, edited without provenance, content-free, or tied to another SHA is ignored.
 
+During bounded runtime migration, an existing immutable trusted exact-SHA request comment may still be emitted by older default-branch code. It is retained only as immutable state/provenance evidence; it does not select an external provider, prove an external review, or block the authoritative GitHub coordinator-review route.
+
 ## Internal stops are durable and non-notifying
 
 Retry exhaustion, provider quota, no progress, stale or incomplete evidence, blocking review, merge state, collision, ambiguous technical conditions, all-path denial, and protected-path denial are internal automation states. They must never become routine requests for a person to implement, merge, approve, retry, close, resolve review state, change permissions or settings, alter billing, or deploy.
