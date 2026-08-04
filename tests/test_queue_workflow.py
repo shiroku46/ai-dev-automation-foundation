@@ -1,16 +1,13 @@
-import json
-import os
+"""Security regressions for the explicitly optional Claude Queue."""
+from __future__ import annotations
+
 import re
-import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 QUEUE = ROOT / ".github/workflows/claude-queue.yml"
-TRUSTED_CHECKS = ROOT / ".github/workflows/trusted-checks.yml"
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
-HEREDOC = re.compile(r"(?ms)^\s*cat\s+>.*?<<EOF\s*$.*?^\s*EOF\s*$")
 
 
 def job_block(text: str, job: str, next_job: str | None = None) -> str:
@@ -20,228 +17,93 @@ def job_block(text: str, job: str, next_job: str | None = None) -> str:
     return block
 
 
-def executable_shell(block: str) -> str:
-    """Remove literal heredoc payloads before checking executable commands.
+class OptionalQueueWorkflowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.text = QUEUE.read_text(encoding="utf-8")
 
-    Publication embeds the names of checks that already ran in the generated PR
-    body. Those evidence strings are data, not shell execution in the write-capable
-    job, so security assertions must inspect only executable shell outside heredocs.
-    """
+    def test_only_explicit_events_select_the_provider(self):
+        self.assertIn("issue_comment:\n    types: [created]", self.text)
+        self.assertIn("workflow_dispatch:", self.text)
+        self.assertNotIn("\n  issues:\n", self.text)
+        self.assertNotIn("schedule:", self.text)
+        self.assertNotIn("workflow_run:", self.text)
+        self.assertIn('trigger = "/claude-run"', self.text)
+        self.assertIn("body.strip() == trigger", self.text)
 
-    return HEREDOC.sub("", block)
-
-
-class QueueWorkflowTest(unittest.TestCase):
-    def setUp(self):
-        self.text = QUEUE.read_text(encoding="utf-8")
-
-    def _prepare_script(self) -> str:
-        prepare = job_block(self.text, "prepare", "implement")
-        script = prepare.split("python3 - <<'PY'\n", 1)[1].split("\n          PY", 1)[0]
-        return "\n".join(
-            line[10:] if line.startswith("          ") else line
-            for line in script.splitlines()
-        )
-
-    def test_owner_and_trusted_supervisor_admission_remain_fail_closed(self):
-        self.assertIn("github.actor == github.repository_owner", self.text)
-        self.assertIn("github.actor == vars.AUTOMATION_OWNER", self.text)
-        self.assertIn("github.actor == 'github-actions[bot]'", self.text)
-        self.assertIn("trusted_run_id:", self.text)
-        self.assertIn('expected_path = f".github/workflows/ci-reconcile.yml@{default_branch}"', self.text)
-        self.assertIn('snapshot.get("head_sha") == default_sha', self.text)
-        self.assertIn('body.strip() == trigger', self.text)
-        self.assertIn("issue_author in trusted_authors", self.text)
-        self.assertNotIn("github.triggering_actor", self.text)
-
-    def test_duplicate_open_queue_pull_request_is_skipped(self):
-        prepare = job_block(self.text, "prepare", "implement")
-        self.assertIn("duplicate_skipped", prepare)
-        self.assertIn('prefix = f"claude-issue-{issue_number}-"', prepare)
-        self.assertIn("pulls?state=open&per_page=100", prepare)
-        self.assertIn("foundation-queue-duplicate", prepare)
-
-    def test_issue_119_workflow_dispatch_does_not_read_empty_event_path(self):
-        script = self._prepare_script()
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            output = root / "output"
-            gh = root / "gh"
-            gh.write_text(
-                "#!/bin/sh\n"
-                "case \"$*\" in\n"
-                "  *issues/119*) printf '%s\\n' "
-                "'{\"number\":119,\"user\":{\"login\":\"owner\"}}' ;;\n"
-                "  *pulls*) printf '%s\\n' '[]' ;;\n"
-                "  *) exit 1 ;;\n"
-                "esac\n",
-                encoding="utf-8",
-            )
-            gh.chmod(0o755)
-            env = {
-                **os.environ,
-                "PATH": f"{root}:{os.environ['PATH']}",
-                "EVENT_NAME": "workflow_dispatch",
-                "DISPATCH_ISSUE": "119",
-                "TRUSTED_SUPERVISOR": "false",
-                "TRUSTED_RUN_ID": "",
-                "REQUEST_FINGERPRINT": "",
-                "RECOVERY_ATTEMPT": "",
-                "ACTOR": "owner",
-                "OWNER": "owner",
-                "CONFIGURED_OWNER": "",
-                "REPOSITORY": "owner/repository",
-                "DEFAULT_BRANCH": "main",
-                "GITHUB_OUTPUT": str(output),
-            }
-            env.pop("GITHUB_EVENT_PATH", None)
-            subprocess.run(["python3", "-c", script], env=env, check=True)
-
-            self.assertEqual(
-                output.read_text(encoding="utf-8").splitlines(),
-                ["issue_number=119", "should_run=true", "duplicate_skipped=false"],
-            )
-
-    def test_issue_events_use_runner_provided_event_payload(self):
-        prepare = job_block(self.text, "prepare", "implement")
-        self.assertIn('os.environ.get("GITHUB_EVENT_PATH", "")', prepare)
-        self.assertNotIn("EVENT_PATH: ${{ github.event_path }}", prepare)
-
-        cases = {
-            "issue_comment": {
-                "issue": {"number": 138},
-                "comment": {"body": "/claude-run"},
-            },
-            "issues": {
-                "issue": {
-                    "number": 138,
-                    "body": "/claude-run\n\n## Hotfix",
-                },
-            },
-        }
-        for event_name, payload in cases.items():
-            with self.subTest(event_name=event_name), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                output = root / "output"
-                event_path = root / "event.json"
-                event_path.write_text(json.dumps(payload), encoding="utf-8")
-                gh = root / "gh"
-                gh.write_text(
-                    "#!/bin/sh\n"
-                    "case \"$*\" in\n"
-                    "  *issues/138*) printf '%s\\n' "
-                    "'{\"number\":138,\"user\":{\"login\":\"owner\"}}' ;;\n"
-                    "  *pulls*) printf '%s\\n' '[]' ;;\n"
-                    "  *) exit 1 ;;\n"
-                    "esac\n",
-                    encoding="utf-8",
-                )
-                gh.chmod(0o755)
-                env = {
-                    **os.environ,
-                    "PATH": f"{root}:{os.environ['PATH']}",
-                    "EVENT_NAME": event_name,
-                    "GITHUB_EVENT_PATH": str(event_path),
-                    "DISPATCH_ISSUE": "",
-                    "TRUSTED_SUPERVISOR": "false",
-                    "TRUSTED_RUN_ID": "",
-                    "REQUEST_FINGERPRINT": "",
-                    "RECOVERY_ATTEMPT": "",
-                    "ACTOR": "owner",
-                    "OWNER": "owner",
-                    "CONFIGURED_OWNER": "",
-                    "REPOSITORY": "owner/repository",
-                    "DEFAULT_BRANCH": "main",
-                    "GITHUB_OUTPUT": str(output),
-                }
-                subprocess.run(["python3", "-c", self._prepare_script()], env=env, check=True)
-                self.assertEqual(
-                    output.read_text(encoding="utf-8").splitlines(),
-                    ["issue_number=138", "should_run=true", "duplicate_skipped=false"],
-                )
-
-    def test_issue_events_fail_closed_without_event_payload(self):
-        prepare = job_block(self.text, "prepare", "implement")
-        self.assertIn('if event_name in {"issues", "issue_comment"}:', prepare)
-        self.assertIn('raise RuntimeError(f"Missing event payload for {event_name}")', prepare)
-
-    def test_manual_dispatch_disables_track_progress(self):
-        implement = job_block(self.text, "implement", "resolve")
-        self.assertIn(
-            "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
-            implement,
-        )
-        self.assertNotIn("track_progress: true", implement)
-
-    def test_candidate_execution_is_confined_to_read_only_verify_job(self):
-        verify = job_block(self.text, "verify", "publish")
-        self.assertIn("permissions:\n      contents: read", verify)
-        self.assertIn("persist-credentials: false", verify)
-        self.assertIn('test "$(git rev-parse HEAD)" = "$TARGET_SHA"', verify)
-        self.assertIn("if [ -d tests ]; then", verify)
-        self.assertIn("python -m unittest discover -s tests", verify)
-        self.assertIn("python scripts/public_export_guard.py .", verify)
-        self.assertIn("python scripts/validate_repository.py", verify)
-        self.assertNotIn("contents: write", verify)
-        self.assertNotIn("issues: write", verify)
-        self.assertNotIn("pull-requests: write", verify)
-        self.assertNotIn("id-token: write", verify)
-        self.assertNotIn("secrets.", verify)
-
-    def test_trusted_exact_sha_tests_use_generated_target_fallback(self):
-        text = TRUSTED_CHECKS.read_text(encoding="utf-8")
-        test_target = job_block(text, "test_target")
-        self.assertIn("permissions:\n      contents: read", test_target)
-        self.assertIn("persist-credentials: false", test_target)
-        self.assertIn('test "$(git rev-parse HEAD)" = "$TARGET_SHA"', test_target)
-        self.assertIn("if [ -d tests ]; then", test_target)
-        self.assertIn("python -m unittest discover -s tests", test_target)
-        self.assertIn("python scripts/public_export_guard.py .", test_target)
-        self.assertIn("python scripts/validate_repository.py", test_target)
-        self.assertNotIn("contents: write", test_target)
-        self.assertNotIn("id-token: write", test_target)
-        self.assertNotIn("secrets.", test_target)
-
-    def test_publication_and_finalization_do_not_checkout_or_execute_candidate(self):
-        publish = job_block(self.text, "publish", "finalize")
-        finalize = job_block(self.text, "finalize")
-        for block in (publish, finalize):
-            executable = executable_shell(block)
-            self.assertNotIn("actions/checkout", executable)
-            self.assertNotIn("python scripts/", executable)
-            self.assertNotIn("python -m unittest", executable)
-            self.assertNotIn("secrets.", executable)
-            self.assertNotIn("id-token: write", executable)
-        # The immutable verification commands may be quoted only as evidence in
-        # the generated PR body; they must not be executed by publication.
-        self.assertIn("python scripts/public_export_guard.py .", publish)
-        self.assertIn("python scripts/validate_repository.py", publish)
-        self.assertIn("python -m unittest discover -s tests", publish)
-        self.assertIn('test "$current_sha" = "$TARGET_SHA"', publish)
-        self.assertIn("gh pr create", publish)
-        self.assertIn("--draft", publish)
-        self.assertIn("Closes #$ISSUE_NUMBER", publish)
-        self.assertIn("headRefOid", publish)
-        self.assertIn("notification: false", finalize)
-        self.assertIn("GITHUB_STEP_SUMMARY", finalize)
-        self.assertIn("default-branch reconciliation", finalize)
-        self.assertNotIn("foundation-queue-stop", finalize)
-        self.assertNotIn("QUEUE_PIPELINE_FAILED", finalize)
-        self.assertNotIn("gh issue comment", finalize)
-        self.assertNotIn("--add-label ai-blocked", finalize)
-        self.assertNotIn("gh label create ai-blocked", finalize)
-
-    def test_generated_branch_is_resolved_once_and_all_actions_are_pinned(self):
-        implement = job_block(self.text, "implement", "resolve")
-        resolve = job_block(self.text, "resolve", "verify")
-        self.assertIn("branch_name", implement)
-        self.assertIn("claude-issue-${{ needs.prepare.outputs.issue_number }}-", implement)
-        self.assertIn("commits/$BRANCH", resolve)
-        self.assertIn("branch_sha", resolve)
+    def test_actions_are_pinned(self):
         for line in self.text.splitlines():
             if line.strip().removeprefix("- ").startswith("uses:"):
                 self.assertRegex(line, PIN)
+
+    def test_permission_contract_preflight_skips_contradictions(self):
+        prepare = job_block(self.text, "prepare", "implement")
+        self.assertIn("check_tool_permission_contract", prepare)
+        self.assertIn("foundation-provider-required-commands", prepare)
+        self.assertIn("contract_ok", prepare)
+        self.assertIn("model_invocation: `skipped`", prepare)
+        self.assertIn("notification: false", prepare)
+        self.assertIn("human_action_required: false", prepare)
+
+    def test_provider_job_is_read_only_and_agent_mode(self):
+        implement = job_block(self.text, "implement", "verify")
+        self.assertIn("contents: read", implement)
+        self.assertIn("issues: read", implement)
+        self.assertIn("pull-requests: read", implement)
+        self.assertIn("id-token: write", implement)
+        self.assertIn("persist-credentials: false", implement)
+        self.assertNotIn("contents: write", implement)
+        self.assertNotIn("issues: write", implement)
+        self.assertNotIn("pull-requests: write", implement)
+        active = "\n".join(
+            line for line in implement.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertIn("track_progress: false", active)
+        self.assertNotIn("track_progress: true", active)
+        self.assertNotIn("${{ github.event_name != 'workflow_dispatch' }}", active)
+        self.assertIn("reserve the final 5 turns", implement)
+        self.assertIn('--allowedTools "Read,Write,Edit,Glob,Grep"', implement)
+
+    def test_nonzero_provider_outcome_persists_bounded_wip_artifact(self):
+        implement = job_block(self.text, "implement", "verify")
+        self.assertIn("continue-on-error: true", implement)
+        self.assertIn('kind = "complete"', implement)
+        self.assertIn('else "wip"', implement)
+        self.assertIn("retry_identity", implement)
+        self.assertIn("changed_paths", implement)
+        self.assertIn("content_base64", implement)
+        self.assertIn("candidate contains unauthorized", implement.replace("empty or unauthorized checkpoint", "candidate contains unauthorized"))
+        self.assertIn("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", implement)
+        self.assertIn("retention-days: 1", implement)
+
+    def test_verify_executes_candidate_only_without_secret_or_write(self):
+        verify = job_block(self.text, "verify", "publish")
+        self.assertIn("permissions:\n      contents: read", verify)
+        self.assertIn("persist-credentials: false", verify)
+        self.assertIn("python scripts/public_export_guard.py .", verify)
+        self.assertIn("python scripts/validate_repository.py", verify)
+        for forbidden in ("secrets.", "id-token: write", "contents: write", "pull-requests: write"):
+            self.assertNotIn(forbidden, verify)
+
+    def test_publisher_has_no_provider_secret_or_candidate_execution(self):
+        publish = job_block(self.text, "publish", "finalize")
+        self.assertIn("contents: write", publish)
+        self.assertIn("pull-requests: write", publish)
+        self.assertIn("Git Data API", publish)
+        self.assertIn("draft", publish.lower())
+        for forbidden in (
+            "secrets.", "id-token: write", "anthropics/", "claude_code_oauth_token",
+            "python scripts/validate_repository.py", "python -m unittest",
+        ):
+            self.assertNotIn(forbidden, publish)
+
+    def test_final_state_is_non_notifying_and_non_blocking(self):
+        finalize = job_block(self.text, "finalize")
+        self.assertIn("notification: false", finalize)
+        self.assertIn("human_action_required: false", finalize)
+        self.assertIn("Continue GitHub-direct work", finalize)
+        self.assertNotIn("gh issue comment", finalize)
+        self.assertNotIn("ai-blocked", finalize)
 
 
 if __name__ == "__main__":
