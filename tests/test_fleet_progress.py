@@ -33,6 +33,7 @@ def project(repository: str, **overrides):
         "risk_tier": "standard",
         "review_route": "github-coordinator",
         "review_state": "pending",
+        "unresolved_review_threads": 0,
         "next_action": "Complete exact-head coordinator review",
         "blocker": None,
         "human_action_required": False,
@@ -55,6 +56,7 @@ class FleetProgressValidationTest(unittest.TestCase):
         progress = validate_document(document(project("example/alpha")))
         self.assertEqual(progress.projects[0].review_route, "github-coordinator")
         self.assertEqual(progress.projects[0].review_state, "pending")
+        self.assertEqual(progress.projects[0].unresolved_review_threads, 0)
 
     def test_legacy_schema_v1_fails_closed(self):
         with self.assertRaisesRegex(FleetProgressError, "legacy external-auditor"):
@@ -77,6 +79,12 @@ class FleetProgressValidationTest(unittest.TestCase):
         value = project("example/alpha")
         value["provider_required"] = True
         with self.assertRaisesRegex(FleetProgressError, "unsupported fields"):
+            validate_document(document(value))
+
+    def test_missing_unresolved_review_threads_fails_closed(self):
+        value = project("example/alpha")
+        del value["unresolved_review_threads"]
+        with self.assertRaisesRegex(FleetProgressError, "missing fields"):
             validate_document(document(value))
 
     def test_repository_must_use_bounded_owner_name(self):
@@ -138,6 +146,32 @@ class FleetProgressValidationTest(unittest.TestCase):
                 document(project("example/alpha", review_route="codex"))
             )
 
+    def test_unresolved_thread_count_rejects_boolean_and_negative(self):
+        for value in (True, -1):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                FleetProgressError, "non-negative integer"
+            ):
+                validate_document(
+                    document(
+                        project(
+                            "example/alpha",
+                            unresolved_review_threads=value,
+                        )
+                    )
+                )
+
+    def test_clean_review_requires_zero_unresolved_threads(self):
+        with self.assertRaisesRegex(FleetProgressError, "must be 0"):
+            validate_document(
+                document(
+                    project(
+                        "example/alpha",
+                        review_state="clean",
+                        unresolved_review_threads=1,
+                    )
+                )
+            )
+
     def test_ready_to_merge_requires_clean_review_and_passing_checks(self):
         valid = project(
             "example/alpha", status="ready_to_merge", review_state="clean"
@@ -151,6 +185,19 @@ class FleetProgressValidationTest(unittest.TestCase):
         pending_review["review_state"] = "pending"
         with self.assertRaisesRegex(FleetProgressError, "must be clean"):
             validate_document(document(pending_review))
+
+    def test_ready_to_merge_requires_zero_unresolved_threads(self):
+        with self.assertRaisesRegex(FleetProgressError, "must be 0"):
+            validate_document(
+                document(
+                    project(
+                        "example/alpha",
+                        status="ready_to_merge",
+                        review_state="clean",
+                        unresolved_review_threads=2,
+                    )
+                )
+            )
 
     def test_optional_provider_route_does_not_block_merge(self):
         for route in ("codex-optional", "claude-optional"):
@@ -220,6 +267,19 @@ class FleetProgressRenderingTest(unittest.TestCase):
         rendered = render_markdown(validate_document(document(value)))
         self.assertIn(r"A\\B \| migration", rendered)
         self.assertIn(r"Review \| merge", rendered)
+
+    def test_review_column_includes_unresolved_thread_count(self):
+        rendered = render_markdown(
+            validate_document(
+                document(
+                    project(
+                        "example/alpha",
+                        unresolved_review_threads=3,
+                    )
+                )
+            )
+        )
+        self.assertIn("github-coordinator / pending / 3 unresolved", rendered)
 
     def test_provider_unavailability_is_not_a_dashboard_section(self):
         rendered = render_markdown(
