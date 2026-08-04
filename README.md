@@ -1,11 +1,21 @@
 # AI Development Automation Foundation
 
-A public, reusable, history-free foundation for guarded AI-assisted development on GitHub.
+A public, reusable, history-free foundation for guarded AI-assisted development centered on GitHub.
+
+## Default operating model
+
+The coordinating ChatGPT uses the connected GitHub App/API as the ordinary implementation route. It creates a dedicated branch, changes only Issue-authorized files, creates GitHub-visible commits, opens or updates a Pull Request, inspects the exact diff, and confirms the remote head SHA.
+
+GitHub Actions performs exact-head Foundation and product checks. When an external audit is required, **one** available provider—Codex **or** Claude—reviews the exact GitHub-visible SHA. Routine dual-provider auditing is not required. Low-risk documentation, formatting, tests-only, and non-executable metadata changes may complete with exact-head checks and coordinator diff review.
+
+See `docs/MINIMUM_SAFETY_PROFILE.md` and `docs/OPERATING_RULES.md` for the authoritative flow and risk tiers.
 
 ## What this repository provides
 
+- a GitHub-centered branch, Pull Request, exact-SHA, and guarded-merge operating contract;
 - read-only CI that is safe for forked pull requests;
-- an owner-authorized Claude issue queue;
+- optional bounded provider implementation routes for exceptional fallback work;
+- single-provider exact-SHA audit policy using Codex or Claude;
 - bounded reconciliation for missing trusted checks;
 - a deterministic recovery and merge decision engine;
 - a default-branch-controlled supervisor that never executes proposed-branch code with write permissions;
@@ -16,7 +26,9 @@ A public, reusable, history-free foundation for guarded AI-assisted development 
 
 Untrusted pull-request code runs only in jobs with `contents: read` and without Secrets, OIDC, or write permissions. Jobs that can comment, relabel, dispatch, close, mark ready, or merge operate only from the default branch, inspect immutable current SHAs, require same-repository provenance, use fixed workflow names and refs, bound their candidate set, and use an expected-head-SHA merge guard.
 
-The queue accepts issue creation or an exact standalone `/claude-run` comment only when `github.actor` is the configured owner. A separate default-branch-only trusted dispatch path is available to the supervisor.
+No automation writes directly to the default branch. Every changed and renamed path must match a trusted owner-authored Issue scope. Workflows, permissions, authentication or Secret interfaces, supervisor/security policy, repository settings, billing, deployment/production, and destructive operations require explicit protected authorization.
+
+Provider-reported local commits are not completion until GitHub confirms the expected remote branch SHA. Provider quota, setup, or connection responses are not audit evidence and do not delegate routine development work to the owner.
 
 ## Mandatory repository Phase 0
 
