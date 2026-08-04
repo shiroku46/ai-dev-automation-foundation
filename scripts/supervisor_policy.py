@@ -49,6 +49,8 @@ PROTECTED_OPERATION_PATTERNS = (
     re.compile(r"\bdeploy(?:ment|ing|ed)?\b"),
     re.compile(r"\bproduction\b"),
     re.compile(r"\bauth(?:entication|orization)?\b"),
+    re.compile(r"\bpermissions?\b"),
+    re.compile(r"\baccess\s+control\b"),
     re.compile(r"\bbilling\b"),
     re.compile(r"\bsecret(?:s)?\b"),
     re.compile(r"\boidc\b"),
