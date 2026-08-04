@@ -1,0 +1,28 @@
+{
+  "audit": {
+    "alternative_connected_paths": "trusted-checks.yml:active:324449305;ci-reconcile.yml:active:324405826;supervisor.yml:active:324405830;claude-queue.yml:active:324405828",
+    "changed_and_renamed_paths": "[\".github/workflows/claude-queue.yml\",\"bootstrap/generator.py\",\"docs/OPERATING_RULES.md\",\"docs/PUBLIC_SECURITY_MODEL.md\",\"tests/test_bootstrap.py\",\"tests/test_queue_and_final_guard.py\"]",
+    "check_evidence": "[{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"test\",\"status\":\"completed\"},{\"app\":\"github-actions\",\"conclusion\":\"success\",\"name\":\"validate\",\"status\":\"completed\"}]",
+    "exact_head_sha": "d0f9086f447d0bd221effca7fa0e9fecd1462f77",
+    "human_only_connected_evidence": "not-applicable",
+    "idempotency": "automation-stops/pr-150/d0f9086f447d0bd221effca7fa0e9fecd1462f77/NO_MEANINGFUL_PROGRESS.json",
+    "issue": "#135",
+    "mergeability": "mergeable=True,mergeable_state=clean",
+    "native_pull_request_workflow_evidence": "{\"clean\":true,\"runs\":[{\"conclusion\":\"success\",\"display_name\":\"CI\",\"run_id\":30877336000,\"status\":\"completed\",\"updated_at\":\"2026-08-04T04:19:46Z\",\"workflow\":\"ci.yml\",\"workflow_id\":324405827},{\"conclusion\":\"success\",\"display_name\":\"Unit Tests\",\"run_id\":30877335991,\"status\":\"completed\",\"updated_at\":\"2026-08-04T04:19:38Z\",\"workflow\":\"unit-tests.yml\",\"workflow_id\":324405831}]}",
+    "permissions_and_credentials": "automation_owner_permission=admin,secret_values_not_requested=true",
+    "pull_request": "#150",
+    "reason_code": "NO_MEANINGFUL_PROGRESS",
+    "repository_metadata": "visibility=public,default_branch=main,initial_and_final_head_confirmed=true",
+    "review_and_provenance": "codex=pending,codex_timestamp=None,trusted_request_timestamp=2026-08-04T04:37:17Z,unresolved_threads=True",
+    "scope_and_authorization": "issue=state=open,trusted_author=True,authorization=all_paths=True,protected_paths=True",
+    "workflow_run_and_job_evidence": "[{\"active\":false,\"complete\":true,\"run_id\":30881977157,\"success\":true,\"updated_at\":\"2026-08-04T05:51:14Z\"}]"
+  },
+  "detail": "No exact-SHA Codex evidence changed within the bounded interval measured from the immutable trusted request comment.",
+  "exact_head_sha": "d0f9086f447d0bd221effca7fa0e9fecd1462f77",
+  "issue_number": 135,
+  "notification": false,
+  "pull_request_number": 150,
+  "reason_code": "NO_MEANINGFUL_PROGRESS",
+  "required_human_action": null,
+  "schema_version": 1
+}
