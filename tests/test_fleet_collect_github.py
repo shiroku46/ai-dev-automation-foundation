@@ -127,9 +127,7 @@ class FleetCollectorTest(unittest.TestCase):
         record = document["projects"][0]
         self.assertEqual(record["status"], "review_required")
         self.assertEqual(record["head_sha"], SHA)
-        self.assertEqual(
-            record["checks"], {"CI": "success", "Unit Tests": "success"}
-        )
+        self.assertEqual(record["checks"], {"CI": "success", "Unit Tests": "success"})
         self.assertEqual(api.calls[-1], ("runs", "owner/example", SHA))
 
     def test_in_progress_workflow_is_ci_running(self):
@@ -292,8 +290,7 @@ class FleetCollectorTest(unittest.TestCase):
             validate_config(config(bad))
 
     def test_different_token_variables_fail_without_revealing_values(self):
-        secret_a = "secret-alpha"
-        secret_b = "secret-beta"
+        secret_a, secret_b = "secret-alpha", "secret-beta"
         with self.assertRaises(FleetCollectorError) as caught:
             resolve_token({"GH_TOKEN": secret_a, "GITHUB_TOKEN": secret_b})
         message = str(caught.exception)
@@ -331,9 +328,7 @@ class FleetCollectorTest(unittest.TestCase):
         api = GitHubApi("token", opener=opener)
         api.get_pull("owner/example", 158)
         api.get_workflow_runs("owner/example", SHA)
-        self.assertEqual(
-            [request.get_method() for request in requests], ["GET", "GET"]
-        )
+        self.assertEqual([request.get_method() for request in requests], ["GET", "GET"])
         self.assertTrue(
             all(
                 request.full_url.startswith(
@@ -348,6 +343,24 @@ class FleetCollectorTest(unittest.TestCase):
                 for request in requests
             )
         )
+
+    def test_arbitrary_repo_endpoint_is_not_constructible(self):
+        api = GitHubApi(None, opener=lambda *_args, **_kwargs: None)
+        with self.assertRaisesRegex(FleetCollectorError, "fixed GitHub API families"):
+            api._get("/repos/owner/example/issues")
+
+    def test_workflow_query_cannot_select_another_event(self):
+        api = GitHubApi(None, opener=lambda *_args, **_kwargs: None)
+        with self.assertRaisesRegex(FleetCollectorError, "fixed contract"):
+            api._get(
+                "/repos/owner/example/actions/runs",
+                {
+                    "event": "workflow_dispatch",
+                    "head_sha": SHA,
+                    "per_page": "100",
+                    "page": "1",
+                },
+            )
 
     def test_output_order_is_deterministic(self):
         first = project(repository="z/repo")
