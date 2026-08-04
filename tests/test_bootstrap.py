@@ -87,6 +87,35 @@ def run_queue_materializer(
     )
 
 
+def run_queue_packager(
+    repository: Path,
+    scratch: Path,
+    *,
+    base_sha: str,
+) -> subprocess.CompletedProcess[bytes]:
+    runner_temp = scratch / "runner"
+    runner_temp.mkdir()
+    output = scratch / "github-output"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "BASE_SHA": base_sha,
+            "ISSUE_NUMBER": "135",
+            "CLAUDE_BRANCH": "claude-issue-135-symlink-test",
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_OUTPUT": str(output),
+        }
+    )
+    return subprocess.run(
+        [sys.executable, "-c", queue_python_step("Package complete candidate bytes and manifest")],
+        cwd=repository,
+        env=environment,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+
 class BootstrapTest(unittest.TestCase):
     def test_rendered_allowlist_and_target_validation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -285,6 +314,62 @@ class BootstrapTest(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((outside / "escaped.txt").exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "symlink") and hasattr(os, "mkfifo"),
+        "symlink and FIFO support are required",
+    )
+    def test_queue_packager_rejects_tracked_symlink_before_reading_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            repository = scratch / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.name", "Queue Test"], cwd=repository, check=True)
+            original_target = scratch / "original.txt"
+            original_target.write_bytes(b"base target\n")
+            tracked = repository / "tracked-link"
+            tracked.symlink_to(original_target)
+            subprocess.run(["git", "add", "tracked-link"], cwd=repository, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repository, check=True)
+            base_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+
+            fifo = scratch / "external-fifo"
+            os.mkfifo(fifo)
+            tracked.unlink()
+            tracked.symlink_to(fifo)
+            result = run_queue_packager(repository, scratch, base_sha=base_sha)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"candidate files must be regular files", result.stderr)
+            self.assertFalse((scratch / "runner/queue-candidate/candidate.json").exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "symlink") and hasattr(os, "mkfifo"),
+        "symlink and FIFO support are required",
+    )
+    def test_queue_packager_rejects_untracked_symlink_before_reading_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)
+            repository = scratch / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+            subprocess.run(["git", "config", "user.name", "Queue Test"], cwd=repository, check=True)
+            (repository / "base.txt").write_bytes(b"base\n")
+            subprocess.run(["git", "add", "base.txt"], cwd=repository, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repository, check=True)
+            base_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+
+            fifo = scratch / "external-fifo"
+            os.mkfifo(fifo)
+            (repository / "untracked-link").symlink_to(fifo)
+            result = run_queue_packager(repository, scratch, base_sha=base_sha)
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"candidate files must be regular files", result.stderr)
+            self.assertFalse((scratch / "runner/queue-candidate/candidate.json").exists())
 
 
 if __name__ == "__main__":
