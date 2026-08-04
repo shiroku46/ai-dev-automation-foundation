@@ -1,29 +1,41 @@
 # Repository startup: mandatory Phase 0
 
-Every newly bootstrapped repository must complete setup steps 1–5 before the harmless Bootstrap acceptance exercise. Successful completion of the acceptance exercise in step 6 is the final Phase 0 gate. The first product Issue, product `/claude-run`, or product implementation request may start only after that final gate passes.
+Every newly bootstrapped repository must complete setup steps 1–5 before the harmless Bootstrap acceptance exercise. Successful completion of the acceptance exercise in step 6 is the final Phase 0 gate. The first product Issue or product implementation request may start only after that final gate passes.
 
 The coordinating ChatGPT/agent performs every check available through connected tools first. It asks the owner only for settings that require an authenticated provider UI, local authenticated CLI, MFA, CAPTCHA, hardware key, or another operation for which no callable connector/API exists.
 
 Pre-PR Phase 0 guidance is a narrowly scoped exception to the runtime GitHub human-notice mechanism: it is delivered directly in the project-start conversation for the exact repository before GitHub orchestration starts. It does not call `human_only_notice()`. It does not publish an automated GitHub notice. It does not create a new runtime reason code. It does not require an Issue/PR destination. It may contain only the exact non-secret UI navigation or local command, the reason it is necessary, and the automatic-resumption condition. The coordinator records completion later in the non-secret Bootstrap acceptance evidence and does not repeat the guidance unless connected evidence shows the prerequisite became unusable.
 
-## 1. Connect the exact repository
+## 1. Connect the exact GitHub repository
 
-- Connect the GitHub account to ChatGPT/Codex.
-- Authorize the exact target repository in the GitHub app or connector configuration.
-- Confirm the repository is visible to the connected tools after any indexing delay.
+- Connect the GitHub account to ChatGPT and authorize the exact target repository in the GitHub app or connector configuration.
+- Confirm the repository is visible and writable through the connected GitHub route after any indexing delay.
+- Confirm branch, file, Issue, Pull Request, check, and expected-head merge operations are available within the repository-scoped permissions.
 
-## 2. Create the exact-repository Codex environment
+GitHub repository access is mandatory. A provider-specific repository connection is not required for the GitHub-only route.
 
-- Create a Codex environment for the exact target repository.
-- Confirm that the repository is selectable and usable in Codex.
+## 2. Confirm provider independence and optionally enable providers
 
-Provider replies such as `To use Codex here, create an environment for this repo` or `To use Codex here, create a Codex account and connect to github` mean the setup prerequisites are incomplete. They are not review evidence and must not trigger repeated implementation or review requests.
+Codex and Claude are optional helpers. GitHub-only acceptance, implementation, coordinator review, correction, and merge must continue when either or both providers are absent, disconnected, or at their usage limits.
 
-## 3. Install the Claude credential when OAuth is used
+Only when the owner deliberately enables an optional provider:
 
-- Generate the token locally with `claude setup-token`.
-- Store the value only as the repository Actions Secret named exactly `CLAUDE_CODE_OAUTH_TOKEN`.
-- Never paste, print, commit, log, or include the token value in an Issue, Pull Request, workflow, document, or chat transcript.
+- for Codex, connect the account and create an environment for the exact repository;
+- for Claude, complete the optional credential setup described in step 3.
+
+Provider replies such as `To use Codex here, create an environment for this repo` or `To use Codex here, create a Codex account and connect to github` apply only to the optional Codex route. They are not review evidence, do not block GitHub-direct development, and must not trigger repeated implementation or review requests.
+
+## 3. Install the Claude credential only when Claude is deliberately enabled
+
+For the GitHub-only route, no Claude credential is required.
+
+When the owner deliberately enables the optional Claude route and OAuth is used:
+
+- generate the token locally with `claude setup-token`;
+- store the value only as the repository Actions Secret named exactly `CLAUDE_CODE_OAUTH_TOKEN`;
+- never paste, print, commit, log, hash, copy, or include the token value in an Issue, Pull Request, workflow, document, or chat transcript.
+
+Provider absence, credential absence, or quota exhaustion must record `human_action_required: false` unless the owner has explicitly enabled that provider and a separately proven credential UI action is genuinely necessary.
 
 ## 4. Configure GitHub Actions and Workflow permissions
 
@@ -42,7 +54,7 @@ Also confirm:
 - the Foundation workflows exist on the default branch;
 - `AUTOMATION_OWNER` is set only when the repository owner is not the intended trusted actor.
 
-These Workflow permissions are mandatory because the Foundation must be able to create or update branches and Pull Requests, post comments and labels, update review/readiness state, and complete the bounded merge orchestration. If those operations repeatedly fail, inspect this setting before retrying workflows or asking the owner to repost commands.
+These Workflow permissions are mandatory because the Foundation must be able to create or update branches and Pull Requests, post authorized status or review records, update review/readiness state, and complete bounded expected-head merge orchestration. If those operations repeatedly fail, inspect this setting before retrying workflows or asking the owner to repost commands.
 
 The coordinator must verify the repository setting through connected repository-settings/API tools when a callable endpoint exists. When no such endpoint is available, use the narrowly scoped pre-PR guidance defined above: give the exact navigation once, never request a value or screenshot containing credentials, and resume automatically after the owner confirms the setting is saved.
 
@@ -56,14 +68,17 @@ python scripts/validate_repository.py
 python -m unittest discover -s tests
 ```
 
+Validation must not depend on Codex or Claude availability. Optional provider setup is tested only when that route is deliberately enabled.
+
 ## 6. Complete Bootstrap acceptance and finish Phase 0
 
-After steps 1–5 pass, prove that the exact repository can complete one harmless bounded candidate:
+After steps 1–5 pass, prove that the exact repository can complete one harmless bounded candidate entirely through GitHub:
 
-- create a dedicated branch and Pull Request;
+- create a dedicated same-repository branch and Pull Request;
 - receive native CI and Unit Tests on the exact remote head SHA;
-- receive the required review response instead of a provider onboarding error;
+- record a nonempty exact-SHA coordinator review for the candidate;
 - confirm automation can perform the required bounded write operations without a Workflow-permissions failure;
+- confirm no Codex or Claude response is required for completion;
 - confirm expected-head protection is used for the merge decision.
 
 Successful acceptance completes Phase 0 and unlocks product work.
@@ -74,12 +89,12 @@ Record only non-secret evidence:
 
 - exact repository name;
 - date of acceptance;
-- GitHub/Codex repository access confirmed;
-- Codex environment confirmed;
-- Secret **name** confirmed, never its value;
-- GitHub Actions enabled;
+- connected GitHub repository access confirmed;
+- GitHub Actions and Foundation workflows enabled;
 - Workflow permissions set to **Read and write permissions**;
 - **Allow GitHub Actions to create and approve pull requests** enabled;
-- Bootstrap acceptance Issue/PR, exact head SHA, and successful checks.
+- Bootstrap acceptance Issue/PR, exact head SHA, successful checks, and coordinator-review record;
+- optional Codex environment confirmation only when Codex was deliberately enabled;
+- optional Claude Secret **name** confirmation only when Claude was deliberately enabled, never its value.
 
-After the exact repository passes Phase 0, **Do not request these steps again** unless connected evidence shows that the repository authorization, environment, credential, Actions availability, or Workflow permissions are no longer usable. Resume orchestration automatically after the missing UI-only prerequisite is completed; the owner must not be asked to repost `/claude-run`, copy a Codex prompt, create a Pull Request, press Retry, or repeat routine instructions.
+After the exact repository passes Phase 0, **Do not request these steps again** unless connected evidence shows that repository authorization, Actions availability, Workflow permissions, or a deliberately enabled optional provider route is no longer usable. Resume orchestration automatically after the missing UI-only prerequisite is completed; the owner must not be asked to repost a provider command, copy a prompt, create a Pull Request, press Retry, or repeat routine instructions.
