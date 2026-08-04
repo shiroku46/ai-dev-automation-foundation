@@ -764,7 +764,7 @@ jobs:
       DUPLICATE_SKIPPED: ${{ needs.prepare.outputs.duplicate_skipped }}
       IMPLEMENT_RESULT: ${{ needs.implement.result }}
       VERIFY_RESULT: ${{ needs.verify.result }}
-      PUBLISH_RESULT: ${{ needs.publish.outputs.branch_sha }}
+      PUBLISH_RESULT: ${{ needs.publish.result }}
       TARGET_SHA: ${{ needs.publish.outputs.branch_sha }}
     steps:
       - name: Publish successful Queue state or retain non-notifying failure evidence
