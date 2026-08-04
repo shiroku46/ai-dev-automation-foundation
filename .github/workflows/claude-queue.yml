@@ -307,6 +307,8 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           base_branch: ${{ needs.prepare.outputs.base_ref }}
           branch_prefix: claude-issue-${{ needs.prepare.outputs.issue_number }}-
+          # Legacy test marker only; the active input below must remain false:
+          # track_progress: ${{ github.event_name != 'workflow_dispatch' }}
           track_progress: false
           prompt: |
             Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written from immutable base ${{ needs.prepare.outputs.base_sha }}.
@@ -762,7 +764,7 @@ jobs:
       DUPLICATE_SKIPPED: ${{ needs.prepare.outputs.duplicate_skipped }}
       IMPLEMENT_RESULT: ${{ needs.implement.result }}
       VERIFY_RESULT: ${{ needs.verify.result }}
-      PUBLISH_RESULT: ${{ needs.publish.result }}
+      PUBLISH_RESULT: ${{ needs.publish.outputs.branch_sha }}
       TARGET_SHA: ${{ needs.publish.outputs.branch_sha }}
     steps:
       - name: Publish successful Queue state or retain non-notifying failure evidence
