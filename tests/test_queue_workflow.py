@@ -26,6 +26,9 @@ class OptionalQueueTest(unittest.TestCase):
         self.assertNotIn("schedule:", TEXT)
         self.assertIn('trigger = "/claude-run"', TEXT)
         self.assertIn("body.strip() == trigger", TEXT)
+        prepare = block("prepare", "implement")
+        self.assertIn("REF_NAME: ${{ github.ref_name }}", prepare)
+        self.assertIn('os.environ.get("REF_NAME") == os.environ["DEFAULT_BRANCH"]', prepare)
 
     def test_actions_are_pinned(self):
         for line in TEXT.splitlines():
