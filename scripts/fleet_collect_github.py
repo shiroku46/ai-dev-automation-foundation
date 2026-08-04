@@ -40,6 +40,12 @@ BLOCKED_CHECKS = frozenset({"missing", "action_required"})
 CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+PULL_PATH_RE = re.compile(
+    r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pulls/[1-9][0-9]*$"
+)
+RUNS_PATH_RE = re.compile(
+    r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs$"
+)
 PROJECT_KEYS = frozenset({
     "repository", "phase", "issue", "pull_request", "required_workflows",
     "implementation_route", "risk_tier", "selected_auditor", "audit_state",
@@ -207,15 +213,29 @@ def resolve_token(environment: Mapping[str, str]) -> str | None:
 
 
 class GitHubApi:
-    """Fixed-host client that can only issue GET requests to /repos endpoints."""
+    """Fixed-host client that can only issue GET requests to two endpoint families."""
 
     def __init__(self, token: str | None, opener: Callable[..., Any] | None = None) -> None:
         self.token = token
         self.opener = opener or urllib.request.urlopen
 
-    def get(self, path: str, query: Mapping[str, str] | None = None) -> Mapping[str, Any]:
-        if not path.startswith("/repos/"):
-            raise FleetCollectorError("internal endpoint escaped the fixed /repos boundary")
+    def _get(self, path: str, query: Mapping[str, str] | None = None) -> Mapping[str, Any]:
+        if PULL_PATH_RE.fullmatch(path):
+            if query is not None:
+                raise FleetCollectorError("Pull Request endpoint does not accept query input")
+        elif RUNS_PATH_RE.fullmatch(path):
+            if query is None or set(query) != {"event", "head_sha", "per_page", "page"}:
+                raise FleetCollectorError("workflow endpoint query escaped the fixed contract")
+            if (
+                query["event"] != "pull_request"
+                or query["per_page"] != "100"
+                or query["page"] != "1"
+                or not SHA_RE.fullmatch(query["head_sha"])
+            ):
+                raise FleetCollectorError("workflow endpoint query escaped the fixed contract")
+        else:
+            raise FleetCollectorError("internal endpoint escaped the fixed GitHub API families")
+
         url = API_BASE + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -253,12 +273,21 @@ class GitHubApi:
             raise FleetCollectorError("GitHub API returned invalid JSON") from exc
 
     def get_pull(self, repository: str, number: int) -> Mapping[str, Any]:
+        if (
+            not REPOSITORY_RE.fullmatch(repository)
+            or isinstance(number, bool)
+            or not isinstance(number, int)
+            or number <= 0
+        ):
+            raise FleetCollectorError("invalid Pull Request endpoint identity")
         owner, name = repository.split("/", 1)
-        return self.get(f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}/pulls/{number}")
+        return self._get(f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}/pulls/{number}")
 
     def get_workflow_runs(self, repository: str, sha: str) -> Mapping[str, Any]:
+        if not REPOSITORY_RE.fullmatch(repository) or not SHA_RE.fullmatch(sha):
+            raise FleetCollectorError("invalid workflow endpoint identity")
         owner, name = repository.split("/", 1)
-        return self.get(
+        return self._get(
             f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(name, safe='')}/actions/runs",
             {"event": "pull_request", "head_sha": sha, "per_page": "100", "page": "1"},
         )
