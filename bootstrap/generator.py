@@ -16,7 +16,7 @@ MANAGED_FILES = (
     "scripts/ai_recovery_supervisor.py", "scripts/supervisor_final_guard.py",
     "scripts/supervisor_policy.py", "scripts/supervisor_runtime.py",
     "scripts/supervisor_queue_recovery.py", "scripts/supervisor_queue_recovery_v2.py",
-    "scripts/supervisor_queue_recovery_v3.py", "bootstrap/generator.py",
+    "scripts/supervisor_queue_recovery_v3.py",
     ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml", ".github/workflows/claude-queue.yml",
     ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
@@ -30,7 +30,7 @@ def install_checklist(owner: str) -> str:
     return f"""{GENERATED_TARGET_MARKER}
 # Installation checklist
 
-## Mandatory GitHub Phase 0
+## Phase 0 — Mandatory GitHub setup
 
 - [ ] Connect ChatGPT to GitHub and authorize this exact repository.
 - [ ] Confirm GitHub Actions and Foundation workflows exist on the default branch.
