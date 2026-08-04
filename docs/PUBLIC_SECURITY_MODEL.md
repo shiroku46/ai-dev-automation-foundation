@@ -25,3 +25,9 @@ The trusted evidence is GitHub-owned workflow-run and workflow-job metadata. The
 Foreign-workflow, wrong-actor, wrong-title, wrong-path, or stale-default-branch runs are rejected before attempt classification and can never authorize progress. Once a run passes those identity gates, missing, duplicate, cancelled, failed, incomplete, wrong-run, or wrong-workflow-SHA job evidence fails closed and consumes the bounded recognized-attempt budget. Candidate-authored commit statuses and custom Check Runs are not merge-authorizing evidence.
 
 Actions are pinned to immutable commit SHAs. Candidate scans and recognized retry attempts are bounded. Same-repository provenance and explicit protected-path authorization are mandatory. Idempotency markers prevent duplicate comments and repeated actions. Merge requires clean exact-SHA Codex evidence, mergeability, and `expected_head_sha` protection.
+
+## Exact-base recovery boundary
+
+Existing-Pull-Request recovery is authorized only by one strict machine-readable block in the trusted owner-authored source Issue. Comments, event inputs, Pull Request bodies, and candidate content cannot supply or override it. The fixed prepare job proves open state, non-fork same-repository provenance, exact head ref and SHA, and live ref resolution; implementation and publication repeat the movement-sensitive checks.
+
+Candidate generation is credential-free and repository-read-only. Its only handoff is a digest-bound manifest containing full bytes, modes, deletions, and per-file hashes. Candidate validation is also read-only. The token-bearing publisher consumes only the validated artifact, rechecks its digest and the live base, and writes Git objects and the integration Draft Pull Request through GitHub APIs without checking out or executing the proposed tree. Thus candidate-controlled Git transport and candidate execution never share repository write credentials. Ordinary Queue requests remain on the default branch.
