@@ -4,17 +4,36 @@
 
 The public Foundation repository and its public E2E repository are the implementation and acceptance sources of truth. Private predecessor repositories are archives only.
 
+## Mandatory Phase 0 before ordinary flow
+
+Every newly bootstrapped repository must complete setup steps 1–5 in `docs/PROJECT_STARTUP.md` before the harmless Bootstrap acceptance exercise. Successful acceptance is the final Phase 0 gate. Product Issues, product `/claude-run`, and product implementation start only after that gate passes.
+
+The coordinator performs all connected inspections first. When no repository-settings API is callable, the owner must complete this one-time GitHub UI action in the exact target repository before acceptance:
+
+`Settings` → `Actions` → `General` → `Workflow permissions`
+
+1. select **Read and write permissions**;
+2. enable **Allow GitHub Actions to create and approve pull requests**;
+3. save the setting.
+
+Pre-PR Phase 0 guidance is a narrow startup exception, not a runtime GitHub notice. It is delivered directly in the initiating project conversation before GitHub orchestration starts, contains only non-secret navigation or a local command plus the automatic-resumption condition, does not call `human_only_notice()`, does not publish a GitHub comment, does not require an Issue/PR destination, and does not create or relax a runtime reason code. Completion is later recorded in the non-secret Bootstrap acceptance evidence.
+
+The setup prerequisites also include exact-repository GitHub/Codex access, an exact-repository Codex environment, the configured credential name when OAuth is used, and enabled Actions and Foundation workflows. After those prerequisites pass, the harmless acceptance candidate proves that branches, Pull Requests, comments/labels, readiness, checks, review, and bounded merge orchestration work and thereby completes Phase 0.
+
+Do not retry a stalled write-capable workflow or ask the owner to repost commands until the Workflow-permissions setting has been checked. After acceptance, do not request the setup again unless connected evidence shows that it was reset or the integration is no longer usable.
+
 ## Ordinary flow
 
-1. A trusted owner-authored Issue states the goal, acceptance criteria, every allowed changed or renamed path, prohibited effects, and validation.
-2. The owner starts the Queue with an exact standalone `/claude-run`, or the trusted default-branch supervisor dispatches it.
-3. Claude writes a dedicated branch and Draft Pull Request.
-4. Public Pull Request checks execute the exact candidate SHA with `contents: read`, no Secrets, no OIDC, and no write permission.
-5. Fixed default-branch trusted checks create GitHub-owned immutable workflow-run and exact job evidence for the same SHA.
-6. Fixed native Pull Request workflows create independent exact-head evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` exists.
-7. Codex independently reviews that exact SHA.
-8. The supervisor revalidates provenance, scope, protected authorization, complete trusted and native evidence, Codex and thread state, mergeability, and the current head.
-9. The supervisor marks an eligible Pull Request ready and merges through the Merge API with the exact expected head SHA.
+1. Phase 0 acceptance for the exact repository is already complete and recorded without Secret values.
+2. A trusted owner-authored Issue states the goal, acceptance criteria, every allowed changed or renamed path, prohibited effects, and validation.
+3. The owner starts the Queue with an exact standalone `/claude-run`, or the trusted default-branch supervisor dispatches it.
+4. Claude writes a dedicated branch and Draft Pull Request.
+5. Public Pull Request checks execute the exact candidate SHA with `contents: read`, no Secrets, no OIDC, and no write permission.
+6. Fixed default-branch trusted checks create GitHub-owned immutable workflow-run and exact job evidence for the same SHA.
+7. Fixed native Pull Request workflows create independent exact-head evidence for `CI`, `Unit Tests`, and `E2E Acceptance` when fixed `e2e.yml` exists.
+8. Codex independently reviews that exact SHA.
+9. The supervisor revalidates provenance, scope, protected authorization, complete trusted and native evidence, Codex and thread state, mergeability, and the current head.
+10. The supervisor marks an eligible Pull Request ready and merges through the Merge API with the exact expected head SHA.
 
 A separate human merge click is not required.
 

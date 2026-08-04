@@ -18,6 +18,20 @@ Untrusted pull-request code runs only in jobs with `contents: read` and without 
 
 The queue accepts issue creation or an exact standalone `/claude-run` comment only when `github.actor` is the configured owner. A separate default-branch-only trusted dispatch path is available to the supervisor.
 
+## Mandatory repository Phase 0
+
+Before the harmless Bootstrap acceptance exercise in a newly bootstrapped repository, complete setup steps 1–5 in [`docs/PROJECT_STARTUP.md`](docs/PROJECT_STARTUP.md). Successful acceptance is the final Phase 0 gate; product Issues and implementation start only afterward.
+
+The exact target repository must have GitHub/Codex access, an exact-repository Codex environment, the required Claude credential when OAuth is used, enabled Actions/workflows, and the following GitHub setting before acceptance:
+
+`Settings` → `Actions` → `General` → `Workflow permissions`
+
+- select **Read and write permissions**;
+- enable **Allow GitHub Actions to create and approve pull requests**;
+- save the setting.
+
+After the exact repository passes acceptance and completes Phase 0, do not request the setup again unless connected evidence shows the setting or integration is no longer usable.
+
 ## Validation
 
 ```bash

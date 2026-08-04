@@ -13,6 +13,7 @@ ALLOWLIST = [
     "AGENTS.md",
     "CLAUDE.md",
     "SECURITY.md",
+    "docs/PROJECT_STARTUP.md",
     "docs/OPERATING_RULES.md",
     "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py",
@@ -45,6 +46,22 @@ def render(target: Path, owner: str) -> None:
     (target / "INSTALL_CHECKLIST.md").write_text(
         f"{GENERATED_TARGET_MARKER}\n"
         "# Installation checklist\n\n"
+        "## Phase 0 setup prerequisites and final acceptance\n\n"
+        "Complete the setup prerequisites below before the harmless Bootstrap acceptance candidate. Successful acceptance is the final Phase 0 gate and unlocks product work.\n\n"
+        "- [ ] Read `docs/PROJECT_STARTUP.md` for this exact repository.\n"
+        "- [ ] Connect ChatGPT/Codex to GitHub and authorize this exact repository.\n"
+        "- [ ] Create and verify a Codex environment for this exact repository.\n"
+        "- [ ] When Claude OAuth is used, run `claude setup-token` locally and store the value only as the GitHub Actions Secret `CLAUDE_CODE_OAUTH_TOKEN`; never paste, print, log, or commit the value.\n"
+        "- [ ] Confirm GitHub Actions are enabled and the Foundation workflows exist on the default branch.\n"
+        "- [ ] In this exact repository, open `Settings` → `Actions` → `General` → `Workflow permissions`.\n"
+        "- [ ] Select **Read and write permissions**.\n"
+        "- [ ] Enable **Allow GitHub Actions to create and approve pull requests**.\n"
+        "- [ ] Save the Workflow permissions setting.\n"
+        "- [ ] When no repository-settings API is callable, give this non-secret navigation once in the initiating project conversation; do not call `human_only_notice()`, publish an automated GitHub notice, or require an Issue/PR destination for the pre-PR instruction.\n"
+        "- [ ] Confirm automation can create/update a bounded branch and Pull Request, post required comments/labels, update readiness/review state, and complete the expected-head merge path.\n"
+        "- [ ] Complete one harmless Bootstrap acceptance candidate and record only non-secret evidence: repository, acceptance date, Secret name, both Workflow-permissions settings, Issue/PR, exact head SHA, and successful checks/review.\n"
+        "- [ ] Do not create or trigger the first product Issue until acceptance completes Phase 0. Do not request these steps again after acceptance unless connected evidence shows the integration or Workflow permissions are no longer usable.\n\n"
+        "## Foundation safety and merge checks\n\n"
         f"- [ ] Optionally set repository variable `AUTOMATION_OWNER` to `{owner}`; "
         "the repository owner is the fail-closed default.\n"
         "- [ ] Require the trusted source Issue to allowlist every changed and renamed path; bounded patterns such as `tests/**` may be used.\n"
