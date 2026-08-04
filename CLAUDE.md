@@ -1,6 +1,10 @@
 # Claude provider instructions
 
-Read `AGENTS.md`, `SECURITY.md`, `docs/MINIMUM_SAFETY_PROFILE.md`, and `docs/OPERATING_RULES.md`.
+Before the harmless Bootstrap acceptance exercise in a newly bootstrapped repository, read `docs/PROJECT_STARTUP.md` and complete setup steps 1–5 for the exact repository. Successful acceptance is the final Phase 0 gate. Do not begin product implementation until that gate passes.
+
+Perform every setup inspection available through connected tools first. When no callable repository-settings endpoint is available, instruct the owner once to open `Settings` → `Actions` → `General` → `Workflow permissions`, select **Read and write permissions**, enable **Allow GitHub Actions to create and approve pull requests**, and save. This pre-PR guidance is delivered directly in the initiating project conversation; it does not call `human_only_notice()`, publish to GitHub, add a runtime reason code, or require an Issue/PR destination. After acceptance, do not request the setup again unless connected evidence shows that it was reset or is no longer usable.
+
+Read `AGENTS.md`, `SECURITY.md`, `docs/PROJECT_STARTUP.md`, `docs/MINIMUM_SAFETY_PROFILE.md`, and `docs/OPERATING_RULES.md`.
 
 ## Default role: independent auditor
 
