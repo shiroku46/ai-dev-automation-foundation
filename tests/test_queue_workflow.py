@@ -168,11 +168,16 @@ class QueueWorkflowTest(unittest.TestCase):
 
     def test_implementation_forces_agent_mode_before_verification(self):
         implement = job_block(self.text, "implement", "resolve")
-        self.assertIn("track_progress: false", implement)
-        self.assertNotIn("track_progress: true", implement)
+        active_lines = {
+            line.strip()
+            for line in implement.splitlines()
+            if not line.lstrip().startswith("#")
+        }
+        self.assertIn("track_progress: false", active_lines)
+        self.assertNotIn("track_progress: true", active_lines)
         self.assertNotIn(
             "track_progress: ${{ github.event_name != 'workflow_dispatch' }}",
-            implement,
+            active_lines,
         )
 
     def test_candidate_execution_is_confined_to_read_only_verify_job(self):
