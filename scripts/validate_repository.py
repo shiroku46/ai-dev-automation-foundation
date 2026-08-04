@@ -87,13 +87,27 @@ def validate() -> None:
 
     reconcile = text(".github/workflows/ci-reconcile.yml")
     require(reconcile, (
-        'workflows: ["CI", "Unit Tests"]', "actions: read", "contents: read",
-        "read-only compatibility observation", "provider_invocation: false",
-        "human_action_required: false",
-    ), "CI reconciliation")
-    for forbidden in ("actions: write", "contents: write", "issues: write", "pull-requests: write", "secrets.", "id-token: write", "supervisor_queue_recovery"):
-        if forbidden in reconcile:
-            raise ValidationError(f"CI reconciliation retains recovery capability: {forbidden}")
+        'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', "schedule:",
+        "read-only compatibility observation", "queue_recovery:",
+        "actions: write", "contents: write", "issues: read", "pull-requests: write",
+        "queue-complete-", "queue-wip-", '["git", "apply", "--check"', '["git", "commit-tree"',
+        "should_auto_retry", "max_retries = 3", "candidate_execution_with_write_token: `false`",
+        "provider_invocation: false", "human_action_required: false",
+    ), "CI reconciliation and bounded Queue recovery")
+    observe = job(reconcile, "observe", "queue_recovery")
+    require(observe, ("actions: read", "contents: read", "pull-requests: read"), "read-only CI observation")
+    for forbidden in ("actions: write", "contents: write", "issues: write", "pull-requests: write", "secrets.", "id-token: write"):
+        if forbidden in observe:
+            raise ValidationError(f"read-only CI observation can mutate: {forbidden}")
+    recovery = job(reconcile, "queue_recovery")
+    for forbidden in ("secrets.", "id-token: write", "anthropics/", "claude-code-action"):
+        if forbidden.lower() in recovery.lower():
+            raise ValidationError(f"Queue reconciliation has forbidden provider capability: {forbidden}")
+    require(recovery, (
+        "actions: write", "contents: write", "issues: read", "pull-requests: write",
+        "candidate.patch", "checkpoint.json", "scope_is_authorized",
+        "protected_scope_is_authorized", "notification", "human_action_required",
+    ), "bounded Queue recovery job")
 
     queue = text(".github/workflows/claude-queue.yml")
     require(queue, (
@@ -143,7 +157,7 @@ def validate() -> None:
         require(generator, (
             "MANAGED_FILES", "write_bytes(source.read_bytes())",
             "scripts/github_coordinator_supervisor.py", ".github/workflows/supervisor.yml",
-            "Codex and Claude setup is optional",
+            "Codex and Claude setup is optional", "bounded Queue recovery",
         ), "Bootstrap")
 
 
