@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Validate fleet progress records and render a deterministic Markdown dashboard.
+"""Validate GitHub-only fleet progress records and render deterministic Markdown.
 
-The command is intentionally offline: it reads one JSON document, performs no
-network or GitHub operation, and writes only to an explicitly supplied path.
+This command is deliberately offline. It reads one bounded JSON document,
+performs no network or GitHub operation, and writes only to stdout or an
+explicitly supplied output path.
 """
 from __future__ import annotations
 
@@ -15,7 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+MAX_INPUT_BYTES = 2 * 1024 * 1024
+MAX_PROJECTS = 500
+MAX_CHECKS_PER_PROJECT = 100
 
 STATUS_VALUES = frozenset(
     {
@@ -34,20 +38,11 @@ STATUS_VALUES = frozenset(
     }
 )
 IMPLEMENTATION_ROUTES = frozenset(
-    {"github-direct", "codex-fallback", "claude-fallback"}
+    {"github-direct", "codex-optional", "claude-optional"}
 )
 RISK_TIERS = frozenset({"low", "standard", "protected"})
-AUDITORS = frozenset({"none", "codex", "claude"})
-AUDIT_STATES = frozenset(
-    {
-        "not-required",
-        "required",
-        "pending",
-        "clean",
-        "blocked",
-        "route-unavailable",
-    }
-)
+REVIEW_ROUTES = frozenset({"github-coordinator"})
+REVIEW_STATES = frozenset({"required", "pending", "clean", "blocked"})
 CHECK_STATES = frozenset(
     {
         "queued",
@@ -83,7 +78,7 @@ CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 SECTIONS = (
     "Human Action Required",
-    "Blocked or Route Unavailable",
+    "Blocked",
     "Active Implementation and Review",
     "Ready to Merge",
     "Completed or Idle",
@@ -105,8 +100,8 @@ class ProjectStatus:
     checks: tuple[tuple[str, str], ...]
     implementation_route: str
     risk_tier: str
-    selected_auditor: str
-    audit_state: str
+    review_route: str
+    review_state: str
     next_action: str
     blocker: str | None
     human_action_required: bool
@@ -117,6 +112,15 @@ class ProjectStatus:
 class FleetProgress:
     generated_at: str
     projects: tuple[ProjectStatus, ...]
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise FleetProgressError(f"input contains duplicate object key: {key}")
+        result[key] = value
+    return result
 
 
 def _expect_object(value: Any, location: str) -> Mapping[str, Any]:
@@ -139,13 +143,14 @@ def _expect_exact_keys(
 def _expect_text(value: Any, location: str, *, max_length: int = 500) -> str:
     if not isinstance(value, str):
         raise FleetProgressError(f"{location} must be a string")
-    if not value.strip():
+    text = value.strip()
+    if not text:
         raise FleetProgressError(f"{location} must not be empty")
-    if len(value) > max_length:
+    if len(text) > max_length:
         raise FleetProgressError(f"{location} exceeds {max_length} characters")
-    if CONTROL_RE.search(value):
+    if CONTROL_RE.search(text):
         raise FleetProgressError(f"{location} contains a control character")
-    return value.strip()
+    return text
 
 
 def _expect_optional_text(value: Any, location: str) -> str | None:
@@ -186,6 +191,10 @@ def _expect_utc_timestamp(value: Any, location: str) -> str:
 
 def _validate_checks(value: Any, location: str) -> tuple[tuple[str, str], ...]:
     checks = _expect_object(value, location)
+    if len(checks) > MAX_CHECKS_PER_PROJECT:
+        raise FleetProgressError(
+            f"{location} exceeds {MAX_CHECKS_PER_PROJECT} check records"
+        )
     normalized: list[tuple[str, str]] = []
     for name, conclusion in checks.items():
         if not isinstance(name, str) or not CHECK_NAME_RE.fullmatch(name):
@@ -195,6 +204,60 @@ def _validate_checks(value: Any, location: str) -> tuple[tuple[str, str], ...]:
         )
     normalized.sort(key=lambda item: (item[0].lower(), item[0]))
     return tuple(normalized)
+
+
+def _validate_relationships(project: ProjectStatus, location: str) -> None:
+    if project.status in HEAD_REQUIRED_STATUSES and project.head_sha is None:
+        raise FleetProgressError(
+            f"{location}.head_sha is required for status {project.status}"
+        )
+    if project.review_state in {"pending", "clean", "blocked"} and project.head_sha is None:
+        raise FleetProgressError(
+            f"{location}.head_sha is required for review state {project.review_state}"
+        )
+    if project.status in BLOCKER_REQUIRED_STATUSES and project.blocker is None:
+        raise FleetProgressError(
+            f"{location}.blocker is required for status {project.status}"
+        )
+    if project.review_state == "blocked" and project.blocker is None:
+        raise FleetProgressError(
+            f"{location}.blocker is required when review_state is blocked"
+        )
+    if project.status in NO_BLOCKER_STATUSES and project.blocker is not None:
+        raise FleetProgressError(
+            f"{location}.blocker must be null for status {project.status}"
+        )
+    if project.human_action_required != (project.status == "human_action"):
+        raise FleetProgressError(
+            f"{location}.human_action_required must be true exactly for human_action status"
+        )
+    if project.review_route != "github-coordinator":
+        raise FleetProgressError(
+            f"{location}.review_route must be github-coordinator"
+        )
+    if project.status == "review_required" and project.review_state not in {
+        "required",
+        "pending",
+        "blocked",
+    }:
+        raise FleetProgressError(
+            f"{location}.review_state is inconsistent with review_required status"
+        )
+    if project.status == "ready_to_merge":
+        if not project.checks or any(
+            state not in PASSING_CHECK_STATES for _, state in project.checks
+        ):
+            raise FleetProgressError(
+                f"{location}.checks must all pass before ready_to_merge"
+            )
+        if project.review_state != "clean":
+            raise FleetProgressError(
+                f"{location}.review_state must be clean before ready_to_merge"
+            )
+        if project.blocker is not None or project.human_action_required:
+            raise FleetProgressError(
+                f"{location} cannot be ready_to_merge while blocked or human-owned"
+            )
 
 
 def _validate_project(value: Any, index: int) -> ProjectStatus:
@@ -211,8 +274,8 @@ def _validate_project(value: Any, index: int) -> ProjectStatus:
             "checks",
             "implementation_route",
             "risk_tier",
-            "selected_auditor",
-            "audit_state",
+            "review_route",
+            "review_state",
             "next_action",
             "blocker",
             "human_action_required",
@@ -226,14 +289,8 @@ def _validate_project(value: Any, index: int) -> ProjectStatus:
         raise FleetProgressError(
             f"{location}.repository must use a bounded owner/name form"
         )
-    phase = _expect_text(project["phase"], f"{location}.phase", max_length=160)
-    issue = _expect_optional_positive_int(project["issue"], f"{location}.issue")
-    pull_request = _expect_optional_positive_int(
-        project["pull_request"], f"{location}.pull_request"
-    )
-    status = _expect_enum(project["status"], STATUS_VALUES, f"{location}.status")
-
     head_value = project["head_sha"]
+    head_sha: str | None
     if head_value is None:
         head_sha = None
     else:
@@ -243,101 +300,66 @@ def _validate_project(value: Any, index: int) -> ProjectStatus:
                 f"{location}.head_sha must be a lowercase 40-character SHA"
             )
 
-    checks = _validate_checks(project["checks"], f"{location}.checks")
-    implementation_route = _expect_enum(
-        project["implementation_route"],
-        IMPLEMENTATION_ROUTES,
-        f"{location}.implementation_route",
-    )
-    risk_tier = _expect_enum(project["risk_tier"], RISK_TIERS, f"{location}.risk_tier")
-    selected_auditor = _expect_enum(
-        project["selected_auditor"], AUDITORS, f"{location}.selected_auditor"
-    )
-    audit_state = _expect_enum(
-        project["audit_state"], AUDIT_STATES, f"{location}.audit_state"
-    )
-    next_action = _expect_text(
-        project["next_action"], f"{location}.next_action", max_length=500
-    )
-    blocker = _expect_optional_text(project["blocker"], f"{location}.blocker")
-    human_action_required = project["human_action_required"]
-    if not isinstance(human_action_required, bool):
-        raise FleetProgressError(f"{location}.human_action_required must be a boolean")
-    updated_at = _expect_utc_timestamp(project["updated_at"], f"{location}.updated_at")
-
-    if status in HEAD_REQUIRED_STATUSES and head_sha is None:
-        raise FleetProgressError(f"{location}.head_sha is required for status {status}")
-    if audit_state in {"pending", "clean", "blocked"} and head_sha is None:
-        raise FleetProgressError(
-            f"{location}.head_sha is required for audit state {audit_state}"
-        )
-    if status in BLOCKER_REQUIRED_STATUSES and blocker is None:
-        raise FleetProgressError(f"{location}.blocker is required for status {status}")
-    if status in NO_BLOCKER_STATUSES and blocker is not None:
-        raise FleetProgressError(f"{location}.blocker must be null for status {status}")
-    if human_action_required != (status == "human_action"):
-        raise FleetProgressError(
-            f"{location}.human_action_required must be true exactly for human_action status"
-        )
-    if audit_state == "not-required" and selected_auditor != "none":
-        raise FleetProgressError(
-            f"{location}.selected_auditor must be none when audit is not required"
-        )
-    if audit_state in {"pending", "clean", "blocked"} and selected_auditor == "none":
-        raise FleetProgressError(
-            f"{location}.selected_auditor is required for audit state {audit_state}"
-        )
-    if risk_tier in {"standard", "protected"} and audit_state == "not-required":
-        raise FleetProgressError(
-            f"{location}.audit_state cannot be not-required for {risk_tier} risk"
-        )
-    if status == "ready_to_merge":
-        if not checks or any(state not in PASSING_CHECK_STATES for _, state in checks):
-            raise FleetProgressError(
-                f"{location}.checks must all pass before ready_to_merge"
-            )
-        audit_ready = audit_state == "clean" or (
-            risk_tier == "low" and audit_state == "not-required"
-        )
-        if not audit_ready:
-            raise FleetProgressError(
-                f"{location}.audit_state is not merge-ready for the declared risk tier"
-            )
-
-    return ProjectStatus(
+    normalized = ProjectStatus(
         repository=repository,
-        phase=phase,
-        issue=issue,
-        pull_request=pull_request,
-        status=status,
+        phase=_expect_text(project["phase"], f"{location}.phase", max_length=160),
+        issue=_expect_optional_positive_int(project["issue"], f"{location}.issue"),
+        pull_request=_expect_optional_positive_int(
+            project["pull_request"], f"{location}.pull_request"
+        ),
+        status=_expect_enum(project["status"], STATUS_VALUES, f"{location}.status"),
         head_sha=head_sha,
-        checks=checks,
-        implementation_route=implementation_route,
-        risk_tier=risk_tier,
-        selected_auditor=selected_auditor,
-        audit_state=audit_state,
-        next_action=next_action,
-        blocker=blocker,
-        human_action_required=human_action_required,
-        updated_at=updated_at,
+        checks=_validate_checks(project["checks"], f"{location}.checks"),
+        implementation_route=_expect_enum(
+            project["implementation_route"],
+            IMPLEMENTATION_ROUTES,
+            f"{location}.implementation_route",
+        ),
+        risk_tier=_expect_enum(
+            project["risk_tier"], RISK_TIERS, f"{location}.risk_tier"
+        ),
+        review_route=_expect_enum(
+            project["review_route"], REVIEW_ROUTES, f"{location}.review_route"
+        ),
+        review_state=_expect_enum(
+            project["review_state"], REVIEW_STATES, f"{location}.review_state"
+        ),
+        next_action=_expect_text(
+            project["next_action"], f"{location}.next_action", max_length=500
+        ),
+        blocker=_expect_optional_text(project["blocker"], f"{location}.blocker"),
+        human_action_required=project["human_action_required"],
+        updated_at=_expect_utc_timestamp(
+            project["updated_at"], f"{location}.updated_at"
+        ),
     )
+    if not isinstance(normalized.human_action_required, bool):
+        raise FleetProgressError(f"{location}.human_action_required must be a boolean")
+    _validate_relationships(normalized, location)
+    return normalized
 
 
 def validate_document(value: Any) -> FleetProgress:
     document = _expect_object(value, "document")
     _expect_exact_keys(
-        document, frozenset({"schema_version", "generated_at", "projects"}), "document"
+        document,
+        frozenset({"schema_version", "generated_at", "projects"}),
+        "document",
     )
-    if document["schema_version"] != SCHEMA_VERSION:
+    if isinstance(document["schema_version"], bool) or document["schema_version"] != SCHEMA_VERSION:
         raise FleetProgressError(
-            f"document.schema_version must equal {SCHEMA_VERSION}"
+            f"document.schema_version must equal {SCHEMA_VERSION}; legacy external-auditor schemas are unsupported"
         )
     generated_at = _expect_utc_timestamp(document["generated_at"], "document.generated_at")
     raw_projects = document["projects"]
     if not isinstance(raw_projects, list):
         raise FleetProgressError("document.projects must be an array")
+    if len(raw_projects) > MAX_PROJECTS:
+        raise FleetProgressError(f"document.projects exceeds {MAX_PROJECTS} records")
 
-    projects = tuple(_validate_project(project, index) for index, project in enumerate(raw_projects))
+    projects = tuple(
+        _validate_project(project, index) for index, project in enumerate(raw_projects)
+    )
     repositories: set[str] = set()
     for project in projects:
         key = project.repository.lower()
@@ -346,17 +368,27 @@ def validate_document(value: Any) -> FleetProgress:
                 f"document.projects contains duplicate repository {project.repository}"
             )
         repositories.add(key)
-
     return FleetProgress(generated_at=generated_at, projects=projects)
 
 
 def load_document(path: Path) -> FleetProgress:
     try:
-        raw = path.read_text(encoding="utf-8")
+        size = path.stat().st_size
     except OSError as exc:
-        raise FleetProgressError(f"cannot read input file: {exc.strerror or 'I/O error'}") from exc
+        raise FleetProgressError(
+            f"cannot inspect input file: {exc.strerror or 'I/O error'}"
+        ) from exc
+    if size > MAX_INPUT_BYTES:
+        raise FleetProgressError(f"input exceeds {MAX_INPUT_BYTES} bytes")
     try:
-        value = json.loads(raw)
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        detail = getattr(exc, "strerror", None) or "invalid UTF-8 or I/O error"
+        raise FleetProgressError(f"cannot read input file: {detail}") from exc
+    try:
+        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except FleetProgressError:
+        raise
     except json.JSONDecodeError as exc:
         raise FleetProgressError(
             f"input is not valid JSON at line {exc.lineno}, column {exc.colno}"
@@ -367,11 +399,8 @@ def load_document(path: Path) -> FleetProgress:
 def _section_for(project: ProjectStatus) -> str:
     if project.human_action_required:
         return "Human Action Required"
-    if project.status in {"blocked", "fix_required"} or project.audit_state in {
-        "blocked",
-        "route-unavailable",
-    }:
-        return "Blocked or Route Unavailable"
+    if project.status in {"blocked", "fix_required"} or project.review_state == "blocked":
+        return "Blocked"
     if project.status == "ready_to_merge":
         return "Ready to Merge"
     if project.status in {"completed", "idle"}:
@@ -406,9 +435,12 @@ def _check_text(project: ProjectStatus) -> str:
     if not project.checks:
         return "—"
     passing = sum(state in PASSING_CHECK_STATES for _, state in project.checks)
-    total = len(project.checks)
-    non_passing = [f"{name}={state}" for name, state in project.checks if state not in PASSING_CHECK_STATES]
-    summary = f"{passing}/{total} passing"
+    non_passing = [
+        f"{name}={state}"
+        for name, state in project.checks
+        if state not in PASSING_CHECK_STATES
+    ]
+    summary = f"{passing}/{len(project.checks)} passing"
     if non_passing:
         summary += "; " + ", ".join(non_passing)
     return summary
@@ -422,7 +454,7 @@ def render_markdown(progress: FleetProgress) -> str:
     lines = [
         "# Fleet Progress Dashboard",
         "",
-        f"Generated from validated status records at `{progress.generated_at}`.",
+        f"Generated from validated schema-version-{SCHEMA_VERSION} records at `{progress.generated_at}`.",
         "",
         "## Summary",
         "",
@@ -438,7 +470,7 @@ def render_markdown(progress: FleetProgress) -> str:
             [
                 f"## {section}",
                 "",
-                "| Repository | Phase | Work | Status | SHA | Checks | Route / Risk | Audit | Next action | Blocker | Updated |",
+                "| Repository | Phase | Work | Status | SHA | Checks | Route / Risk | Review | Next action | Blocker | Updated |",
                 "|---|---|---|---|---|---|---|---|---|---|---|",
             ]
         )
@@ -446,18 +478,15 @@ def render_markdown(progress: FleetProgress) -> str:
             lines.append("| — | — | — | — | — | — | — | — | — | — | — |")
         else:
             for project in grouped[section]:
-                sha = project.head_sha[:12] if project.head_sha else "—"
-                audit = f"{project.selected_auditor} / {project.audit_state}"
-                route = f"{project.implementation_route} / {project.risk_tier}"
                 values = (
                     project.repository,
                     project.phase,
                     _work_text(project),
                     project.status,
-                    sha,
+                    project.head_sha[:12] if project.head_sha else "—",
                     _check_text(project),
-                    route,
-                    audit,
+                    f"{project.implementation_route} / {project.risk_tier}",
+                    f"{project.review_route} / {project.review_state}",
                     project.next_action,
                     project.blocker or "—",
                     project.updated_at,
@@ -467,7 +496,7 @@ def render_markdown(progress: FleetProgress) -> str:
 
     lines.extend(
         [
-            "The dashboard is a projection of its JSON source. GitHub Issues, Pull Requests, checks, and exact remote SHAs remain the authoritative evidence.",
+            "The dashboard is a projection of its JSON source. GitHub Issues, Pull Requests, exact-head checks, coordinator-review records, and exact remote SHAs remain authoritative.",
             "",
         ]
     )
@@ -493,13 +522,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.check and args.output is not None:
         parser.error("--check cannot be combined with --output")
-
     try:
         progress = load_document(args.input)
         if args.check:
             print(f"valid: {len(progress.projects)} project records")
             return 0
-
         markdown = render_markdown(progress)
         if args.output is None:
             sys.stdout.write(markdown)
