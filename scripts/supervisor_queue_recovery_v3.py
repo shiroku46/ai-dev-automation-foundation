@@ -439,25 +439,9 @@ def _native_event_matches_binding(
         return False
     if event == "issues":
         return binding.get("request_comment_id") is None
-
-    request_comment_id = int(binding.get("request_comment_id") or 0)
-    comments = binding.get("comments") or []
-    request_comments = [
-        comment
-        for comment in comments
-        if int(comment.get("id") or 0) == request_comment_id
-        and str(comment.get("created_at") or "") == timestamp
-        and str(comment.get("body") or "").strip() == recovery.QUEUE_TRIGGER
-    ]
-    if len(request_comments) != 1:
+    if event == "issue_comment":
         return False
-    intervening = [
-        comment
-        for comment in comments
-        if int(comment.get("id") or 0) != request_comment_id
-        and timestamp <= str(comment.get("created_at") or "") <= created_at
-    ]
-    return not intervening
+    return False
 
 
 def _run_matches_request(
@@ -567,15 +551,44 @@ def _job_log_failure_snapshot(job_id: int) -> dict[str, Any]:
             ),
         ),
         (
-            "test failure",
+            "public export guard",
             (
+                "public_export_guard.py",
+                "public export guard",
+                "export guard",
+            ),
+        ),
+        (
+            "repository validator",
+            (
+                "validate_repository.py",
+                "repository validator",
+                "repository validation",
+            ),
+        ),
+        (
+            "unit tests",
+            (
+                "python -m unittest",
+                "unittest",
                 "failed (failures=",
                 "failed (errors=",
                 "assertionerror",
-                "test failure",
                 "tests failed",
-                "public export guard failed",
-                "repository validation failed",
+            ),
+        ),
+        (
+            "generated target validation",
+            (
+                "generated target",
+                "generated-target",
+                "validate generated",
+            ),
+        ),
+        (
+            "test failure",
+            (
+                "test failure",
                 "unauthorized changed path",
                 "protected path",
             ),
@@ -672,11 +685,13 @@ def _bound_failure_snapshot(
         str(failed_job.get("name") or "").strip().lower(),
         conclusion.lower(),
     ]
+    failed_step_names: list[str] = []
     for step in failed_job.get("steps") or []:
         step_name = str(step.get("name") or "").strip().lower()
         step_conclusion = str(step.get("conclusion") or "").strip().lower()
         if step_conclusion != "failure":
             continue
+        failed_step_names.append(step_name)
         error_detail_parts.append(f"{step_name} failure")
         if any(
             signal in step_name
@@ -694,7 +709,34 @@ def _bound_failure_snapshot(
     log_snapshot = _job_log_failure_snapshot(int(failed_job.get("id") or 0))
     log_markers = list(log_snapshot["markers"])
     error_detail_parts.extend(log_markers)
-    if failed_stage == "verify":
+    deterministic_verify_signals = (
+        "public_export_guard.py",
+        "public export guard",
+        "validate_repository.py",
+        "repository validator",
+        "repository validation",
+        "unit test",
+        "unittest",
+        "generated target",
+        "generated-target",
+        "validate generated",
+    )
+    deterministic_verify_markers = {
+        "public export guard",
+        "repository validator",
+        "unit tests",
+        "generated target validation",
+        "test failure",
+    }
+    deterministic_verify_failure = failed_stage == "verify" and (
+        any(marker in deterministic_verify_markers for marker in log_markers)
+        or any(
+            signal in step_name
+            for step_name in failed_step_names
+            for signal in deterministic_verify_signals
+        )
+    )
+    if deterministic_verify_failure:
         error_detail_parts.append("test failure")
     if "tool policy" in log_markers:
         perm_denials += 1
@@ -708,6 +750,7 @@ def _bound_failure_snapshot(
         "failed_job_id": int(failed_job.get("id") or 0),
         "failed_job_name": str(failed_job.get("name") or ""),
         "failed_stage": failed_stage,
+        "failed_step_names": failed_step_names,
         "log_available": bool(log_snapshot["available"]),
         "log_markers": log_markers,
         "log_sha256": log_snapshot["sha256"],
@@ -893,6 +936,102 @@ def _fixed_workflow_stop_snapshot(expected_default_sha: str) -> dict[str, Any]:
     }
 
 
+def _checkpoint_path_audit(
+    issue_number: int,
+    checkpoint: tuple[str, str] | None,
+    default_sha: str,
+) -> dict[str, Any]:
+    if checkpoint is None:
+        return {
+            "checkpoint_changed_paths": [],
+            "checkpoint_compare_status": None,
+            "checkpoint_path_authorization_verified": True,
+            "checkpoint_previous_paths": [],
+        }
+    branch, checkpoint_sha = checkpoint
+    if not runtime.EXACT_SHA.fullmatch(checkpoint_sha):
+        raise RuntimeError("Checkpoint path audit omitted an exact SHA")
+    if _exact_default_sha() != default_sha:
+        raise RuntimeError("Default branch moved before checkpoint path audit")
+    compare = runtime.api(
+        f"repos/{runtime.REPO}/compare/{default_sha}...{checkpoint_sha}"
+    )
+    status = str(compare.get("status") or "")
+    ahead_by = compare.get("ahead_by")
+    behind_by = compare.get("behind_by")
+    total_commits = compare.get("total_commits")
+    base_commit_sha = str((compare.get("base_commit") or {}).get("sha") or "")
+    merge_base_sha = str((compare.get("merge_base_commit") or {}).get("sha") or "")
+    commits = compare.get("commits")
+    files = compare.get("files")
+    if (
+        status not in {"ahead", "identical"}
+        or base_commit_sha != default_sha
+        or merge_base_sha != default_sha
+        or isinstance(ahead_by, bool)
+        or not isinstance(ahead_by, int)
+        or ahead_by < 0
+        or isinstance(behind_by, bool)
+        or not isinstance(behind_by, int)
+        or behind_by != 0
+        or isinstance(total_commits, bool)
+        or not isinstance(total_commits, int)
+        or total_commits != ahead_by
+        or not isinstance(commits, list)
+        or not isinstance(files, list)
+        or len(files) >= 300
+    ):
+        raise RuntimeError("Checkpoint compare evidence was incomplete or divergent")
+    if status == "identical":
+        if checkpoint_sha != default_sha or ahead_by != 0 or commits or files:
+            raise RuntimeError("Identical checkpoint compare evidence was inconsistent")
+    else:
+        if ahead_by <= 0 or len(commits) != ahead_by:
+            raise RuntimeError("Checkpoint commit evidence was incomplete")
+        terminal_sha = str((commits[-1] or {}).get("sha") or "") if commits else ""
+        if terminal_sha != checkpoint_sha:
+            raise RuntimeError("Checkpoint compare did not terminate at the checkpoint SHA")
+
+    changed_paths: set[str] = set()
+    previous_paths: set[str] = set()
+    allowed_statuses = {"added", "modified", "removed", "renamed", "copied", "changed"}
+    for file_record in files:
+        if not isinstance(file_record, dict):
+            raise RuntimeError("Checkpoint file evidence was incomplete")
+        filename = str(file_record.get("filename") or "")
+        file_status = str(file_record.get("status") or "")
+        previous_filename = str(file_record.get("previous_filename") or "")
+        if not filename or file_status not in allowed_statuses:
+            raise RuntimeError("Checkpoint file evidence omitted path or status")
+        changed_paths.add(filename)
+        if file_status == "renamed":
+            if not previous_filename:
+                raise RuntimeError("Renamed checkpoint path omitted its previous filename")
+            previous_paths.add(previous_filename)
+        elif previous_filename:
+            raise RuntimeError("Non-renamed checkpoint path supplied previous filename")
+    if status == "ahead" and not changed_paths:
+        raise RuntimeError("Ahead checkpoint compare omitted changed paths")
+
+    issue = runtime.api(f"repos/{runtime.REPO}/issues/{issue_number}")
+    if not recovery._trusted_issue(issue):
+        raise RuntimeError("Checkpoint path audit lost its trusted source Issue")
+    issue_body = str(issue.get("body") or "")
+    audited_paths = sorted(changed_paths | previous_paths)
+    if audited_paths and not policy.scope_is_authorized(audited_paths, issue_body):
+        raise RuntimeError("Checkpoint contains an unauthorized changed or previous path")
+    if not policy.protected_scope_is_authorized(audited_paths, issue_body):
+        raise RuntimeError("Checkpoint contains an unauthorized protected path")
+    if _exact_default_sha() != default_sha:
+        raise RuntimeError("Default branch moved during checkpoint path audit")
+    return {
+        "checkpoint_changed_paths": sorted(changed_paths),
+        "checkpoint_compare_status": status,
+        "checkpoint_path_authorization_verified": True,
+        "checkpoint_previous_paths": sorted(previous_paths),
+    }
+
+
 def _internal_stop_audit(
     issue_number: int,
     fingerprint: str,
@@ -910,6 +1049,9 @@ def _internal_stop_audit(
     binding = _validated_request_binding(issue_number, fingerprint)
     require_no_trusted_alternative(issue_number)
     checkpoint = _wip_branch_info(issue_number, strict=True)
+    checkpoint_paths = _checkpoint_path_audit(issue_number, checkpoint, default_sha)
+    if _exact_default_sha() != default_sha:
+        raise RuntimeError("Default branch moved after checkpoint path audit")
     evidence = _bound_failure_snapshot(issue_number, fingerprint, default_sha)
     if evidence is None:
         raise RuntimeError("Non-retryable stop lost its bound failure evidence")
@@ -942,6 +1084,7 @@ def _internal_stop_audit(
     )
     return {
         **fixed,
+        **checkpoint_paths,
         "active_queue_run_absent": True,
         "alternative_candidate_prs": final_alternatives,
         "alternative_paths_exhausted": True,
