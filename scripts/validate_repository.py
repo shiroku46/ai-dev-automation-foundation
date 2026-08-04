@@ -116,7 +116,7 @@ def validate() -> None:
     require(runtime, (
         "foundation-coordinator-review", "foundation-protected-authorization",
         "ai-no-merge", "workflow differs from the default-branch definition",
-        "coordinator review evidence changed during evaluation",
+        "review evidence changed during evaluation",
         "expected-head merge was rejected", "human_action_required",
     ), "coordinator runtime")
     classifier = text("scripts/queue_failure_classifier.py")
