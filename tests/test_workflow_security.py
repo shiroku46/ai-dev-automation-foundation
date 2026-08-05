@@ -97,6 +97,24 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
         self.assertIn("schedule:", reconcile)
         self.assertIn("cancel-in-progress: false", reconcile)
+        self.assertIn(
+            "if: github.event_name == 'workflow_run' && "
+            "github.event.workflow_run.path != '.github/workflows/claude-queue.yml'",
+            reconcile,
+        )
+        self.assertIn(
+            "if: github.event_name != 'workflow_run' || "
+            "github.event.workflow_run.path == '.github/workflows/claude-queue.yml'",
+            reconcile,
+        )
+        self.assertNotIn(
+            "github.event.workflow_run.name == 'Claude Issue Queue'",
+            reconcile,
+        )
+        self.assertNotIn(
+            "github.event.workflow_run.name != 'Claude Issue Queue'",
+            reconcile,
+        )
 
         observe = job_block(reconcile, "observe", "queue_recovery")
         self.assertIn("actions: read", observe)
