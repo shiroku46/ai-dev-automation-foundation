@@ -107,16 +107,21 @@ class EvaluationRunContractTest(unittest.TestCase):
             parsed.trial = 2
 
     def test_malformed_size_schema_and_unknown_keys_fail_closed(self):
-        for content in (b"", b"not-json", b"[]", b"\xff"):
+        for content in (
+            b"", b"not-json", b"[]", b"\xff",
+            b'{"schema_version": 1, "schema_version": 1}',
+        ):
             with self.subTest(content=content):
                 with self.assertRaises(EvaluationRunError):
                     parse_evaluation_run(content)
         with self.assertRaises(EvaluationRunError):
             parse_evaluation_run(b"x" * (MAX_RECORD_BYTES + 1))
 
-        payload = valid_payload()
-        payload["schema_version"] = 2
-        self.assert_invalid(payload)
+        for version in (2, True):
+            payload = valid_payload()
+            payload["schema_version"] = version
+            with self.subTest(version=version):
+                self.assert_invalid(payload)
         payload = valid_payload()
         payload["extra"] = True
         self.assert_invalid(payload)
@@ -255,6 +260,11 @@ class EvaluationRunContractTest(unittest.TestCase):
         payload["checks"][0]["conclusion"] = "neutral"
         self.parse(payload)
 
+        payload = valid_payload()
+        for check in payload["checks"]:
+            check["required"] = False
+        self.assert_invalid(payload)
+
     def test_non_passed_outcome_requires_failure_class_and_task_failure(self):
         for outcome in ("failed", "blocked", "infra_error"):
             payload = valid_payload()
@@ -307,6 +317,12 @@ class EvaluationRunContractTest(unittest.TestCase):
         self.assertEqual(
             set(schema["$defs"]["check"]["properties"]["conclusion"]["enum"]),
             set(CHECK_CONCLUSIONS),
+        )
+        pass_checks = schema["allOf"][0]["then"]["properties"]["checks"]
+        self.assertEqual(pass_checks["minItems"], 1)
+        self.assertEqual(pass_checks["minContains"], 1)
+        self.assertTrue(
+            pass_checks["contains"]["properties"]["required"]["const"]
         )
 
 

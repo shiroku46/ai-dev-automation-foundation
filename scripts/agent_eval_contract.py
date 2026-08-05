@@ -161,6 +161,15 @@ class EvaluationRun:
     unresolved_review_threads: int
 
 
+def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise EvaluationRunError("evaluation record contains a duplicate JSON member")
+        result[key] = value
+    return result
+
+
 def _object(value: Any, *, keys: frozenset[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         raise EvaluationRunError(f"{label} keys are invalid")
@@ -168,7 +177,11 @@ def _object(value: Any, *, keys: frozenset[str], label: str) -> dict[str, Any]:
 
 
 def _identity(value: Any, *, label: str) -> str:
-    if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
+    if (
+        not isinstance(value, str)
+        or len(value) > MAX_ID_LENGTH
+        or _ID_RE.fullmatch(value) is None
+    ):
         raise EvaluationRunError(f"{label} is invalid")
     return value
 
@@ -328,9 +341,7 @@ def _parse_checks(value: Any, *, candidate_sha: str) -> tuple[CheckEvidence, ...
             raise EvaluationRunError("check required flag is invalid")
         parsed = CheckEvidence(
             name=_label(check["name"], label="check name"),
-            source=_label(
-                check["source"], label="check source", limit=MAX_SOURCE_LENGTH
-            ),
+            source=_label(check["source"], label="check source", limit=MAX_SOURCE_LENGTH),
             required=check["required"],
             conclusion=_enum(
                 check["conclusion"], values=CHECK_CONCLUSIONS,
@@ -359,11 +370,13 @@ def parse_evaluation_run(content: bytes | str) -> EvaluationRun:
     if not raw or len(raw) > MAX_RECORD_BYTES:
         raise EvaluationRunError("evaluation record size is invalid")
     try:
-        value = json.loads(raw.decode("utf-8"))
+        value = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_pairs
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise EvaluationRunError("evaluation record is malformed") from exc
     record = _object(value, keys=TOP_LEVEL_KEYS, label="evaluation record")
-    if record["schema_version"] != SCHEMA_VERSION:
+    if type(record["schema_version"]) is not int or record["schema_version"] != SCHEMA_VERSION:
         raise EvaluationRunError("evaluation schema version is unsupported")
 
     candidate_sha = _sha(record["candidate_sha"], label="candidate SHA")
@@ -405,9 +418,10 @@ def parse_evaluation_run(content: bytes | str) -> EvaluationRun:
     if outcome == "passed":
         if not metrics.task_success or failure_class is not None:
             raise EvaluationRunError("passed outcome invariants are invalid")
-        if not checks or unresolved:
-            raise EvaluationRunError("passed outcome lacks clean exact-head evidence")
-        if any(item.required and item.conclusion != "success" for item in checks):
+        required_checks = tuple(item for item in checks if item.required)
+        if not required_checks or unresolved:
+            raise EvaluationRunError("passed outcome lacks clean required exact-head evidence")
+        if any(item.conclusion != "success" for item in required_checks):
             raise EvaluationRunError("passed outcome has an unsuccessful required check")
     else:
         if metrics.task_success or failure_class is None:

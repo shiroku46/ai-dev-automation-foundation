@@ -25,7 +25,10 @@
     "unresolved_review_threads"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
     "run_id": {"$ref": "#/$defs/identity"},
     "task_id": {"$ref": "#/$defs/identity"},
     "foundation_sha": {"$ref": "#/$defs/sha"},
@@ -42,9 +45,7 @@
     "environment": {"$ref": "#/$defs/environment"},
     "started_at": {"$ref": "#/$defs/utcTimestamp"},
     "finished_at": {"$ref": "#/$defs/utcTimestamp"},
-    "outcome": {
-      "enum": ["passed", "failed", "blocked", "infra_error"]
-    },
+    "outcome": {"enum": ["passed", "failed", "blocked", "infra_error"]},
     "failure_class": {
       "oneOf": [
         {"type": "null"},
@@ -85,12 +86,9 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 160,
-      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
     },
-    "sha": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
-    },
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "utcTimestamp": {
       "type": "string",
       "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
@@ -114,11 +112,7 @@
         "python": {"$ref": "#/$defs/label"},
         "cpu_count": {"type": "integer", "minimum": 1, "maximum": 65536},
         "memory_mib": {"type": "integer", "minimum": 1, "maximum": 16777216},
-        "timeout_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 604800
-        },
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 604800},
         "network_mode": {
           "enum": ["disabled", "allowlisted", "unrestricted", "unknown"]
         },
@@ -153,56 +147,22 @@
       "properties": {
         "task_success": {"type": "boolean"},
         "first_pass_success": {"type": "boolean"},
-        "scope_violation_attempts": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000000000
-        },
-        "regression_escapes": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000000000
-        },
-        "human_action_requests": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000000000
-        },
-        "confirmed_human_actions": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000000000
-        },
-        "false_human_action_requests": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000000000
-        },
+        "scope_violation_attempts": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "regression_escapes": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "human_action_requests": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "confirmed_human_actions": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "false_human_action_requests": {"type": "integer", "minimum": 0, "maximum": 1000000000},
         "iterations": {"type": "integer", "minimum": 1, "maximum": 10000},
-        "elapsed_seconds": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 31536000
-        },
-        "github_api_requests": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1000000000
-        },
-        "actions_minutes": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 10000000
-        },
+        "elapsed_seconds": {"type": "number", "minimum": 0, "maximum": 31536000},
+        "github_api_requests": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "actions_minutes": {"type": "number", "minimum": 0, "maximum": 10000000},
         "estimated_cost_usd": {
           "oneOf": [
             {"type": "null"},
             {"type": "number", "minimum": 0, "maximum": 1000000000}
           ]
         },
-        "handoff_recovery": {
-          "enum": ["not_applicable", "resumed", "failed"]
-        }
+        "handoff_recovery": {"enum": ["not_applicable", "resumed", "failed"]}
       }
     },
     "check": {
@@ -215,7 +175,7 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 240,
-          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+          "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
         },
         "required": {"type": "boolean"},
         "conclusion": {
@@ -232,5 +192,26 @@
         "head_sha": {"$ref": "#/$defs/sha"}
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"outcome": {"const": "passed"}},
+        "required": ["outcome"]
+      },
+      "then": {
+        "properties": {
+          "checks": {
+            "minItems": 1,
+            "contains": {
+              "type": "object",
+              "properties": {"required": {"const": true}},
+              "required": ["required"]
+            },
+            "minContains": 1
+          }
+        }
+      }
+    }
+  ]
 }

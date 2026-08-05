@@ -10,7 +10,7 @@ The first contract does not execute an agent, select a provider, define benchmar
 
 `scripts/agent_eval_contract.py` is the fail-closed parser for run records. `docs/AGENT_EVAL_RUN.schema.json` describes the public structure for interoperability. The Python parser is authoritative for cross-field rules that JSON Schema cannot completely express.
 
-A valid record is UTF-8 JSON, no larger than 65,536 bytes, contains only known keys, and uses schema version `1`.
+A valid record is UTF-8 JSON, no larger than 65,536 bytes, contains only known keys, rejects duplicate JSON members, and uses integer schema version `1`.
 
 ## Identity and reproducibility
 
@@ -94,7 +94,7 @@ The parser enforces at least these rules:
 - recorded elapsed time must agree with timestamps within one second;
 - first-pass success requires task success and exactly one iteration;
 - confirmed and false human requests cannot exceed total human requests;
-- a passed outcome requires task success, zero unresolved review threads, at least one check, and success for every required check;
+- a passed outcome requires task success, zero unresolved review threads, at least one required check, and success for every required check;
 - a non-passed outcome requires task failure and a failure class;
 - every check is bound to the evaluated candidate SHA;
 - duplicate check identities are rejected.
