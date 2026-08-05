@@ -45,3 +45,5 @@ Bootstrap copies every managed Foundation file byte-for-byte, including Supervis
 ## Default-branch product validation
 
 The coordinator reads `.github/foundation-product-checks.json` from one captured default-branch SHA. Candidate configuration bytes are validated but do not select checks for that candidate. Every configured workflow definition must match the captured default blob, and its successful Pull Request run must be bound to the exact remote head and PR. Configuration, workflow, run, association or default-branch races fail closed before expected-head merge.
+
+A newly declared product workflow must already exist as a candidate blob, but it becomes merge-authorizing only after the configuration reaches the default branch. Foundation-owned workflow paths are reserved and cannot be reintroduced under product-check aliases.
