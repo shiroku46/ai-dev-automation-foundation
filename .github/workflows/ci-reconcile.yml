@@ -7,6 +7,8 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
+  issue_comment:
+    types: [created]
 
 permissions: {}
 
@@ -44,7 +46,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   queue_recovery:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.path == '.github/workflows/claude-queue.yml'
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/claude-queue.yml') ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.body == '/foundation-reconcile' &&
+       github.actor == github.repository_owner &&
+       github.event.issue.pull_request == null)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -66,6 +75,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
           EVENT_NAME: ${{ github.event_name }}
           EVENT_PATH: ${{ github.event_path }}
         run: |
@@ -96,7 +107,11 @@ jobs:
 
           repository = os.environ["REPOSITORY"]
           default_branch = os.environ["DEFAULT_BRANCH"]
-          owner = os.environ["OWNER"]
+          configured_owner = os.environ["OWNER"].strip().casefold()
+          repository_owner = os.environ["REPOSITORY_OWNER"].strip().casefold()
+          trusted_owners = {value for value in (configured_owner, repository_owner) if value}
+          event_actor = os.environ["ACTOR"].strip().casefold()
+          control_trigger = "/foundation-reconcile"
           event_name = os.environ["EVENT_NAME"]
           event = json.loads(pathlib.Path(os.environ["EVENT_PATH"]).read_text(encoding="utf-8"))
           exact_sha = re.compile(r"^[0-9a-f]{40}$")
@@ -155,15 +170,53 @@ jobs:
                   raise RuntimeError("default branch did not resolve exactly")
               return sha
 
+          def issue_trust_predicates(
+              issue: dict[str, Any],
+              number: int,
+              allowed_owners: set[str],
+          ) -> dict[str, bool]:
+              author = str(((issue.get("user") or {}).get("login") or "")).strip().casefold()
+              connected_number = issue.get("number")
+              return {
+                  "exact_number": (
+                      not isinstance(number, bool)
+                      and isinstance(number, int)
+                      and number > 0
+                      and not isinstance(connected_number, bool)
+                      and isinstance(connected_number, int)
+                      and connected_number == number
+                  ),
+                  "open_state": issue.get("state") == "open",
+                  "issue_not_pr": issue.get("pull_request") is None,
+                  "trusted_author": bool(author) and author in allowed_owners,
+              }
+
           def trusted_issue(number: int) -> dict[str, Any]:
-              issue = api(f"repos/{repository}/issues/{number}")
-              if (
-                  issue.get("state") != "open"
-                  or issue.get("pull_request")
-                  or ((issue.get("user") or {}).get("login") or "").casefold() != owner.casefold()
-              ):
-                  raise RuntimeError("Queue source Issue is not trusted and open")
-              return issue
+              if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                  raise RuntimeError("Queue source Issue trust predicates failed: invalid_number=true")
+              delays = (0.0, 0.5, 1.0)
+              last = {
+                  "exact_number": False,
+                  "open_state": False,
+                  "issue_not_pr": False,
+                  "trusted_author": False,
+              }
+              for delay in delays:
+                  if delay:
+                      time.sleep(delay)
+                  try:
+                      issue = api(f"repos/{repository}/issues/{number}")
+                  except (RuntimeError, json.JSONDecodeError):
+                      continue
+                  if not isinstance(issue, dict):
+                      continue
+                  last = issue_trust_predicates(issue, number, trusted_owners)
+                  if all(last.values()):
+                      return issue
+              detail = ",".join(
+                  f"{key}={str(value).lower()}" for key, value in sorted(last.items())
+              )
+              raise RuntimeError(f"Queue source Issue trust predicates failed: {detail}")
 
           def trigger_identity(issue: dict[str, Any]) -> dict[str, Any] | None:
               body = re.sub(r"<!--.*?-->", "", str(issue.get("body") or ""), flags=re.S)
@@ -178,7 +231,7 @@ jobs:
               comments = api_pages(f"repos/{repository}/issues/{number}/comments?per_page=100")
               matches = [
                   item for item in comments
-                  if ((item.get("user") or {}).get("login") or "").casefold() == owner.casefold()
+                  if str(((item.get("user") or {}).get("login") or "")).strip().casefold() in trusted_owners
                   and str(item.get("body") or "").strip() == "/claude-run"
               ]
               if not matches:
@@ -703,6 +756,24 @@ jobs:
                   raise RuntimeError("Queue run title does not identify exactly one Issue")
               return trusted_issue(int(match.group(1)))
 
+          def issue_from_control_event() -> dict[str, Any]:
+              source = event.get("issue") or {}
+              comment = event.get("comment") or {}
+              number = source.get("number")
+              comment_author = str(((comment.get("user") or {}).get("login") or "")).strip().casefold()
+              if (
+                  source.get("pull_request")
+                  or str(comment.get("body") or "").strip() != control_trigger
+                  or not event_actor
+                  or event_actor not in trusted_owners
+                  or comment_author != event_actor
+                  or isinstance(number, bool)
+                  or not isinstance(number, int)
+                  or number <= 0
+              ):
+                  raise RuntimeError("reconciliation control event is not trusted and exact")
+              return trusted_issue(number)
+
           def latest_verified_artifact(issue: dict[str, Any], base_sha: str) -> tuple[dict[str, Any], tuple[pathlib.Path, dict[str, Any], str]] | None:
               issue_number = int(issue["number"])
               runs = api_pages(
@@ -762,6 +833,23 @@ jobs:
                       action = "retry_dispatched"
                   else:
                       action = f"stopped_{failure_class.value}"
+          elif event_name == "issue_comment":
+              selected_issue = issue_from_control_event()
+              if not active_queue_run() and not candidate_for_issue(int(selected_issue["number"])):
+                  resumed = resume_remote_branch(selected_issue, base_sha)
+                  if resumed is not None:
+                      action = f"resumed_pr_{resumed}"
+                  else:
+                      recovered = latest_verified_artifact(selected_issue, base_sha)
+                      if recovered is not None:
+                          recovered_run, artifact = recovered
+                          source_run_id = int(recovered_run.get("id") or 0)
+                          pr_number = publish_artifact(recovered_run, selected_issue, artifact)
+                          action = f"published_pr_{pr_number}"
+                      elif dispatch_retry(selected_issue, base_sha, FailureClass.UNKNOWN, None):
+                          action = "control_retry_dispatched"
+                      else:
+                          action = "control_already_recorded"
           else:
               if not active_queue_run():
                   issues = api_pages(f"repos/{repository}/issues?state=open&sort=updated&direction=desc&per_page=100")
