@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   patch:
-    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Retry Issues 196 and 198 patch transport'
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Retry stable Issues 196 and 198 patch transport'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
