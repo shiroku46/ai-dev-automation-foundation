@@ -291,6 +291,11 @@ jobs:
           def dispatch_retry(issue: dict[str, Any], base_sha: str, failure_class: FailureClass, source_run_id: int | None) -> bool:
               issue_number = int(issue["number"])
               fingerprint = request_fingerprint(issue, base_sha)
+              if any(
+                  read_record(record_path(issue_number, fingerprint, name)) is not None
+                  for name in ("internal-stop.json", "exhausted.json")
+              ):
+                  return False
               records = retry_records(issue_number, fingerprint)
               attempt = len(records) + 1
               status = build_failure_status(
@@ -623,8 +628,12 @@ jobs:
               source_run_id = int(run.get("id") or 0)
               artifact = verify_artifact(run, selected_issue)
               if artifact is not None:
-                  pr_number = publish_artifact(run, selected_issue, artifact)
-                  action = f"published_pr_{pr_number}"
+                  resumed = resume_remote_branch(selected_issue, base_sha)
+                  if resumed is not None:
+                      action = f"resumed_pr_{resumed}"
+                  else:
+                      pr_number = publish_artifact(run, selected_issue, artifact)
+                      action = f"published_pr_{pr_number}"
               elif not candidate_for_issue(int(selected_issue["number"])):
                   failure_class = failure_class_for_run(run)
                   if dispatch_retry(selected_issue, base_sha, failure_class, source_run_id):
@@ -644,16 +653,16 @@ jobs:
                       if trigger_identity(issue) is None or candidate_for_issue(int(issue["number"])):
                           continue
                       selected_issue = issue
-                      recovered = latest_verified_artifact(issue, base_sha)
-                      if recovered is not None:
-                          recovered_run, artifact = recovered
-                          source_run_id = int(recovered_run.get("id") or 0)
-                          pr_number = publish_artifact(recovered_run, issue, artifact)
-                          action = f"published_pr_{pr_number}"
+                      resumed = resume_remote_branch(issue, base_sha)
+                      if resumed is not None:
+                          action = f"resumed_pr_{resumed}"
                       else:
-                          resumed = resume_remote_branch(issue, base_sha)
-                          if resumed is not None:
-                              action = f"resumed_pr_{resumed}"
+                          recovered = latest_verified_artifact(issue, base_sha)
+                          if recovered is not None:
+                              recovered_run, artifact = recovered
+                              source_run_id = int(recovered_run.get("id") or 0)
+                              pr_number = publish_artifact(recovered_run, issue, artifact)
+                              action = f"published_pr_{pr_number}"
                           elif dispatch_retry(issue, base_sha, FailureClass.UNKNOWN, None):
                               action = "silent_stop_retry_dispatched"
                           else:
