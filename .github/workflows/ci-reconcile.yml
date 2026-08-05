@@ -344,7 +344,14 @@ jobs:
                   return False
               if current_default_sha() != base_sha or active_queue_run() or candidate_for_issue(issue_number):
                   return False
-              gh("workflow", "run", queue_workflow, "--repo", repository, "--ref", default_branch, "-f", f"issue_number={issue_number}")
+              gh(
+                  "workflow", "run", queue_workflow,
+                  "--repo", repository,
+                  "--ref", default_branch,
+                  "-f", f"issue_number={issue_number}",
+                  "-f", f"request_fingerprint={fingerprint}",
+                  "-f", f"retry_attempt={attempt}",
+              )
               return True
 
           def failure_class_for_run(run: dict[str, Any]) -> FailureClass:
