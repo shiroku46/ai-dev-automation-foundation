@@ -1,0 +1,39 @@
+name: Issues 196 and 198 full-suite parity
+
+on:
+  push:
+    branches:
+      - github/issues-196-198-stability-isolation
+
+permissions: {}
+
+jobs:
+  patch:
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Apply Issues 196 and 198 full-suite parity patch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: github/issues-196-198-stability-isolation
+          fetch-depth: 0
+      - name: Patch validator and integration tests
+        run: python3 scripts/issues_196_198_fullsuite_patch.py
+      - name: Validate complete repository suite
+        run: |
+          git diff --check
+          test "$(git diff --name-only | sort)" = $'scripts/validate_repository.py\ntests/test_queue_and_final_guard.py'
+          python scripts/public_export_guard.py .
+          python scripts/validate_repository.py
+          python -m unittest discover -s tests
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          test "$(git diff --name-only | sort)" = $'scripts/validate_repository.py\ntests/test_queue_and_final_guard.py'
+      - name: Push validated parity changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/validate_repository.py tests/test_queue_and_final_guard.py
+          git commit -m 'Align validator with credential-isolated optional route'
+          git push origin HEAD:github/issues-196-198-stability-isolation
