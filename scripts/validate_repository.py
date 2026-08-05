@@ -192,6 +192,9 @@ def validate() -> None:
     require(prepare, (
         "resolve_queue_event", "decision.issue_number", "decision.allowed",
         "decision.automated_retry", "decision.fingerprint", "decision.retry_attempt",
+        'owner = os.environ["OWNER"].casefold()',
+        "def api(path):", "def api_pages(path):", "def trigger_identity(issue):",
+        "def request_fingerprint(issue, base_sha):",
         "request_fingerprint(issue, base_sha)",
     ), "optional Queue dispatch guard")
     for forbidden in ("contents: write", "issues: write", "pull-requests: write", "id-token: write"):
