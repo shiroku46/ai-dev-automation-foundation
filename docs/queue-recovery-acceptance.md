@@ -1,0 +1,3 @@
+- acceptance identity: `queue-recovery-post-148`
+- scope: non-production recovery evidence only
+- result: candidate must remain unmerged
