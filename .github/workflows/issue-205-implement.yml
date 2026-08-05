@@ -1,0 +1,42 @@
+name: Issue 205 implementation runner
+
+on:
+  push:
+    branches: [github/issue-205-maintainability]
+    paths:
+      - .github/issue-205-implement.py
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    if: github.event.head_commit.message == 'Run Issue 205 implementation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: github/issue-205-maintainability
+          fetch-depth: 0
+      - name: Apply authorized maintenance changes
+        run: python .github/issue-205-implement.py
+      - name: Remove temporary transports
+        run: |
+          rm -f .github/workflows/issue-205-reference-audit.yml
+          rm -f .github/workflows/issue-205-implement.yml
+          rm -f .github/issue-205-implement.py
+      - name: Validate repository
+        run: |
+          python -m compileall -q scripts bootstrap tests
+          python scripts/public_export_guard.py .
+          python scripts/validate_repository.py
+          python -m unittest discover -s tests
+          git diff --check
+      - name: Publish exact branch candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Extract Queue admission and retire legacy recovery runtimes"
+          git push origin HEAD:github/issue-205-maintainability
