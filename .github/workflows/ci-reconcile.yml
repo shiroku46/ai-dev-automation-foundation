@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   observe:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.name != 'Claude Issue Queue'
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.path != '.github/workflows/claude-queue.yml'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -44,7 +44,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   queue_recovery:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.name == 'Claude Issue Queue'
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.path == '.github/workflows/claude-queue.yml'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
