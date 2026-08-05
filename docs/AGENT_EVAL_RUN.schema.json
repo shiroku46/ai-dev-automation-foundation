@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-dev-automation-foundation/agent-eval-run.schema.json",
+  "title": "Foundation coding-agent evaluation run",
+  "description": "A bounded exact-SHA run record. scripts/agent_eval_contract.py is authoritative for cross-field invariants.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "task_id",
+    "foundation_sha",
+    "candidate_sha",
+    "harness",
+    "adapter",
+    "model",
+    "trial",
+    "environment",
+    "started_at",
+    "finished_at",
+    "outcome",
+    "failure_class",
+    "metrics",
+    "checks",
+    "unresolved_review_threads"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"$ref": "#/$defs/identity"},
+    "task_id": {"$ref": "#/$defs/identity"},
+    "foundation_sha": {"$ref": "#/$defs/sha"},
+    "candidate_sha": {"$ref": "#/$defs/sha"},
+    "harness": {"$ref": "#/$defs/identity"},
+    "adapter": {"$ref": "#/$defs/identity"},
+    "model": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/label"}
+      ]
+    },
+    "trial": {"type": "integer", "minimum": 1, "maximum": 1000000000},
+    "environment": {"$ref": "#/$defs/environment"},
+    "started_at": {"$ref": "#/$defs/utcTimestamp"},
+    "finished_at": {"$ref": "#/$defs/utcTimestamp"},
+    "outcome": {
+      "enum": ["passed", "failed", "blocked", "infra_error"]
+    },
+    "failure_class": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "enum": [
+            "model",
+            "harness",
+            "environment",
+            "specification",
+            "infrastructure",
+            "safety_scope",
+            "human_only_required",
+            "unknown"
+          ]
+        }
+      ]
+    },
+    "metrics": {"$ref": "#/$defs/metrics"},
+    "checks": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/check"}
+    },
+    "unresolved_review_threads": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,127})$"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture",
+        "python",
+        "cpu_count",
+        "memory_mib",
+        "timeout_seconds",
+        "network_mode",
+        "tool_versions"
+      ],
+      "properties": {
+        "os": {"$ref": "#/$defs/label"},
+        "architecture": {"$ref": "#/$defs/label"},
+        "python": {"$ref": "#/$defs/label"},
+        "cpu_count": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "memory_mib": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 604800
+        },
+        "network_mode": {
+          "enum": ["disabled", "allowlisted", "unrestricted", "unknown"]
+        },
+        "tool_versions": {
+          "type": "object",
+          "maxProperties": 24,
+          "propertyNames": {
+            "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,63})$"
+          },
+          "additionalProperties": {"$ref": "#/$defs/label"}
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_success",
+        "first_pass_success",
+        "scope_violation_attempts",
+        "regression_escapes",
+        "human_action_requests",
+        "confirmed_human_actions",
+        "false_human_action_requests",
+        "iterations",
+        "elapsed_seconds",
+        "github_api_requests",
+        "actions_minutes",
+        "estimated_cost_usd",
+        "handoff_recovery"
+      ],
+      "properties": {
+        "task_success": {"type": "boolean"},
+        "first_pass_success": {"type": "boolean"},
+        "scope_violation_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "regression_escapes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "human_action_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "confirmed_human_actions": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "false_human_action_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "iterations": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "elapsed_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 31536000
+        },
+        "github_api_requests": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "actions_minutes": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "estimated_cost_usd": {
+          "oneOf": [
+            {"type": "null"},
+            {"type": "number", "minimum": 0, "maximum": 1000000000}
+          ]
+        },
+        "handoff_recovery": {
+          "enum": ["not_applicable", "resumed", "failed"]
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "source", "required", "conclusion", "head_sha"],
+      "properties": {
+        "name": {"$ref": "#/$defs/label"},
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+        },
+        "required": {"type": "boolean"},
+        "conclusion": {
+          "enum": [
+            "success",
+            "failure",
+            "cancelled",
+            "skipped",
+            "neutral",
+            "timed_out",
+            "action_required"
+          ]
+        },
+        "head_sha": {"$ref": "#/$defs/sha"}
+      }
+    }
+  }
+}
