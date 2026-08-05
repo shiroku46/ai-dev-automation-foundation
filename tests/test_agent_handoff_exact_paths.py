@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
+from pathlib import Path
 
 from scripts.agent_handoff_contract import HandoffContractError, parse_handoff_bundle
 from tests.test_agent_handoff_contract import (
@@ -11,6 +13,22 @@ from tests.test_agent_handoff_contract import (
     ISSUE,
     REPOSITORY,
     valid_bundle,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+UNSAFE_PATHS = (
+    "tests/**",
+    "src/?odule.py",
+    "src/[abc].py",
+    "src/{a,b}.py",
+    "C:/secret.txt",
+    ".git/config",
+    "nested/.GIT/index",
+    "/absolute/path",
+    "../outside",
+    "a/../../outside",
+    "a\\b.py",
+    "a//b.py",
 )
 
 
@@ -38,21 +56,7 @@ class AgentHandoffExactPathTest(unittest.TestCase):
         self.assertEqual(parsed.state.changed_paths, ("tests/test_parser.py",))
 
     def test_globs_drive_paths_git_metadata_and_traversal_are_rejected(self):
-        unsafe_paths = (
-            "tests/**",
-            "src/?odule.py",
-            "src/[abc].py",
-            "src/{a,b}.py",
-            "C:/secret.txt",
-            ".git/config",
-            "nested/.GIT/index",
-            "/absolute/path",
-            "../outside",
-            "a/../../outside",
-            "a\\b.py",
-            "a//b.py",
-        )
-        for unsafe_path in unsafe_paths:
+        for unsafe_path in UNSAFE_PATHS:
             state, _, decisions_raw, handoff_raw = valid_bundle()
             state["changed_paths"] = [unsafe_path]
             with self.subTest(path=unsafe_path), self.assertRaises(HandoffContractError):
@@ -61,6 +65,17 @@ class AgentHandoffExactPathTest(unittest.TestCase):
                     decisions_raw,
                     handoff_raw,
                 )
+
+    def test_public_schema_rejects_the_same_unsafe_path_families(self):
+        schema = json.loads(
+            (ROOT / "docs/AGENT_HANDOFF.schema.json").read_text(encoding="utf-8")
+        )
+        pattern = re.compile(schema["$defs"]["path"]["pattern"])
+        self.assertIsNotNone(pattern.fullmatch("src/parser.py"))
+        self.assertIsNotNone(pattern.fullmatch(".github/workflows/ci.yml"))
+        for unsafe_path in UNSAFE_PATHS:
+            with self.subTest(path=unsafe_path):
+                self.assertIsNone(pattern.fullmatch(unsafe_path))
 
 
 if __name__ == "__main__":
