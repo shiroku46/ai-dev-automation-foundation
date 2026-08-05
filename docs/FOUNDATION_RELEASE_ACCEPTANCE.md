@@ -33,6 +33,12 @@ GitHub resources are treated as finite. The Foundation includes bounded API gove
 
 Both candidates used bounded source Issues, exact scopes, clean coordinator review evidence, zero unresolved threads, sole-candidate collision rechecks and expected-head merge protection.
 
+## Generated-target Unit Tests discriminator correction
+
+A generated product repository may legitimately contain its own `tests/` directory. Foundation-native Unit Tests identify Foundation source mode only through the source-only `bootstrap/generator.py`. A generated target therefore runs the public export guard and Repository validator instead of silently executing product tests without the product dependency environment.
+
+Product tests remain mandatory through the target-owned `.github/foundation-product-checks.json` contract. A direct regression fixture renders a generated target, adds a deliberately failing product test and proves Foundation-native validation does not execute that product test. The protected merge commit containing this correction is the accepted rollout source for this discriminator repair.
+
 ## Completion state
 
 No repository implementation blocker remains in the accepted Foundation scope. Future work consists of applying the versioned Bootstrap or upgrade plan to product repositories and supplying each product repository's own lint, test, build and type-check workflows through its target-owned product-check configuration.
