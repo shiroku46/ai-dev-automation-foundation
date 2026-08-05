@@ -107,6 +107,7 @@ def validate() -> None:
         "actions: write", "contents: write", "issues: read", "pull-requests: write",
         "candidate.patch", "checkpoint.json", "scope_is_authorized",
         "protected_scope_is_authorized", "notification", "human_action_required",
+        "automation-stops/queue-v4", "internal-stop.json", "exhausted.json",
     ), "bounded Queue recovery job")
 
     queue = text(".github/workflows/claude-queue.yml")
@@ -115,10 +116,22 @@ def validate() -> None:
         "check_tool_permission_contract", "contract_ok", "continue-on-error: true",
         "track_progress: false", "reserve the final 5 turns", '"complete" if', 'else "wip"',
         "retry_identity", "notification: false", "human_action_required: false",
-        "publication_route: GitHub-direct coordinator",
+        "publication_route: GitHub-direct coordinator", "request_fingerprint:",
+        "retry_attempt:", 'automation_actor = "github-actions[bot]"',
+        "automation-stops/queue-v4/issue-", "automation-internal-stops",
+        'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
+        "should_auto_retry(failure_class, attempt - 1, 3)",
     ), "optional Queue")
     if "\n  issues:\n" in queue or "workflow_run:" in queue or "schedule:" in queue:
         raise ValidationError("optional Queue has an ordinary automatic trigger")
+    prepare = job(queue, "prepare", "implement")
+    require(prepare, (
+        "actor == owner and not fingerprint_input and not attempt_input",
+        "elif actor == automation_actor", "request_fingerprint(issue, base_sha)",
+    ), "optional Queue dispatch guard")
+    for forbidden in ("contents: write", "issues: write", "pull-requests: write", "id-token: write"):
+        if forbidden in prepare:
+            raise ValidationError(f"Queue dispatch guard can write or obtain OIDC: {forbidden}")
     implement = job(queue, "implement", "verify")
     require(implement, ("contents: read", "issues: read", "id-token: write", "persist-credentials: false"), "provider job")
     for forbidden in ("contents: write", "issues: write", "pull-requests: write"):
