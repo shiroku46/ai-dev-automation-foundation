@@ -104,6 +104,7 @@ jobs:
               classify_conclusion,
               should_auto_retry,
           )
+          from scripts.queue_issue_hydration import resolve_stable_issue
           from scripts.queue_retry_identity import (
               exact_retry_runs,
               is_active_ignored_run,
@@ -179,53 +180,63 @@ jobs:
                   raise RuntimeError("default branch did not resolve exactly")
               return sha
 
-          def issue_trust_predicates(
-              issue: dict[str, Any],
-              number: int,
-              allowed_owners: set[str],
-          ) -> dict[str, bool]:
-              author = str(((issue.get("user") or {}).get("login") or "")).strip().casefold()
-              connected_number = issue.get("number")
-              return {
-                  "exact_number": (
-                      not isinstance(number, bool)
-                      and isinstance(number, int)
-                      and number > 0
-                      and not isinstance(connected_number, bool)
-                      and isinstance(connected_number, int)
-                      and connected_number == number
-                  ),
-                  "open_state": issue.get("state") == "open",
-                  "issue_not_pr": issue.get("pull_request") is None,
-                  "trusted_author": bool(author) and author in allowed_owners,
-              }
+          def fresh_issue(number: int) -> dict[str, Any]:
+              completed = subprocess.run(
+                  [
+                      "gh", "api",
+                      "-H", "Accept: application/vnd.github+json",
+                      "-H", "Cache-Control: no-cache",
+                      "-H", "Pragma: no-cache",
+                      f"repos/{repository}/issues/{number}",
+                  ],
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  raise RuntimeError("connected Issue read failed")
+              try:
+                  value = json.loads(completed.stdout)
+              except json.JSONDecodeError as exc:
+                  raise RuntimeError("connected Issue response was malformed") from exc
+              if not isinstance(value, dict):
+                  raise RuntimeError("connected Issue response was not an object")
+              return value
 
           def trusted_issue(number: int) -> dict[str, Any]:
               if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
                   raise RuntimeError("Queue source Issue trust predicates failed: invalid_number=true")
-              delays = (0.0, 0.5, 1.0)
+              delays = (0.0, 0.5, 1.0, 2.0)
+              samples: list[dict[str, Any]] = []
               last = {
                   "exact_number": False,
                   "open_state": False,
                   "issue_not_pr": False,
                   "trusted_author": False,
               }
+              stability = "unstable"
               for delay in delays:
                   if delay:
                       time.sleep(delay)
                   try:
-                      issue = api(f"repos/{repository}/issues/{number}")
-                  except (RuntimeError, json.JSONDecodeError):
+                      issue = fresh_issue(number)
+                  except RuntimeError:
                       continue
-                  if not isinstance(issue, dict):
-                      continue
-                  last = issue_trust_predicates(issue, number, trusted_owners)
-                  if all(last.values()):
-                      return issue
+                  samples.append(issue)
+                  stability, trusted, last = resolve_stable_issue(
+                      samples,
+                      number=number,
+                      allowed_owners=trusted_owners,
+                      required_matches=2,
+                  )
+                  if stability == "trusted" and trusted is not None:
+                      return trusted
               detail = ",".join(
                   f"{key}={str(value).lower()}" for key, value in sorted(last.items())
               )
-              raise RuntimeError(f"Queue source Issue trust predicates failed: {detail}")
+              raise RuntimeError(
+                  f"Queue source Issue trust predicates failed: stability={stability},{detail}"
+              )
 
           def trigger_identity(issue: dict[str, Any]) -> dict[str, Any] | None:
               body = re.sub(r"<!--.*?-->", "", str(issue.get("body") or ""), flags=re.S)

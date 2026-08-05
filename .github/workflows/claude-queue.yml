@@ -253,149 +253,31 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.contract_ok == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    permissions:
-      contents: read
-      issues: read
-      pull-requests: read
-      actions: read
-      id-token: write
+    timeout-minutes: 5
+    permissions: {}
     outputs:
-      checkpoint_kind: ${{ steps.package.outputs.checkpoint_kind }}
-      artifact_sha256: ${{ steps.package.outputs.artifact_sha256 }}
+      checkpoint_kind: ${{ steps.unavailable.outputs.checkpoint_kind }}
+      artifact_sha256: ${{ steps.unavailable.outputs.artifact_sha256 }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: ${{ needs.prepare.outputs.base_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Require immutable credential-free base
+      - id: unavailable
+        name: Optional provider missing secret; credential-isolated route unavailable
         env:
           BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
         run: |
-          test "$(git rev-parse HEAD)" = "$BASE_SHA"
-          git config --local remote.origin.pushurl disabled://optional-provider-cannot-push
-      - id: claude
-        continue-on-error: true
-        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          base_branch: ${{ github.event.repository.default_branch }}
-          branch_prefix: claude-issue-${{ needs.prepare.outputs.issue_number }}-
-          track_progress: false
-          allowed_bots: github-actions
-          prompt: |
-            Implement Issue #${{ needs.prepare.outputs.issue_number }} exactly as written from immutable base ${{ needs.prepare.outputs.base_sha }}.
-            Read AGENTS.md, CLAUDE.md, SECURITY.md, docs/PROJECT_STARTUP.md, and docs/OPERATING_RULES.md.
-            Change only authorized paths. Do not push, merge, deploy, access another repository,
-            reveal Secrets, execute repository code, or change repository settings.
-
-            Automated retry attempt: `${{ inputs.retry_attempt || 'none' }}`.
-            When the value is 1, 2, or 3, make the exact authorized implementation edit before broad exploration.
-            Use only Read, Write, Edit, Glob, and Grep. Do not attempt Bash, git commands, or test execution.
-            Trusted read-only verification runs after checkpoint creation.
-            For an automated retry, reserve the final 8 turns for an exact path audit and durable checkpoint.
-            For an owner-started route, reserve the final 5 turns for the same audit and checkpoint.
-            Do not change any path outside the Issue allowlist.
-            At the reserve threshold, stop editing and leave the best authorized worktree state.
-          claude_args: |
-            --max-turns 40
-            --allowedTools "Read,Write,Edit,Glob,Grep"
-      - id: package
-        if: always() && steps.claude.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue_number }}
-          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
-          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          python3 - <<'PY'
-          import hashlib, json, os, pathlib, re, stat, subprocess
-
-          base = os.environ["BASE_SHA"]
-          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != base:
-              raise SystemExit("provider changed HEAD")
-          issue = json.loads(subprocess.check_output(
-              ["gh", "api", f"repos/{os.environ['REPOSITORY']}/issues/{os.environ['ISSUE_NUMBER']}"],
-              text=True,
-          ))
-          match = re.search(
-              r"(?ms)^## (?:Exact )?Allowed paths\s*\n(.*?)(?=^## |\Z)", issue.get("body") or ""
-          )
-          rules = [] if match is None else [
-              line.strip()[2:].strip().strip("`")
-              for line in match.group(1).splitlines() if line.strip().startswith("- ")
-          ]
-          def allowed(path):
-              return any(
-                  path == rule
-                  or (rule.endswith("/**") and (
-                      path == rule[:-3].rstrip("/")
-                      or path.startswith(rule[:-3].rstrip("/") + "/")
-                  )) for rule in rules
-              )
-          names = subprocess.check_output(
-              ["git", "diff", "--name-only", "--no-renames", "-z", base, "--"]
-          )
-          names += subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"])
-          paths = sorted({item.decode("utf-8") for item in names.split(b"\0") if item})
-          if not paths or any(not allowed(path) for path in paths):
-              raise SystemExit("empty or unauthorized checkpoint")
-          for path in paths:
-              disk = pathlib.Path(path)
-              if disk.exists() and (disk.is_symlink() or not stat.S_ISREG(disk.stat(follow_symlinks=False).st_mode)):
-                  raise SystemExit("checkpoint leaves must be regular files")
-          untracked = [
-              path for path in paths
-              if subprocess.run(
-                  ["git", "ls-files", "--error-unmatch", path],
-                  stdout=subprocess.DEVNULL,
-                  stderr=subprocess.DEVNULL,
-              ).returncode != 0
-          ]
-          subprocess.check_call(["git", "add", "--all", "--", *paths])
-          patch = subprocess.check_output(
-              ["git", "diff", "--cached", "--binary", "--no-renames", base, "--"]
-          )
-          if not patch:
-              raise SystemExit("empty staged checkpoint")
-          checkpoint = {
-              "version": 1,
-              "base_sha": base,
-              "checkpoint_kind": "complete" if os.environ["CLAUDE_OUTCOME"] == "success" else "wip",
-              "retry_identity": f"run-{os.environ['RUN_ID']}-attempt-{os.environ['RUN_ATTEMPT']}",
-              "changed_paths": paths,
-              "patch_sha256": hashlib.sha256(patch).hexdigest(),
-              "untracked": {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest() for path in untracked},
-          }
-          target = pathlib.Path(os.environ["RUNNER_TEMP"]) / "queue-checkpoint"
-          target.mkdir()
-          (target / "candidate.patch").write_bytes(patch)
-          (target / "checkpoint.json").write_text(json.dumps(checkpoint, sort_keys=True), encoding="utf-8")
-          digest = hashlib.sha256((target / "checkpoint.json").read_bytes() + patch).hexdigest()
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"checkpoint_kind={checkpoint['checkpoint_kind']}\n")
-              output.write(f"artifact_sha256={digest}\n")
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write("## Optional provider checkpoint\n\n")
-              summary.write(f"- checkpoint_kind: `{checkpoint['checkpoint_kind']}`\n")
-              summary.write(f"- base_sha: `{base}`\n")
-              summary.write(f"- diff_hash: `{digest}`\n")
-              summary.write(f"- retry_identity: `{checkpoint['retry_identity']}`\n")
-              summary.write(f"- changed_path_count: `{len(paths)}`\n")
-              summary.write("- notification: false\n")
-              summary.write("- human_action_required: false\n")
-          PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: steps.package.outcome == 'success'
-        with:
-          name: queue-${{ steps.package.outputs.checkpoint_kind }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/queue-checkpoint
-          if-no-files-found: error
-          retention-days: 1
+          echo "checkpoint_kind=" >> "$GITHUB_OUTPUT"
+          echo "artifact_sha256=" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Optional provider route unavailable"
+            echo
+            echo "- exact_base_sha: \`$BASE_SHA\`"
+            echo "- provider_invocation: false"
+            echo "- repository_credentials_exposed: false"
+            echo "- repository_write: false"
+            echo "- notification: false"
+            echo "- human_action_required: false"
+            echo "- next_action: Continue through the authoritative GitHub-direct route."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
   verify:
     needs: [prepare, implement]

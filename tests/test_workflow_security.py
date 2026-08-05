@@ -77,16 +77,21 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}", queue)
         self.assertNotIn("github.triggering_actor", queue)
 
-    def test_optional_provider_credentials_never_share_write_permission(self):
+    def test_optional_provider_route_is_credential_isolated_and_nonblocking(self):
         queue = read(".github/workflows/claude-queue.yml")
         implement = job_block(queue, "implement", "verify")
         for required in (
-            "contents: read", "issues: read", "pull-requests: read",
-            "id-token: write", "persist-credentials: false", "track_progress: false",
-            "allowed_bots: github-actions",
+            "permissions: {}", "Optional provider missing secret",
+            "credential-isolated route unavailable", "provider_invocation: false",
+            "repository_credentials_exposed: false", "repository_write: false",
+            "human_action_required: false", "exit 1",
         ):
             self.assertIn(required, implement)
-        for forbidden in ("contents: write", "issues: write", "pull-requests: write"):
+        for forbidden in (
+            "secrets.", "id-token: write", "anthropics/", "actions/checkout@",
+            "GH_TOKEN", "persist-credentials", "remote.origin", "contents: write",
+            "issues: write", "pull-requests: write",
+        ):
             self.assertNotIn(forbidden, implement)
 
         verify = job_block(queue, "verify", "publish")
@@ -100,19 +105,18 @@ class WorkflowSecurityTest(unittest.TestCase):
         for forbidden in ("secrets.", "id-token: write", "contents: write", "pull-requests: write"):
             self.assertNotIn(forbidden, handoff)
 
-    def test_permission_preflight_and_checkpoint_are_non_notifying(self):
+    def test_permission_preflight_and_unavailable_route_are_non_notifying(self):
         queue = read(".github/workflows/claude-queue.yml")
-        self.assertIn("check_tool_permission_contract", queue)
-        self.assertIn("foundation-provider-required-commands", queue)
-        self.assertIn("contract_ok", queue)
-        self.assertIn("continue-on-error: true", queue)
-        self.assertIn("reserve the final 5 turns", queue)
-        self.assertIn('"complete" if', queue)
-        self.assertIn('else "wip"', queue)
-        self.assertIn("retry_identity", queue)
-        self.assertIn("changed_paths", queue)
-        self.assertIn("notification: false", queue)
-        self.assertIn("human_action_required: false", queue)
+        prepare = job_block(queue, "prepare", "implement")
+        implement = job_block(queue, "implement", "verify")
+        self.assertIn("check_tool_permission_contract", prepare)
+        self.assertIn("foundation-provider-required-commands", prepare)
+        self.assertIn("contract_ok", prepare)
+        self.assertIn("provider_invocation: false", implement)
+        self.assertIn("notification: false", implement)
+        self.assertIn("human_action_required: false", implement)
+        self.assertNotIn("queue-checkpoint", implement)
+        self.assertNotIn("upload-artifact", implement)
         self.assertNotIn("gh issue comment", job_block(queue, "finalize"))
 
     def test_reconciliation_splits_read_only_observation_from_bounded_recovery(self):
@@ -296,45 +300,27 @@ class WorkflowSecurityTest(unittest.TestCase):
             'comment_author != event_actor',
             'source.get("pull_request")',
             'return trusted_issue(number)',
+            "from scripts.queue_issue_hydration import resolve_stable_issue",
         ):
             self.assertIn(required, reconcile)
         self.assertNotIn("configured_owner=", recovery)
         self.assertNotIn("repository_owner=", recovery)
 
-        predicate = embedded_function(reconcile, "issue_trust_predicates")
-        trusted = {"shiroku46"}
-        exact = {
-            "number": 173,
-            "state": "open",
-            "user": {"login": "shiroku46"},
-        }
-        self.assertTrue(all(predicate(exact, 173, trusted).values()))
-        self.assertFalse(predicate({**exact, "number": 174}, 173, trusted)["exact_number"])
-        self.assertFalse(predicate({**exact, "state": "closed"}, 173, trusted)["open_state"])
-        self.assertFalse(predicate({**exact, "pull_request": {}}, 173, trusted)["issue_not_pr"])
-        self.assertFalse(predicate({**exact, "pull_request": {"url": "x"}}, 173, trusted)["issue_not_pr"])
-        self.assertFalse(predicate({**exact, "user": {"login": "other"}}, 173, trusted)["trusted_author"])
-
-        identity = reconcile.split("          def trusted_issue(", 1)[1].split(
+        identity = reconcile.split("          def fresh_issue(", 1)[1].split(
             "\n          def trigger_identity(", 1
         )[0]
-        self.assertIn("delays = (0.0, 0.5, 1.0)", identity)
-        self.assertIn("time.sleep(delay)", identity)
-        self.assertIn("except (RuntimeError, json.JSONDecodeError)", identity)
-        self.assertIn("all(last.values())", identity)
-        self.assertIn("exact_number", identity)
-        self.assertIn("open_state", identity)
-        self.assertIn("issue_not_pr", identity)
-        self.assertIn("trusted_author", identity)
-        self.assertIn("Queue source Issue trust predicates failed", identity)
+        for required in (
+            '"Cache-Control: no-cache"', '"Pragma: no-cache"',
+            "delays = (0.0, 0.5, 1.0, 2.0)", "time.sleep(delay)",
+            "samples.append(issue)", "resolve_stable_issue(",
+            "required_matches=2", 'stability == "trusted"',
+            "Queue source Issue trust predicates failed: stability=",
+        ):
+            self.assertIn(required, identity)
+        self.assertEqual(identity.count("fresh_issue(number)"), 1)
         for forbidden in (
-            'issue.get("body")',
-            "completed.stderr",
-            "completed.stdout",
-            "authorization",
-            "token=",
-            "configured_owner=",
-            "repository_owner=",
+            'issue.get("body")', "completed.stderr", "authorization", "token=",
+            "configured_owner=", "repository_owner=",
         ):
             self.assertNotIn(forbidden, identity.lower())
 

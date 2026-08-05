@@ -47,35 +47,39 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self.assertIn("notification: false", prepare)
         self.assertIn("human_action_required: false", prepare)
 
-    def test_provider_job_cannot_publish(self):
+    def test_provider_job_is_explicitly_unavailable_and_credential_free(self):
         queue = workflow("claude-queue.yml")
         implement = job_block(queue, "implement", "verify")
-        self.assertIn("contents: read", implement)
-        self.assertIn("issues: read", implement)
-        self.assertIn("pull-requests: read", implement)
-        self.assertIn("id-token: write", implement)
-        self.assertIn("persist-credentials: false", implement)
-        self.assertIn("track_progress: false", implement)
-        self.assertIn("continue-on-error: true", implement)
-        self.assertNotIn("contents: write", implement)
-        self.assertNotIn("pull-requests: write", implement)
-        self.assertNotIn("issues: write", implement)
-
-    def test_complete_and_wip_checkpoints_are_durable_and_bounded(self):
-        queue = workflow("claude-queue.yml")
-        implement = job_block(queue, "implement", "verify")
-        for value in (
-            '"complete" if',
-            'else "wip"',
-            "retry_identity",
-            "changed_paths",
-            "patch_sha256",
-            "empty or unauthorized checkpoint",
-            "checkpoint leaves must be regular files",
-            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-            "retention-days: 1",
+        for required in (
+            "timeout-minutes: 5", "permissions: {}", "Optional provider missing secret",
+            "credential-isolated route unavailable", "provider_invocation: false",
+            "repository_credentials_exposed: false", "repository_write: false",
+            "notification: false", "human_action_required: false", "exit 1",
         ):
-            self.assertIn(value, implement)
+            self.assertIn(required, implement)
+        for forbidden in (
+            "continue-on-error: true", "contents: read", "issues: read", "pull-requests: read",
+            "id-token: write", "persist-credentials", "track_progress", "allowed_bots",
+            "anthropics/", "secrets.", "GH_TOKEN", "github.token", "actions/checkout@",
+            "contents: write", "issues: write", "pull-requests: write",
+        ):
+            self.assertNotIn(forbidden, implement)
+
+    def test_unavailable_provider_creates_no_checkpoint_or_artifact(self):
+        queue = workflow("claude-queue.yml")
+        implement = job_block(queue, "implement", "verify")
+        self.assertIn('checkpoint_kind: ${{ steps.unavailable.outputs.checkpoint_kind }}', implement)
+        self.assertIn('artifact_sha256: ${{ steps.unavailable.outputs.artifact_sha256 }}', implement)
+        self.assertIn('echo "checkpoint_kind="', implement)
+        self.assertIn('echo "artifact_sha256="', implement)
+        for forbidden in (
+            '"complete" if', 'else "wip"', "retry_identity", "changed_paths",
+            "patch_sha256", "empty or unauthorized checkpoint",
+            "checkpoint leaves must be regular files", "actions/upload-artifact@",
+            "retention-days: 1", "queue-checkpoint", "candidate.patch", "checkpoint.json",
+            "git add", "git diff", "git push",
+        ):
+            self.assertNotIn(forbidden, implement)
 
     def test_verification_is_read_only_and_secret_free(self):
         queue = workflow("claude-queue.yml")
