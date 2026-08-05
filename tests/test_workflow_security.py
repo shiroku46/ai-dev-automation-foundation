@@ -92,19 +92,38 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("human_action_required: false", queue)
         self.assertNotIn("gh issue comment", job_block(queue, "finalize"))
 
-    def test_reconciliation_is_read_only_and_cannot_retry_provider(self):
+    def test_reconciliation_splits_read_only_observation_from_bounded_recovery(self):
         reconcile = read(".github/workflows/ci-reconcile.yml")
-        self.assertIn('workflows: ["CI", "Unit Tests"]', reconcile)
-        self.assertIn("actions: read", reconcile)
-        self.assertIn("contents: read", reconcile)
-        self.assertIn("read-only compatibility observation", reconcile)
-        self.assertIn("provider_invocation: false", reconcile)
-        self.assertIn("human_action_required: false", reconcile)
+        self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
+        self.assertIn("schedule:", reconcile)
+        self.assertIn("cancel-in-progress: false", reconcile)
+
+        observe = job_block(reconcile, "observe", "queue_recovery")
+        self.assertIn("actions: read", observe)
+        self.assertIn("contents: read", observe)
+        self.assertIn("pull-requests: read", observe)
+        self.assertIn("read-only compatibility observation", observe)
+        self.assertIn("provider_invocation: false", observe)
+        self.assertIn("human_action_required: false", observe)
         for forbidden in (
             "actions: write", "contents: write", "issues: write",
-            "pull-requests: write", "supervisor_queue_recovery", "Claude Issue Queue",
+            "pull-requests: write", "Claude Issue Queue",
         ):
-            self.assertNotIn(forbidden, reconcile)
+            self.assertNotIn(forbidden, observe)
+
+        recovery = job_block(reconcile, "queue_recovery")
+        for required in (
+            "actions: write", "contents: write", "issues: read",
+            "pull-requests: write", "max_retries = 3", "should_auto_retry",
+            "candidate_execution_with_write_token: `false`",
+            "notification: `false`", "human_action_required: `false`",
+        ):
+            self.assertIn(required, recovery)
+        for forbidden in (
+            "secrets.", "id-token: write", "issues: write", "anthropics/",
+            "codex", "gh issue comment",
+        ):
+            self.assertNotIn(forbidden, recovery)
 
     def test_supervisor_is_default_branch_github_coordinator_only(self):
         supervisor = read(".github/workflows/supervisor.yml")
