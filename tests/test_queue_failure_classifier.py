@@ -21,6 +21,46 @@ class FailureClassificationTest(unittest.TestCase):
         self.assertEqual(classify_conclusion("error_max_turns"), FailureClass.MAX_TURNS)
         self.assertEqual(classify_conclusion("error_max_turns", 1), FailureClass.PERMISSION_CONTRACT)
 
+    def test_allowed_tools_configuration_is_not_permission_evidence(self):
+        detail = (
+            'failure; run python3 heredoc; --allowedTools '
+            '"Read,Write,Edit,Glob,Grep"; SyntaxError'
+        )
+        self.assertEqual(
+            classify_conclusion("failure", 1, detail),
+            FailureClass.UNKNOWN,
+        )
+        self.assertEqual(
+            classify_conclusion("failure", 1, "run python3"),
+            FailureClass.UNKNOWN,
+        )
+
+    def test_explicit_permission_denial_phrases_are_blocking(self):
+        phrases = (
+            "tool policy violated",
+            "tool permission denied",
+            "not allowed by tool",
+            "not permitted by tool",
+            "command is not allowed",
+        )
+        for phrase in phrases:
+            with self.subTest(phrase=phrase):
+                self.assertEqual(
+                    classify_conclusion("failure", 0, phrase),
+                    FailureClass.PERMISSION_CONTRACT,
+                )
+
+    def test_max_turn_count_only_still_preserves_permission_contract(self):
+        detail = '--allowedTools "Read,Write,Edit,Glob,Grep"'
+        self.assertEqual(
+            classify_conclusion("error_max_turns", 1, detail),
+            FailureClass.PERMISSION_CONTRACT,
+        )
+        self.assertEqual(
+            classify_conclusion("error_max_turns", 0, detail),
+            FailureClass.MAX_TURNS,
+        )
+
     def test_transport_precedes_incidental_403(self):
         result = classify_conclusion("failure", error_detail="CONNECT tunnel returned HTTP 403")
         self.assertEqual(result, FailureClass.GIT_TRANSPORT)
