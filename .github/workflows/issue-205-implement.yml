@@ -140,4 +140,5 @@ jobs:
           name: issue-205-validated-candidate-${{ github.run_id }}
           path: ${{ runner.temp }}/issue-205-candidate
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 1
