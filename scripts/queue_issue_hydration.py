@@ -70,7 +70,7 @@ def resolve_stable_issue(
     allowed_owners: set[str],
     required_matches: int = 2,
 ) -> tuple[str, dict[str, Any] | None, dict[str, bool]]:
-    """Return trusted/rejected only after consecutive complete identities agree."""
+    """Prefer a later trusted stable pair; otherwise return the latest rejection."""
     if (
         isinstance(required_matches, bool)
         or not isinstance(required_matches, int)
@@ -82,6 +82,7 @@ def resolve_stable_issue(
     previous: tuple[Any, ...] | None = None
     consecutive = 0
     last = dict(_DEFAULT_PREDICATES)
+    rejected: dict[str, bool] | None = None
     for sample in samples:
         if not isinstance(sample, Mapping):
             continue
@@ -99,5 +100,7 @@ def resolve_stable_issue(
         if consecutive >= required_matches:
             if all(last.values()):
                 return "trusted", dict(sample), last
-            return "rejected", None, last
+            rejected = dict(last)
+    if rejected is not None:
+        return "rejected", None, rejected
     return "unstable", None, last
