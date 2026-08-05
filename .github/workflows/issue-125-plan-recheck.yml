@@ -1,0 +1,43 @@
+name: Issue 125 final plan-state recheck
+
+on:
+  push:
+    branches:
+      - github/issue-125-bootstrap-v2
+
+permissions: {}
+
+jobs:
+  patch:
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Apply Issue 125 final plan-state recheck'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: github/issue-125-bootstrap-v2
+          fetch-depth: 0
+      - name: Apply complete plan-state recheck
+        run: python3 scripts/issue_125_plan_recheck.py
+      - name: Validate complete repository
+        env:
+          FOUNDATION_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          git diff --check
+          test "$(git diff --name-only | sort)" = $'bootstrap/generator.py\ntests/test_bootstrap.py'
+          python -m py_compile bootstrap/generator.py scripts/foundation_drift.py scripts/validate_repository.py
+          python -m unittest tests.test_bootstrap tests.test_foundation_drift tests.test_workflow_security
+          python scripts/public_export_guard.py .
+          python scripts/validate_repository.py
+          python -m unittest discover -s tests
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          test "$(git diff --name-only | sort)" = $'bootstrap/generator.py\ntests/test_bootstrap.py'
+      - name: Push validated final recheck
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bootstrap/generator.py tests/test_bootstrap.py
+          git commit -m 'Recheck the complete Bootstrap plan before writes'
+          git push origin HEAD:github/issue-125-bootstrap-v2
