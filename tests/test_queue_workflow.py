@@ -53,6 +53,32 @@ class OptionalQueueTest(unittest.TestCase):
         self.assertIn("checkpoint_kind", sources[1])
         self.assertIn("checkpoint digest mismatch", sources[2])
 
+    def test_run_names_bind_retry_identity_and_ignore_control_comments(self):
+        for required in (
+            "format('Optional Claude issue-{0} retry-{1} request-{2}'",
+            "format('Optional Claude issue-{0} manual'",
+            "format('Optional Claude issue-{0} trigger'",
+            "format('Optional Claude ignored issue-{0}'",
+        ):
+            self.assertIn(required, TEXT)
+        self.assertNotIn("run-name: Optional Claude issue-${{ inputs.issue_number", TEXT)
+
+    def test_automated_retry_prompt_is_edit_first_and_bounded(self):
+        implement = block("implement", "verify")
+        for required in (
+            "Automated retry attempt:",
+            "make the exact authorized implementation edit before broad exploration",
+            "Use only Read, Write, Edit, Glob, and Grep",
+            "Do not attempt Bash, git commands, or test execution",
+            "Trusted read-only verification runs after checkpoint creation",
+            "reserve the final 8 turns",
+            "Do not change any path outside the Issue allowlist",
+            "--max-turns 40",
+            '--allowedTools "Read,Write,Edit,Glob,Grep"',
+        ):
+            self.assertIn(required, implement)
+        self.assertNotIn("--max-turns 41", implement)
+
     def test_permission_preflight_is_before_provider(self):
         prepare = block("prepare", "implement")
         self.assertIn("check_tool_permission_contract", prepare)

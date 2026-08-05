@@ -104,6 +104,15 @@ jobs:
               classify_conclusion,
               should_auto_retry,
           )
+          from scripts.queue_retry_identity import (
+              exact_retry_runs,
+              is_active_ignored_run,
+              is_active_queue_run,
+              parse_queue_run_title,
+              retry_run_title,
+              stranded_retry_attempt,
+              validate_retry_records,
+          )
 
           repository = os.environ["REPOSITORY"]
           default_branch = os.environ["DEFAULT_BRANCH"]
@@ -258,14 +267,65 @@ jobs:
               raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
               return hashlib.sha256(raw).hexdigest()[:20]
 
-          def active_queue_run() -> bool:
-              runs = api_pages(f"repos/{repository}/actions/workflows/{queue_workflow}/runs?per_page=100", "workflow_runs")
-              return any(
-                  str(run.get("path") or "").split("@", 1)[0] == ".github/workflows/claude-queue.yml"
-                  and run.get("head_branch") == default_branch
-                  and str(run.get("status") or "") in {"queued", "in_progress", "waiting", "pending", "requested"}
-                  for run in runs
+          def queue_runs() -> list[dict[str, Any]]:
+              return api_pages(
+                  f"repos/{repository}/actions/workflows/{queue_workflow}/runs?per_page=100",
+                  "workflow_runs",
               )
+
+          def active_queue_run() -> bool:
+              return any(
+                  is_active_queue_run(run)
+                  and run.get("head_branch") == default_branch
+                  and ((run.get("repository") or {}).get("full_name") or repository) == repository
+                  for run in queue_runs()
+              )
+
+          def wait_for_control_noop(issue_number: int) -> bool:
+              for delay in (0.0, 1.0, 2.0, 3.0, 4.0):
+                  if delay:
+                      time.sleep(delay)
+                  active = any(
+                      is_active_ignored_run(run, issue_number)
+                      and run.get("head_branch") == default_branch
+                      and ((run.get("repository") or {}).get("full_name") or repository) == repository
+                      for run in queue_runs()
+                  )
+                  if not active:
+                      return True
+              return False
+
+          def exact_retry_run(
+              issue_number: int,
+              attempt: int,
+              fingerprint: str,
+              base_sha: str,
+              runs: list[dict[str, Any]] | None = None,
+          ) -> dict[str, Any] | None:
+              matches = exact_retry_runs(
+                  queue_runs() if runs is None else runs,
+                  repository=repository,
+                  default_branch=default_branch,
+                  base_sha=base_sha,
+                  issue_number=issue_number,
+                  attempt=attempt,
+                  fingerprint=fingerprint,
+              )
+              return dict(matches[0]) if matches else None
+
+          def confirm_retry_run(
+              issue_number: int,
+              attempt: int,
+              fingerprint: str,
+              base_sha: str,
+          ) -> dict[str, Any]:
+              for delay in (0.0, 0.5, 1.0, 2.0, 4.0):
+                  if delay:
+                      time.sleep(delay)
+                  run = exact_retry_run(issue_number, attempt, fingerprint, base_sha)
+                  if run is not None:
+                      return run
+              raise RuntimeError("exact Queue retry run was not connected after dispatch")
 
           def open_pulls() -> list[dict[str, Any]]:
               return api_pages(f"repos/{repository}/pulls?state=open&per_page=100")
@@ -471,7 +531,11 @@ jobs:
                   raise RuntimeError("recovery record visibility remained incomplete")
               return True
 
-          def retry_records(issue_number: int, fingerprint: str) -> list[dict[str, Any]]:
+          def retry_records(
+              issue_number: int,
+              fingerprint: str,
+              base_sha: str,
+          ) -> list[dict[str, Any]]:
               root = record_path(issue_number, fingerprint, "").rstrip("/")
               encoded = urllib.parse.quote(root, safe="/")
               result = subprocess.run(
@@ -490,7 +554,14 @@ jobs:
                       value = read_record(f"{root}/{item['name']}")
                       if value is not None:
                           records.append(value)
-              return sorted(records, key=lambda item: int(item.get("attempt") or 0))
+              records = sorted(records, key=lambda item: int(item.get("attempt") or 0))
+              return list(validate_retry_records(
+                  records,
+                  issue_number=issue_number,
+                  base_sha=base_sha,
+                  fingerprint=fingerprint,
+                  max_retries=max_retries,
+              ))
 
           def dispatch_retry(issue: dict[str, Any], base_sha: str, failure_class: FailureClass, source_run_id: int | None) -> bool:
               issue_number = int(issue["number"])
@@ -500,53 +571,91 @@ jobs:
                   for name in ("internal-stop.json", "exhausted.json")
               ):
                   return False
-              records = retry_records(issue_number, fingerprint)
-              attempt = len(records) + 1
-              status = build_failure_status(
-                  failure_class=failure_class,
-                  retry_attempt=len(records),
-                  max_retries=max_retries,
-                  checkpoint_sha=None,
-              )
-              if not should_auto_retry(failure_class, len(records), max_retries):
-                  name = "exhausted.json" if len(records) >= max_retries else "internal-stop.json"
-                  next_action = (
-                      "optional provider route unavailable; continue GitHub-direct work"
-                      if failure_class is FailureClass.AUTH_SECRET
-                      else status.next_automatic_action
+
+              records = retry_records(issue_number, fingerprint, base_sha)
+              connected_runs = queue_runs()
+              dispatched_attempts: list[int] = []
+              for record in records:
+                  attempt_value = int(record["attempt"])
+                  if exact_retry_run(
+                      issue_number,
+                      attempt_value,
+                      fingerprint,
+                      base_sha,
+                      connected_runs,
+                  ) is not None:
+                      dispatched_attempts.append(attempt_value)
+              stranded = stranded_retry_attempt(records, dispatched_attempts)
+
+              if stranded is not None:
+                  attempt = stranded
+                  payload = dict(records[attempt - 1])
+              else:
+                  if active_queue_run() or candidate_for_issue(issue_number):
+                      return False
+                  attempt = len(records) + 1
+                  status = build_failure_status(
+                      failure_class=failure_class,
+                      retry_attempt=len(records),
+                      max_retries=max_retries,
+                      checkpoint_sha=None,
                   )
+                  if not should_auto_retry(failure_class, len(records), max_retries):
+                      name = "exhausted.json" if len(records) >= max_retries else "internal-stop.json"
+                      next_action = (
+                          "optional provider route unavailable; continue GitHub-direct work"
+                          if failure_class is FailureClass.AUTH_SECRET
+                          else status.next_automatic_action
+                      )
+                      put_record(
+                          record_path(issue_number, fingerprint, name),
+                          {
+                              "attempt": len(records),
+                              "base_sha": base_sha,
+                              "failure_class": status.failure_class.value,
+                              "human_action_required": False,
+                              "issue_number": issue_number,
+                              "next_automatic_action": next_action,
+                              "notification": False,
+                              "request_fingerprint": fingerprint,
+                              "source_run_id": source_run_id,
+                          },
+                          f"Record Queue recovery stop for Issue #{issue_number}",
+                          base_sha,
+                      )
+                      return False
+                  payload = {
+                      "attempt": attempt,
+                      "base_sha": base_sha,
+                      "failure_class": failure_class.value,
+                      "human_action_required": False,
+                      "issue_number": issue_number,
+                      "next_automatic_action": "dispatch one optional Queue retry",
+                      "notification": False,
+                      "request_fingerprint": fingerprint,
+                      "source_run_id": source_run_id,
+                  }
+                  path = record_path(issue_number, fingerprint, f"retry-{attempt}.json")
                   put_record(
-                      record_path(issue_number, fingerprint, name),
-                      {
-                          "attempt": len(records),
-                          "base_sha": base_sha,
-                          "failure_class": status.failure_class.value,
-                          "human_action_required": False,
-                          "issue_number": issue_number,
-                          "next_automatic_action": next_action,
-                          "notification": False,
-                          "request_fingerprint": fingerprint,
-                          "source_run_id": source_run_id,
-                      },
-                      f"Record Queue recovery stop for Issue #{issue_number}",
+                      path,
+                      payload,
+                      f"Record Queue retry {attempt} for Issue #{issue_number}",
                       base_sha,
                   )
+                  visible = read_record(path)
+                  if visible != payload:
+                      raise RuntimeError("retry record was not object-identical before dispatch")
+                  records = retry_records(issue_number, fingerprint, base_sha)
+                  if len(records) != attempt or records[-1] != payload:
+                      raise RuntimeError("retry record collection changed before dispatch")
+
+              if exact_retry_run(issue_number, attempt, fingerprint, base_sha) is not None:
                   return False
-              payload = {
-                  "attempt": attempt,
-                  "base_sha": base_sha,
-                  "failure_class": failure_class.value,
-                  "human_action_required": False,
-                  "issue_number": issue_number,
-                  "next_automatic_action": "dispatch one optional Queue retry",
-                  "notification": False,
-                  "request_fingerprint": fingerprint,
-                  "source_run_id": source_run_id,
-              }
-              path = record_path(issue_number, fingerprint, f"retry-{attempt}.json")
-              if not put_record(path, payload, f"Record Queue retry {attempt} for Issue #{issue_number}", base_sha):
+              if current_default_sha() != base_sha or candidate_for_issue(issue_number):
                   return False
-              if current_default_sha() != base_sha or active_queue_run() or candidate_for_issue(issue_number):
+              if event_name == "issue_comment" and not wait_for_control_noop(issue_number):
+                  return False
+              if active_queue_run():
                   return False
               gh(
                   "workflow", "run", queue_workflow,
@@ -556,6 +665,9 @@ jobs:
                   "-f", f"request_fingerprint={fingerprint}",
                   "-f", f"retry_attempt={attempt}",
               )
+              confirmed = confirm_retry_run(issue_number, attempt, fingerprint, base_sha)
+              if confirmed.get("display_title") != retry_run_title(issue_number, attempt, fingerprint):
+                  raise RuntimeError("confirmed Queue retry run identity changed")
               return True
 
           def failure_class_for_run(run: dict[str, Any]) -> FailureClass:
@@ -803,11 +915,10 @@ jobs:
               return int(response["number"])
 
           def issue_from_run(run: dict[str, Any]) -> dict[str, Any]:
-              title = str(run.get("display_title") or "")
-              match = re.fullmatch(r"Optional Claude issue-([1-9][0-9]*)", title)
-              if match is None:
-                  raise RuntimeError("Queue run title does not identify exactly one Issue")
-              return trusted_issue(int(match.group(1)))
+              identity = parse_queue_run_title(run.get("display_title"))
+              if identity is None or identity["kind"] == "ignored":
+                  raise RuntimeError("Queue run title does not identify one executable Issue")
+              return trusted_issue(int(identity["issue_number"]))
 
           def issue_from_control_event() -> dict[str, Any]:
               source = event.get("issue") or {}
@@ -836,7 +947,8 @@ jobs:
               candidates = sorted(
                   (
                       run for run in runs
-                      if run.get("display_title") == f"Optional Claude issue-{issue_number}"
+                      if (parse_queue_run_title(run.get("display_title")) or {}).get("issue_number") == issue_number
+                      and (parse_queue_run_title(run.get("display_title")) or {}).get("kind") != "ignored"
                       and str(run.get("path") or "").split("@", 1)[0] == ".github/workflows/claude-queue.yml"
                       and run.get("head_branch") == default_branch
                       and run.get("head_sha") == base_sha
@@ -870,25 +982,33 @@ jobs:
                   or ((run.get("repository") or {}).get("full_name") or repository) != repository
               ):
                   raise RuntimeError("workflow_run is not the fixed Queue completion")
-              selected_issue = issue_from_run(run)
-              source_run_id = int(run.get("id") or 0)
-              artifact = verify_artifact(run, selected_issue)
-              if artifact is not None:
-                  resumed = resume_remote_branch(selected_issue, base_sha)
-                  if resumed is not None:
-                      action = f"resumed_pr_{resumed}"
-                  else:
-                      pr_number = publish_artifact(run, selected_issue, artifact)
-                      action = f"published_pr_{pr_number}"
-              elif not candidate_for_issue(int(selected_issue["number"])):
-                  failure_class = failure_class_for_run(run)
-                  if dispatch_retry(selected_issue, base_sha, failure_class, source_run_id):
-                      action = "retry_dispatched"
-                  else:
-                      action = f"stopped_{failure_class.value}"
+              run_identity = parse_queue_run_title(run.get("display_title"))
+              if run_identity is None:
+                  raise RuntimeError("Queue completion title is invalid")
+              if run_identity["kind"] == "ignored":
+                  selected_issue = trusted_issue(int(run_identity["issue_number"]))
+                  source_run_id = int(run.get("id") or 0)
+                  action = "ignored_control_noop"
+              else:
+                  selected_issue = issue_from_run(run)
+                  source_run_id = int(run.get("id") or 0)
+                  artifact = verify_artifact(run, selected_issue)
+                  if artifact is not None:
+                      resumed = resume_remote_branch(selected_issue, base_sha)
+                      if resumed is not None:
+                          action = f"resumed_pr_{resumed}"
+                      else:
+                          pr_number = publish_artifact(run, selected_issue, artifact)
+                          action = f"published_pr_{pr_number}"
+                  elif not candidate_for_issue(int(selected_issue["number"])):
+                      failure_class = failure_class_for_run(run)
+                      if dispatch_retry(selected_issue, base_sha, failure_class, source_run_id):
+                          action = "retry_dispatched"
+                      else:
+                          action = f"stopped_{failure_class.value}"
           elif event_name == "issue_comment":
               selected_issue = issue_from_control_event()
-              if not active_queue_run() and not candidate_for_issue(int(selected_issue["number"])):
+              if not candidate_for_issue(int(selected_issue["number"])):
                   resumed = resume_remote_branch(selected_issue, base_sha)
                   if resumed is not None:
                       action = f"resumed_pr_{resumed}"

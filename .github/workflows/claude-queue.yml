@@ -1,5 +1,6 @@
 name: Claude Issue Queue
-run-name: Optional Claude issue-${{ inputs.issue_number || github.event.issue.number || 'event' }}
+run-name: >-
+  ${{ inputs.request_fingerprint && format('Optional Claude issue-{0} retry-{1} request-{2}', inputs.issue_number, inputs.retry_attempt, inputs.request_fingerprint) || (github.event_name == 'workflow_dispatch' && format('Optional Claude issue-{0} manual', inputs.issue_number) || (github.event.comment.body == '/claude-run' && format('Optional Claude issue-{0} trigger', github.event.issue.number) || format('Optional Claude ignored issue-{0}', github.event.issue.number || 'event'))) }}
 
 on:
   issue_comment:
@@ -289,7 +290,13 @@ jobs:
             Change only authorized paths. Do not push, merge, deploy, access another repository,
             reveal Secrets, execute repository code, or change repository settings.
 
-            Turn budget: reserve the final 5 turns for a path audit and durable WIP checkpoint.
+            Automated retry attempt: `${{ inputs.retry_attempt || 'none' }}`.
+            When the value is 1, 2, or 3, make the exact authorized implementation edit before broad exploration.
+            Use only Read, Write, Edit, Glob, and Grep. Do not attempt Bash, git commands, or test execution.
+            Trusted read-only verification runs after checkpoint creation.
+            For an automated retry, reserve the final 8 turns for an exact path audit and durable checkpoint.
+            For an owner-started route, reserve the final 5 turns for the same audit and checkpoint.
+            Do not change any path outside the Issue allowlist.
             At the reserve threshold, stop editing and leave the best authorized worktree state.
           claude_args: |
             --max-turns 40
