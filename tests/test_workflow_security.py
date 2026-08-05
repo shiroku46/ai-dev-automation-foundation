@@ -124,9 +124,10 @@ class WorkflowSecurityTest(unittest.TestCase):
             "github.event.workflow_run.path != '.github/workflows/claude-queue.yml'",
             reconcile,
         )
+        self.assertIn("if: >-", reconcile)
         self.assertIn(
-            "if: github.event_name != 'workflow_run' || "
-            "github.event.workflow_run.path == '.github/workflows/claude-queue.yml'",
+            "(github.event_name == 'workflow_run' && "
+            "github.event.workflow_run.path == '.github/workflows/claude-queue.yml') ||",
             reconcile,
         )
         self.assertNotIn(
@@ -242,6 +243,9 @@ class WorkflowSecurityTest(unittest.TestCase):
         recovery = job_block(reconcile, "queue_recovery")
         for required in (
             "issue_comment:\n    types: [created]",
+            "github.event.comment.body == '/foundation-reconcile'",
+            "github.actor == github.repository_owner",
+            "github.event.issue.pull_request == null",
             "REPOSITORY_OWNER: ${{ github.repository_owner }}",
             "ACTOR: ${{ github.actor }}",
             'os.environ["OWNER"].strip().casefold()',
@@ -267,6 +271,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertTrue(all(predicate(exact, 173, trusted).values()))
         self.assertFalse(predicate({**exact, "number": 174}, 173, trusted)["exact_number"])
         self.assertFalse(predicate({**exact, "state": "closed"}, 173, trusted)["open_state"])
+        self.assertFalse(predicate({**exact, "pull_request": {}}, 173, trusted)["issue_not_pr"])
         self.assertFalse(predicate({**exact, "pull_request": {"url": "x"}}, 173, trusted)["issue_not_pr"])
         self.assertFalse(predicate({**exact, "user": {"login": "other"}}, 173, trusted)["trusted_author"])
 
@@ -275,6 +280,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         )[0]
         self.assertIn("delays = (0.0, 0.5, 1.0)", identity)
         self.assertIn("time.sleep(delay)", identity)
+        self.assertIn("except (RuntimeError, json.JSONDecodeError)", identity)
         self.assertIn("all(last.values())", identity)
         self.assertIn("exact_number", identity)
         self.assertIn("open_state", identity)
