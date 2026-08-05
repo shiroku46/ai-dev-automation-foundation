@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from bootstrap.generator import (
     ALLOWLIST,
@@ -248,6 +249,36 @@ class BootstrapTest(unittest.TestCase):
             (target / "scripts/queue_issue_hydration.py").unlink()
             result = validate(target)
             self.assertNotEqual(result.returncode, 0)
+
+    def test_target_change_after_plan_aborts_before_any_foundation_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            product = target / "README.md"
+            product.write_text("product README\n", encoding="utf-8")
+            real_plan = plan_render(target, "owner", mode="existing-product")
+
+            def changed_plan(*_args, **_kwargs):
+                workflow = target / ".github/workflows/ci.yml"
+                workflow.parent.mkdir(parents=True, exist_ok=True)
+                workflow.write_text("concurrent product workflow\n", encoding="utf-8")
+                return real_plan
+
+            with patch("bootstrap.generator.plan_render", side_effect=changed_plan):
+                with self.assertRaisesRegex(ValueError, "target changed after Bootstrap plan"):
+                    render(
+                        target,
+                        "owner",
+                        mode="existing-product",
+                        source_sha=SOURCE_SHA,
+                        installed_at=INSTALLED_AT,
+                    )
+            self.assertEqual(product.read_text(encoding="utf-8"), "product README\n")
+            self.assertEqual(
+                (target / ".github/workflows/ci.yml").read_text(encoding="utf-8"),
+                "concurrent product workflow\n",
+            )
+            self.assertFalse((target / LOCK_FILE).exists())
+            self.assertFalse((target / "scripts").exists())
 
     def test_invalid_source_identity_aborts_before_any_write(self):
         with tempfile.TemporaryDirectory() as directory:

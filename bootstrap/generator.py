@@ -332,6 +332,23 @@ def plan_render(
     )
 
 
+def _verify_plan_state(target: Path, plan: RenderPlan) -> None:
+    """Fail before mutation when any planned destination changed after planning."""
+    for entry in plan.entries:
+        destination = _assert_safe_destination(target, entry.path)
+        if entry.action == "add":
+            if destination.exists():
+                raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
+            continue
+        if entry.action == "collision":
+            raise ValueError(f"unsafe collision remained in Bootstrap plan: {entry.path}")
+        if destination.is_symlink() or not destination.is_file():
+            raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
+        current_digest = _sha256_file(destination)
+        if current_digest != entry.target_sha256:
+            raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
+
+
 def _lock_payload(
     target: Path,
     plan: RenderPlan,
@@ -376,6 +393,7 @@ def render(
     resolved_time = installed_at or _installed_at()
     if not isinstance(resolved_time, str) or not resolved_time:
         raise ValueError("installed_at must be a nonempty string")
+    _verify_plan_state(target, plan)
 
     target.mkdir(parents=True, exist_ok=True)
     sources = _source_contents(owner, mode)
