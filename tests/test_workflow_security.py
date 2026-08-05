@@ -143,7 +143,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn('run.get("name") == queue_name', reconcile)
         self.assertNotIn('run.get("name") != queue_name', reconcile)
         fixed_path = 'str(run.get("path") or "").split("@", 1)[0]'
-        self.assertGreaterEqual(reconcile.count(fixed_path), 3)
+        self.assertGreaterEqual(reconcile.count(fixed_path), 2)
 
         observe = job_block(reconcile, "observe", "queue_recovery")
         self.assertIn("actions: read", observe)
@@ -337,6 +337,38 @@ class WorkflowSecurityTest(unittest.TestCase):
             "repository_owner=",
         ):
             self.assertNotIn(forbidden, identity.lower())
+
+    def test_exact_retry_identity_and_stranded_dispatch_source(self):
+        reconcile = read(".github/workflows/ci-reconcile.yml")
+        for required in (
+            "from scripts.queue_retry_identity import (",
+            "exact_retry_runs",
+            "parse_queue_run_title",
+            "stranded_retry_attempt",
+            "validate_retry_records",
+            "def wait_for_control_noop",
+            "for delay in (0.0, 1.0, 2.0, 3.0, 4.0)",
+            "def confirm_retry_run",
+            "for delay in (0.0, 0.5, 1.0, 2.0, 4.0)",
+            "stranded = stranded_retry_attempt(records, dispatched_attempts)",
+            "attempt = stranded",
+            "payload = dict(records[attempt - 1])",
+            "put_record(",
+            "visible = read_record(path)",
+            "exact_retry_run(issue_number, attempt, fingerprint, base_sha)",
+            'event_name == "issue_comment" and not wait_for_control_noop(issue_number)',
+            'action = "ignored_control_noop"',
+            "confirmed = confirm_retry_run",
+        ):
+            self.assertIn(required, reconcile)
+        dispatch = reconcile.split("          def dispatch_retry(", 1)[1].split(
+            "\n          def failure_class_for_run(", 1
+        )[0]
+        self.assertNotIn("if not put_record", dispatch)
+        self.assertIn("max_retries=max_retries", dispatch)
+        self.assertNotIn("max_retries = 4", reconcile)
+        self.assertNotIn("force=True", dispatch)
+        self.assertNotIn('"force": True', dispatch)
 
     def test_supervisor_is_default_branch_github_coordinator_only(self):
         supervisor = read(".github/workflows/supervisor.yml")
