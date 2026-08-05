@@ -25,22 +25,22 @@ jobs:
           python - <<'PY'
           from pathlib import Path
           path = Path('.github/issue-207-implement.py')
-          content = path.read_text(encoding='utf-8')
-          replacements = (
-              (
-                  r'''            customized = '{"schema_version":1,"checks":[{"name":"Product CI","workflow":".github/workflows/product-ci.yml"}]}\n' ''',
-                  r'''            customized = '{"schema_version":1,"checks":[{"name":"Product CI","workflow":".github/workflows/product-ci.yml"}]}\\n' ''',
-              ),
-              (
-                  r'''            (root / "INSTALL_CHECKLIST.md").write_text(GENERATED_TARGET_MARKER + "\n")''',
-                  r'''            (root / "INSTALL_CHECKLIST.md").write_text(GENERATED_TARGET_MARKER + "\\n")''',
-              ),
-          )
-          for old, new in replacements:
-              if content.count(old) != 1:
-                  raise SystemExit(f'generated literal pattern changed: {old!r}')
-              content = content.replace(old, new, 1)
-          path.write_text(content, encoding='utf-8')
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+          customized = marker = 0
+          for index, line in enumerate(lines):
+              if '            customized = ' in line and 'product-ci.yml' in line:
+                  if "\\n'" not in line:
+                      raise SystemExit('customized literal no longer contains a newline escape')
+                  lines[index] = line.replace("\\n'", "\\\\n'", 1)
+                  customized += 1
+              if 'INSTALL_CHECKLIST.md' in line and 'GENERATED_TARGET_MARKER +' in line:
+                  if '"\\n")' not in line:
+                      raise SystemExit('checklist literal no longer contains a newline escape')
+                  lines[index] = line.replace('"\\n")', '"\\\\n")', 1)
+                  marker += 1
+          if customized != 1 or marker != 1:
+              raise SystemExit(f'generated literal identities changed: customized={customized}, marker={marker}')
+          path.write_text(''.join(lines), encoding='utf-8')
           PY
       - name: Apply exact authorized patch
         run: python .github/issue-207-implement.py
