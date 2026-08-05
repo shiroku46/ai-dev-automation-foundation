@@ -67,11 +67,32 @@ class OptionalQueueTest(unittest.TestCase):
         for required in (
             "contents: read", "issues: read", "pull-requests: read",
             "id-token: write", "persist-credentials: false", "track_progress: false",
+            "allowed_bots: github-actions",
             "reserve the final 5 turns", '--allowedTools "Read,Write,Edit,Glob,Grep"',
         ):
             self.assertIn(required, implement)
         for forbidden in ("contents: write", "issues: write", "pull-requests: write", "track_progress: true"):
             self.assertNotIn(forbidden, implement)
+        self.assertEqual(implement.count("allowed_bots: github-actions"), 1)
+        self.assertNotIn("allowed_bots: *", implement)
+        self.assertNotRegex(implement, r"allowed_bots:\s*\$\{\{")
+
+    def test_automated_retry_guard_remains_exact(self):
+        prepare = block("prepare", "implement")
+        for required in (
+            'automation_actor = "github-actions[bot]"',
+            'os.environ.get("RUN_ATTEMPT") == "1"',
+            're.fullmatch(r"[0-9a-f]{20}", fingerprint_input)',
+            'attempt_input in {"1", "2", "3"}',
+            'record.get("base_sha") == base_sha',
+            'record.get("issue_number") == number',
+            'record.get("request_fingerprint") == fingerprint',
+            'record.get("attempt") == attempt',
+            'record.get("notification") is False',
+            'record.get("human_action_required") is False',
+            'should_auto_retry(failure_class, attempt - 1, 3)',
+        ):
+            self.assertIn(required, prepare)
 
     def test_complete_or_wip_checkpoint_is_bounded(self):
         implement = block("implement", "verify")

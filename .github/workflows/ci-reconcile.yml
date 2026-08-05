@@ -321,18 +321,71 @@ jobs:
                   raise RuntimeError("recovery record is not an object")
               return value
 
-          def wait_for_record(path: str, payload: dict[str, Any], expected_commit: str | None) -> bool:
+          def linear_descendant(
+              current_sha: str,
+              expected_sha: str,
+              fetch_commit,
+              max_depth: int = 32,
+          ) -> bool:
+              sha_pattern = re.compile(r"^[0-9a-f]{40}$")
+              if (
+                  not sha_pattern.fullmatch(current_sha)
+                  or not sha_pattern.fullmatch(expected_sha)
+                  or isinstance(max_depth, bool)
+                  or not isinstance(max_depth, int)
+                  or max_depth < 0
+                  or max_depth > 32
+              ):
+                  return False
+              cursor = current_sha
+              visited: set[str] = set()
+              for depth in range(max_depth + 1):
+                  if cursor == expected_sha:
+                      return True
+                  if depth == max_depth or cursor in visited:
+                      return False
+                  visited.add(cursor)
+                  commit = fetch_commit(cursor)
+                  if not isinstance(commit, dict) or commit.get("sha") != cursor:
+                      return False
+                  parents = commit.get("parents")
+                  if not isinstance(parents, list) or len(parents) != 1:
+                      return False
+                  parent = parents[0]
+                  parent_sha = str(parent.get("sha") or "") if isinstance(parent, dict) else ""
+                  if not sha_pattern.fullmatch(parent_sha):
+                      return False
+                  cursor = parent_sha
+              return False
+
+          def stop_ref_sha() -> str:
               quoted_branch = urllib.parse.quote(stop_branch, safe="")
+              current_ref = api(f"repos/{repository}/git/ref/heads/{quoted_branch}")
+              current_sha = str((current_ref.get("object") or {}).get("sha") or "")
+              if not exact_sha.fullmatch(current_sha):
+                  raise RuntimeError("recovery record ref identity is invalid")
+              return current_sha
+
+          def ref_linearly_contains(current_sha: str, expected_sha: str) -> bool:
+              return linear_descendant(
+                  current_sha,
+                  expected_sha,
+                  lambda sha: api(f"repos/{repository}/git/commits/{sha}"),
+                  32,
+              )
+
+          def wait_for_record(path: str, payload: dict[str, Any], expected_ancestor: str) -> bool:
               visibility_delays = (0.0, 0.5, 1.0, 2.0)
               for delay in visibility_delays:
                   if delay:
                       time.sleep(delay)
-                  if expected_commit is not None:
-                      current_ref = api(f"repos/{repository}/git/ref/heads/{quoted_branch}")
-                      current_sha = str((current_ref.get("object") or {}).get("sha") or "")
-                      if current_sha != expected_commit:
-                          raise RuntimeError("recovery record ref moved during visibility verification")
+                  before_sha = stop_ref_sha()
+                  if not ref_linearly_contains(before_sha, expected_ancestor):
+                      raise RuntimeError("recovery record ref is not a linear descendant")
                   visible = read_record(path)
+                  after_sha = stop_ref_sha()
+                  if not ref_linearly_contains(after_sha, expected_ancestor):
+                      raise RuntimeError("recovery record ref changed outside the linear history")
                   if visible is None:
                       continue
                   if visible != payload:
@@ -411,7 +464,7 @@ jobs:
                       {"sha": commit_sha, "force": False},
                   )
               except RuntimeError:
-                  if wait_for_record(path, payload, None):
+                  if wait_for_record(path, payload, observed_head):
                       return False
                   raise RuntimeError("recovery record compare-and-swap failed")
               if not wait_for_record(path, payload, commit_sha):

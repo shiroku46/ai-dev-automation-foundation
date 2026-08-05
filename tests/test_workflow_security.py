@@ -37,7 +37,7 @@ def embedded_function(content: str, name: str):
     ]
     if len(functions) != 1:
         raise AssertionError(f"expected one {name} function")
-    namespace: dict[str, Any] = {"Any": Any}
+    namespace: dict[str, Any] = {"Any": Any, "re": re}
     exec(compile(ast.Module(body=functions, type_ignores=[]), "embedded", "exec"), namespace)
     return namespace[name]
 
@@ -83,6 +83,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         for required in (
             "contents: read", "issues: read", "pull-requests: read",
             "id-token: write", "persist-credentials: false", "track_progress: false",
+            "allowed_bots: github-actions",
         ):
             self.assertIn(required, implement)
         for forbidden in ("contents: write", "issues: write", "pull-requests: write"):
@@ -186,7 +187,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             '"parents": [observed_head]',
             'f"repos/{repository}/git/refs/heads/{quoted_branch}"',
             '{"sha": commit_sha, "force": False}',
-            'wait_for_record(path, payload, None)',
+            'wait_for_record(path, payload, observed_head)',
             'wait_for_record(path, payload, commit_sha)',
             'recovery record compare-and-swap failed',
             'recovery record visibility remained incomplete',
@@ -231,12 +232,51 @@ class WorkflowSecurityTest(unittest.TestCase):
         )[0]
         self.assertIn("visibility_delays = (0.0, 0.5, 1.0, 2.0)", visibility)
         self.assertIn("time.sleep(delay)", visibility)
-        self.assertIn("current_sha != expected_commit", visibility)
+        self.assertIn("before_sha = stop_ref_sha()", visibility)
+        self.assertIn("after_sha = stop_ref_sha()", visibility)
+        self.assertIn("ref_linearly_contains(before_sha, expected_ancestor)", visibility)
+        self.assertIn("ref_linearly_contains(after_sha, expected_ancestor)", visibility)
         self.assertIn("visible != payload", visibility)
         self.assertIn("return True", visibility)
         self.assertIn("return False", visibility)
         self.assertLessEqual(sum((0.0, 0.5, 1.0, 2.0)), 6.0)
         self.assertEqual(len((0.0, 0.5, 1.0, 2.0)), 4)
+
+    def test_queue_recovery_linear_descendant_fixtures(self):
+        reconcile = read(".github/workflows/ci-reconcile.yml")
+        linear = embedded_function(reconcile, "linear_descendant")
+        sha = lambda character: character * 40
+        root, one, two, three = (sha(value) for value in "abcd")
+
+        def fetch(graph):
+            return lambda value: graph[value]
+
+        self.assertTrue(linear(root, root, lambda value: (_ for _ in ()).throw(AssertionError(value))))
+        one_graph = {one: {"sha": one, "parents": [{"sha": root}]}}
+        self.assertTrue(linear(one, root, fetch(one_graph)))
+        multi_graph = {
+            three: {"sha": three, "parents": [{"sha": two}]},
+            two: {"sha": two, "parents": [{"sha": one}]},
+            one: {"sha": one, "parents": [{"sha": root}]},
+        }
+        self.assertTrue(linear(three, root, fetch(multi_graph)))
+        cycle_graph = {
+            one: {"sha": one, "parents": [{"sha": two}]},
+            two: {"sha": two, "parents": [{"sha": one}]},
+        }
+        self.assertFalse(linear(one, root, fetch(cycle_graph)))
+        self.assertFalse(linear(one, root, fetch({one: {"sha": one, "parents": [{"sha": root}, {"sha": two}]}})))
+        self.assertFalse(linear(one, root, fetch({one: {"sha": one, "parents": []}})))
+        self.assertFalse(linear("bad", root, fetch({})))
+        self.assertFalse(linear(one, root, fetch({one: {"sha": two, "parents": [{"sha": root}]}})))
+
+        chain = [f"{index:040x}" for index in range(35)]
+        graph = {
+            chain[index]: {"sha": chain[index], "parents": [{"sha": chain[index - 1]}]}
+            for index in range(1, len(chain))
+        }
+        self.assertFalse(linear(chain[-1], chain[0], fetch(graph), 32))
+        self.assertTrue(linear(chain[32], chain[0], fetch(graph), 32))
 
     def test_reconciliation_control_and_trusted_issue_identity(self):
         reconcile = read(".github/workflows/ci-reconcile.yml")
