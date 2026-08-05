@@ -97,6 +97,9 @@ jobs:
           files_root = bundle / 'files'
           files_root.mkdir(parents=True, exist_ok=True)
           base_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          base_tree_sha = subprocess.check_output(
+              ['git', 'rev-parse', 'HEAD^{tree}'], text=True
+          ).strip()
           rows = subprocess.check_output(
               ['git', 'diff', '--name-status', '--no-renames', 'HEAD'], text=True
           ).splitlines()
@@ -124,6 +127,7 @@ jobs:
           manifest = {
               'schema': 'issue-205-candidate-v1',
               'base_sha': base_sha,
+              'base_tree_sha': base_tree_sha,
               'entries': entries,
           }
           (bundle / 'manifest.json').write_text(
