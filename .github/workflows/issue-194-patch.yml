@@ -23,7 +23,9 @@ jobs:
           ref: github/issue-194-stranded-retry
           fetch-depth: 0
       - name: Generate exact workflow blobs and tests
-        run: python3 scripts/issue_194_patch.py
+        run: |
+          python3 scripts/issue_194_patch.py
+          python3 scripts/issue_194_test_fix.py
       - name: Validate generated workflows and focused tests
         run: |
           git diff --check
