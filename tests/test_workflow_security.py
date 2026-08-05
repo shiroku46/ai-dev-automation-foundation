@@ -1,9 +1,12 @@
 """Repository-wide workflow and runtime security invariants."""
 from __future__ import annotations
 
+import ast
 import re
+import textwrap
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
@@ -18,6 +21,25 @@ def job_block(content: str, name: str, following: str | None = None) -> str:
     if following:
         block = block.split(f"\n  {following}:\n", 1)[0]
     return block
+
+
+def embedded_function(content: str, name: str):
+    match = re.search(
+        r"(?ms)^          python3 - <<'PY'\n(?P<body>.*?)^          PY$",
+        content,
+    )
+    if match is None:
+        raise AssertionError("embedded reconciliation Python was not found")
+    module = ast.parse(textwrap.dedent(match.group("body")))
+    functions = [
+        node for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    if len(functions) != 1:
+        raise AssertionError(f"expected one {name} function")
+    namespace: dict[str, Any] = {"Any": Any}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "embedded", "exec"), namespace)
+    return namespace[name]
 
 
 class WorkflowSecurityTest(unittest.TestCase):
@@ -214,6 +236,61 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("return False", visibility)
         self.assertLessEqual(sum((0.0, 0.5, 1.0, 2.0)), 6.0)
         self.assertEqual(len((0.0, 0.5, 1.0, 2.0)), 4)
+
+    def test_reconciliation_control_and_trusted_issue_identity(self):
+        reconcile = read(".github/workflows/ci-reconcile.yml")
+        recovery = job_block(reconcile, "queue_recovery")
+        for required in (
+            "issue_comment:\n    types: [created]",
+            "REPOSITORY_OWNER: ${{ github.repository_owner }}",
+            "ACTOR: ${{ github.actor }}",
+            'os.environ["OWNER"].strip().casefold()',
+            'os.environ["REPOSITORY_OWNER"].strip().casefold()',
+            'os.environ["ACTOR"].strip().casefold()',
+            'control_trigger = "/foundation-reconcile"',
+            'elif event_name == "issue_comment"',
+            'comment_author != event_actor',
+            'source.get("pull_request")',
+            'return trusted_issue(number)',
+        ):
+            self.assertIn(required, reconcile)
+        self.assertNotIn("configured_owner=", recovery)
+        self.assertNotIn("repository_owner=", recovery)
+
+        predicate = embedded_function(reconcile, "issue_trust_predicates")
+        trusted = {"shiroku46"}
+        exact = {
+            "number": 173,
+            "state": "open",
+            "user": {"login": "shiroku46"},
+        }
+        self.assertTrue(all(predicate(exact, 173, trusted).values()))
+        self.assertFalse(predicate({**exact, "number": 174}, 173, trusted)["exact_number"])
+        self.assertFalse(predicate({**exact, "state": "closed"}, 173, trusted)["open_state"])
+        self.assertFalse(predicate({**exact, "pull_request": {"url": "x"}}, 173, trusted)["issue_not_pr"])
+        self.assertFalse(predicate({**exact, "user": {"login": "other"}}, 173, trusted)["trusted_author"])
+
+        identity = reconcile.split("          def trusted_issue(", 1)[1].split(
+            "\n          def trigger_identity(", 1
+        )[0]
+        self.assertIn("delays = (0.0, 0.5, 1.0)", identity)
+        self.assertIn("time.sleep(delay)", identity)
+        self.assertIn("all(last.values())", identity)
+        self.assertIn("exact_number", identity)
+        self.assertIn("open_state", identity)
+        self.assertIn("issue_not_pr", identity)
+        self.assertIn("trusted_author", identity)
+        self.assertIn("Queue source Issue trust predicates failed", identity)
+        for forbidden in (
+            'issue.get("body")',
+            "completed.stderr",
+            "completed.stdout",
+            "authorization",
+            "token=",
+            "configured_owner=",
+            "repository_owner=",
+        ):
+            self.assertNotIn(forbidden, identity.lower())
 
     def test_supervisor_is_default_branch_github_coordinator_only(self):
         supervisor = read(".github/workflows/supervisor.yml")
