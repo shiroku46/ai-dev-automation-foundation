@@ -128,21 +128,107 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, supervisor)
 
-    def test_ci_reconciliation_cannot_retry_or_mutate(self):
+    def test_ci_reconciliation_separates_observation_and_bounded_recovery(self):
         reconcile = workflow("ci-reconcile.yml")
-        self.assertIn('workflows: ["CI", "Unit Tests"]', reconcile)
-        self.assertIn("read-only compatibility observation", reconcile)
-        self.assertIn("provider_invocation: false", reconcile)
-        self.assertIn("human_action_required: false", reconcile)
+        self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
+        self.assertIn("schedule:", reconcile)
+        self.assertIn("cancel-in-progress: false", reconcile)
+
+        observe = job_block(reconcile, "observe", "queue_recovery")
+        self.assertIn("actions: read", observe)
+        self.assertIn("contents: read", observe)
+        self.assertIn("pull-requests: read", observe)
+        self.assertIn("read-only compatibility observation", observe)
+        self.assertIn("provider_invocation: false", observe)
+        self.assertIn("human_action_required: false", observe)
         for forbidden in (
             "actions: write",
             "contents: write",
             "issues: write",
             "pull-requests: write",
-            "supervisor_queue_recovery",
-            "workflow dispatch",
         ):
-            self.assertNotIn(forbidden, reconcile)
+            self.assertNotIn(forbidden, observe)
+
+        recovery = job_block(reconcile, "queue_recovery")
+        for required in (
+            "actions: write",
+            "contents: write",
+            "issues: read",
+            "pull-requests: write",
+            "max_retries = 3",
+            "should_auto_retry",
+            "candidate_execution_with_write_token: `false`",
+            "notification: `false`",
+            "human_action_required: `false`",
+        ):
+            self.assertIn(required, recovery)
+        for forbidden in (
+            "secrets.",
+            "id-token: write",
+            "anthropics/",
+            "codex",
+            "gh issue comment",
+            "issues: write",
+        ):
+            self.assertNotIn(forbidden, recovery)
+
+    def test_recovery_identity_and_failure_classification_fail_closed(self):
+        recovery = job_block(workflow("ci-reconcile.yml"), "queue_recovery")
+        body_trigger = recovery.split('if first == "/claude-run":', 1)[1].split(
+            "              number = int(issue.get", 1
+        )[0]
+        self.assertIn('"created_at": str(issue.get("created_at") or "")', body_trigger)
+        self.assertNotIn('"updated_at"', body_trigger)
+        self.assertIn('"bad credentials"', recovery)
+        self.assertIn('"http 401"', recovery)
+        self.assertIn('"http 403"', recovery)
+        self.assertNotIn('"missing secret", "unauthorized"', recovery)
+        self.assertIn('"human_action_required": False', recovery)
+        self.assertIn("optional provider route unavailable; continue GitHub-direct work", recovery)
+        self.assertIn("len(files) >= 300", recovery)
+        self.assertIn("remote Queue checkpoint changed-file evidence is incomplete", recovery)
+        self.assertIn('for name in ("internal-stop.json", "exhausted.json")', recovery)
+
+    def test_scheduled_recovery_reuses_branch_or_artifact_before_retry(self):
+        recovery = job_block(workflow("ci-reconcile.yml"), "queue_recovery")
+        self.assertIn("def latest_verified_artifact", recovery)
+        self.assertIn('run.get("head_sha") == base_sha', recovery)
+        self.assertIn("artifact = verify_artifact(run, issue)", recovery)
+        schedule_path = recovery.split("          else:\n              if not active_queue_run():", 1)[1]
+        branch_position = schedule_path.index("resumed = resume_remote_branch")
+        artifact_position = schedule_path.index("recovered = latest_verified_artifact")
+        retry_position = schedule_path.index("dispatch_retry(issue, base_sha, FailureClass.UNKNOWN, None)")
+        self.assertLess(branch_position, artifact_position)
+        self.assertLess(artifact_position, retry_position)
+
+    def test_automation_dispatch_requires_exact_persisted_retry_intent(self):
+        queue = workflow("claude-queue.yml")
+        prepare = job_block(queue, "prepare", "implement")
+        recovery = job_block(workflow("ci-reconcile.yml"), "queue_recovery")
+        for required in (
+            "request_fingerprint:",
+            "retry_attempt:",
+            'automation_actor = "github-actions[bot]"',
+            "automation-stops/queue-v4/issue-",
+            "automation-internal-stops",
+            'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
+            "should_auto_retry(failure_class, attempt - 1, 3)",
+            'RUN_ATTEMPT: ${{ github.run_attempt }}',
+            'os.environ.get("RUN_ATTEMPT") == "1"',
+            '{"internal-stop.json", "exhausted.json"}',
+        ):
+            self.assertIn(required, queue)
+        self.assertIn("actor == owner and not fingerprint_input and not attempt_input", prepare)
+        self.assertIn("elif actor == automation_actor", prepare)
+        self.assertIn('re.fullmatch(r"[0-9a-f]{20}", fingerprint_input)', prepare)
+        self.assertIn('attempt_input in {"1", "2", "3"}', prepare)
+        self.assertIn("if fingerprint_input != fingerprint", prepare)
+        self.assertNotIn("not fingerprint_input or", prepare)
+        self.assertNotIn("if attempt_input:\n                      attempts", prepare)
+        self.assertIn('f"request_fingerprint={fingerprint}"', recovery)
+        self.assertIn('f"retry_attempt={attempt}"', recovery)
+        self.assertNotIn("contents: write", prepare)
+        self.assertNotIn("id-token: write", prepare)
 
 
 if __name__ == "__main__":

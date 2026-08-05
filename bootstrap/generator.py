@@ -42,6 +42,15 @@ def install_checklist(owner: str) -> str:
 
 Codex and Claude setup is optional. Provider environment, credential, quota, account, setup or connection is not required for GitHub-only acceptance or product development.
 
+## Bounded Queue recovery migration
+
+- [ ] Existing consumers must rerun the Bootstrap renderer or copy every managed file byte-for-byte before relying on recovery.
+- [ ] Confirm `.github/workflows/ci-reconcile.yml`, `scripts/validate_repository.py`, Queue recovery scripts, and policy documents match the same Foundation revision.
+- [ ] Confirm scheduled reconciliation can resume one authorized remote checkpoint or verified artifact, or dispatch one classifier-approved bounded retry.
+- [ ] Confirm duplicate branch/PR identities and exhausted retries remain non-notifying internal states with `human_action_required: false`.
+
+Do not copy only the reconciliation workflow. Its bounded Queue recovery contract depends on the byte-equivalent classifier, policy, validator, runtime, and optional Queue files from the same revision.
+
 ## Operating boundary
 
 - [ ] Use one trusted owner-authored Issue with risk tier, bounded paths, checks, prohibited effects, and rollback.
