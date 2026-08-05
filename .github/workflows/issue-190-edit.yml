@@ -47,6 +47,7 @@ jobs:
           finally:
               target.write_bytes(original)
           PY
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
           test "$(changed_paths)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
       - name: Push non-workflow handoff only
         run: |
