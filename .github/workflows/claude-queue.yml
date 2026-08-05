@@ -47,7 +47,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_PATH: ${{ github.event_path }}
+          COMMENT_ISSUE: ${{ github.event.issue.number || '' }}
+          COMMENT_BODY: ${{ github.event.comment.body || '' }}
+          COMMENT_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           DISPATCH_ISSUE: ${{ inputs.issue_number }}
           DISPATCH_FINGERPRINT: ${{ inputs.request_fingerprint }}
           DISPATCH_ATTEMPT: ${{ inputs.retry_attempt }}
@@ -60,21 +62,34 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, os, re, subprocess, urllib.parse
-          from pathlib import Path
+          from scripts.queue_event_guard import resolve_queue_event
           from scripts.queue_failure_classifier import (
               FailureClass,
               check_tool_permission_contract,
               should_auto_retry,
           )
 
-          event = json.loads(Path(os.environ["EVENT_PATH"]).read_text(encoding="utf-8"))
           trigger = "/claude-run"
-          actor = os.environ["ACTOR"].casefold()
+          decision = resolve_queue_event(
+              event_name=os.environ.get("EVENT_NAME", ""),
+              actor=os.environ.get("ACTOR", ""),
+              owner=os.environ.get("OWNER", ""),
+              ref_name=os.environ.get("REF_NAME", ""),
+              default_branch=os.environ.get("DEFAULT_BRANCH", ""),
+              run_attempt=os.environ.get("RUN_ATTEMPT", ""),
+              dispatch_issue=os.environ.get("DISPATCH_ISSUE", ""),
+              dispatch_fingerprint=os.environ.get("DISPATCH_FINGERPRINT", ""),
+              dispatch_attempt=os.environ.get("DISPATCH_ATTEMPT", ""),
+              comment_issue=os.environ.get("COMMENT_ISSUE", ""),
+              comment_body=os.environ.get("COMMENT_BODY", ""),
+              comment_is_pr=os.environ.get("COMMENT_IS_PR", "false"),
+          )
+          number = decision.issue_number
+          allowed = decision.allowed
+          automated_retry = decision.automated_retry
+          fingerprint_input = decision.fingerprint
+          attempt_input = "" if decision.retry_attempt is None else str(decision.retry_attempt)
           owner = os.environ["OWNER"].casefold()
-          automation_actor = "github-actions[bot]"
-          number = None
-          allowed = False
-          automated_retry = False
 
           def api(path):
               return json.loads(subprocess.check_output(
@@ -138,34 +153,6 @@ jobs:
               raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
               return hashlib.sha256(raw).hexdigest()[:20]
 
-          if os.environ["EVENT_NAME"] == "issue_comment":
-              source = event.get("issue") or {}
-              body = (event.get("comment") or {}).get("body") or ""
-              number = source.get("number")
-              allowed = actor == owner and not source.get("pull_request") and body.strip() == trigger
-          elif os.environ["EVENT_NAME"] == "workflow_dispatch":
-              raw = os.environ.get("DISPATCH_ISSUE", "")
-              fingerprint_input = os.environ.get("DISPATCH_FINGERPRINT", "").strip()
-              attempt_input = os.environ.get("DISPATCH_ATTEMPT", "").strip()
-              number = int(raw) if raw.isdigit() else None
-              base_conditions = (
-                  os.environ.get("REF_NAME") == os.environ["DEFAULT_BRANCH"]
-                  and isinstance(number, int)
-                  and number > 0
-              )
-              if actor == owner and not fingerprint_input and not attempt_input:
-                  allowed = base_conditions
-              elif actor == automation_actor:
-                  automated_retry = True
-                  allowed = (
-                      base_conditions
-                      and os.environ.get("RUN_ATTEMPT") == "1"
-                      and re.fullmatch(r"[0-9a-f]{20}", fingerprint_input) is not None
-                      and attempt_input in {"1", "2", "3"}
-                  )
-          if not isinstance(number, int) or number <= 0:
-              allowed = False
-
           base_sha = ""
           contract_ok = False
           issue = None
@@ -182,8 +169,7 @@ jobs:
               )["sha"]
           if allowed and automated_retry:
               fingerprint = request_fingerprint(issue, base_sha)
-              fingerprint_input = os.environ.get("DISPATCH_FINGERPRINT", "").strip()
-              attempt = int(os.environ["DISPATCH_ATTEMPT"])
+              attempt = int(decision.retry_attempt or 0)
               if fingerprint_input != fingerprint:
                   allowed = False
               else:
