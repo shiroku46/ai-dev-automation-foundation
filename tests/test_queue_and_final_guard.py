@@ -188,6 +188,18 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self.assertIn("len(files) >= 300", recovery)
         self.assertIn("remote Queue checkpoint changed-file evidence is incomplete", recovery)
 
+    def test_scheduled_recovery_consumes_existing_artifact_before_retry(self):
+        recovery = job_block(workflow("ci-reconcile.yml"), "queue_recovery")
+        self.assertIn("def latest_verified_artifact", recovery)
+        self.assertIn('run.get("head_sha") == base_sha', recovery)
+        self.assertIn("artifact = verify_artifact(run, issue)", recovery)
+        schedule_path = recovery.split("          else:\n              if not active_queue_run():", 1)[1]
+        artifact_position = schedule_path.index("recovered = latest_verified_artifact")
+        branch_position = schedule_path.index("resumed = resume_remote_branch")
+        retry_position = schedule_path.index("dispatch_retry(issue, base_sha, FailureClass.UNKNOWN, None)")
+        self.assertLess(artifact_position, branch_position)
+        self.assertLess(branch_position, retry_position)
+
 
 if __name__ == "__main__":
     unittest.main()
