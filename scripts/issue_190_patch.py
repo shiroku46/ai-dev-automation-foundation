@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the exact, self-removing Issue #190 branch patch."""
+"""Generate the exact Issue #190 workflow blob and persistent test patch."""
 from pathlib import Path
 
 
@@ -157,7 +157,9 @@ workflow = replace_once(
 ''',
     "control event execution",
 )
-workflow_path.write_text(workflow, encoding="utf-8")
+generated = Path("automation-tmp/issue-190-ci-reconcile.yml")
+generated.parent.mkdir(parents=True, exist_ok=True)
+generated.write_text(workflow, encoding="utf-8")
 
 test_path = Path("tests/test_workflow_security.py")
 tests = test_path.read_text(encoding="utf-8")
@@ -253,6 +255,3 @@ new_tests = '''    def test_reconciliation_control_and_trusted_issue_identity(se
 ''' + supervisor_marker
 tests = replace_once(tests, supervisor_marker, new_tests, "trusted Issue tests")
 test_path.write_text(tests, encoding="utf-8")
-
-Path(".github/workflows/issue-190-edit.yml").unlink()
-Path("scripts/issue_190_patch.py").unlink()
