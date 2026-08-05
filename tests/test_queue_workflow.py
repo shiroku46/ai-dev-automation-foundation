@@ -45,13 +45,12 @@ class OptionalQueueTest(unittest.TestCase):
 
     def test_every_embedded_python_block_compiles(self):
         sources = embedded_python()
-        self.assertEqual(len(sources), 3)
+        self.assertEqual(len(sources), 2)
         for index, source in enumerate(sources, start=1):
             with self.subTest(index=index):
                 compile(source, f"claude-queue-heredoc-{index}", "exec")
         self.assertIn("check_tool_permission_contract", sources[0])
-        self.assertIn("checkpoint_kind", sources[1])
-        self.assertIn("checkpoint digest mismatch", sources[2])
+        self.assertIn("checkpoint digest mismatch", sources[1])
 
     def test_run_names_bind_retry_identity_and_ignore_control_comments(self):
         for required in (
@@ -63,21 +62,20 @@ class OptionalQueueTest(unittest.TestCase):
             self.assertIn(required, TEXT)
         self.assertNotIn("run-name: Optional Claude issue-${{ inputs.issue_number", TEXT)
 
-    def test_automated_retry_prompt_is_edit_first_and_bounded(self):
+    def test_automated_retry_routes_to_github_direct_without_provider(self):
         implement = block("implement", "verify")
         for required in (
-            "Automated retry attempt:",
-            "make the exact authorized implementation edit before broad exploration",
-            "Use only Read, Write, Edit, Glob, and Grep",
-            "Do not attempt Bash, git commands, or test execution",
-            "Trusted read-only verification runs after checkpoint creation",
-            "reserve the final 8 turns",
-            "Do not change any path outside the Issue allowlist",
-            "--max-turns 40",
-            '--allowedTools "Read,Write,Edit,Glob,Grep"',
+            "Optional provider missing secret", "credential-isolated route unavailable",
+            "provider_invocation: false", "repository_credentials_exposed: false",
+            "repository_write: false", "Continue through the authoritative GitHub-direct route",
+            "human_action_required: false", "timeout-minutes: 5",
         ):
             self.assertIn(required, implement)
-        self.assertNotIn("--max-turns 41", implement)
+        for forbidden in (
+            "--max-turns", "allowedTools", "Automated retry attempt:",
+            "anthropics/", "claude_code_oauth_token", "secrets.",
+        ):
+            self.assertNotIn(forbidden, implement)
 
     def test_permission_preflight_is_before_provider(self):
         prepare = block("prepare", "implement")
@@ -88,20 +86,17 @@ class OptionalQueueTest(unittest.TestCase):
         self.assertIn("notification: false", prepare)
         self.assertIn("human_action_required: false", prepare)
 
-    def test_provider_job_is_read_only_and_agent_mode(self):
+    def test_provider_job_exposes_no_repository_or_oidc_credentials(self):
         implement = block("implement", "verify")
-        for required in (
-            "contents: read", "issues: read", "pull-requests: read",
-            "id-token: write", "persist-credentials: false", "track_progress: false",
-            "allowed_bots: github-actions",
-            "reserve the final 5 turns", '--allowedTools "Read,Write,Edit,Glob,Grep"',
+        self.assertIn("permissions: {}", implement)
+        self.assertIn("exit 1", implement)
+        for forbidden in (
+            "id-token: write", "contents: read", "issues: read", "pull-requests: read",
+            "contents: write", "issues: write", "pull-requests: write",
+            "persist-credentials", "GH_TOKEN", "github.token", "remote.origin",
+            "allowed_bots", "track_progress", "anthropics/", "secrets.",
         ):
-            self.assertIn(required, implement)
-        for forbidden in ("contents: write", "issues: write", "pull-requests: write", "track_progress: true"):
             self.assertNotIn(forbidden, implement)
-        self.assertEqual(implement.count("allowed_bots: github-actions"), 1)
-        self.assertNotIn("allowed_bots: *", implement)
-        self.assertNotRegex(implement, r"allowed_bots:\s*\$\{\{")
 
     def test_automated_retry_guard_remains_exact(self):
         prepare = block("prepare", "implement")
@@ -120,26 +115,27 @@ class OptionalQueueTest(unittest.TestCase):
         ):
             self.assertIn(required, prepare)
 
-    def test_complete_or_wip_checkpoint_is_bounded(self):
+    def test_unavailable_provider_creates_no_checkpoint_or_artifact(self):
         implement = block("implement", "verify")
-        for required in (
-            "continue-on-error: true", '"complete" if', 'else "wip"',
-            "retry_identity", "changed_paths", "patch_sha256",
-            "empty or unauthorized checkpoint", "checkpoint leaves must be regular files",
-            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
-            "retention-days: 1",
+        self.assertIn('checkpoint_kind: ${{ steps.unavailable.outputs.checkpoint_kind }}', implement)
+        self.assertIn('artifact_sha256: ${{ steps.unavailable.outputs.artifact_sha256 }}', implement)
+        self.assertIn('echo "checkpoint_kind="', implement)
+        self.assertIn('echo "artifact_sha256="', implement)
+        for forbidden in (
+            "queue-checkpoint", "candidate.patch", "checkpoint.json",
+            "upload-artifact@", "git add", "git diff", "git push",
         ):
-            self.assertIn(required, implement)
+            self.assertNotIn(forbidden, implement)
 
-    def test_checkpoint_patch_includes_authorized_untracked_files(self):
+    def test_unavailable_provider_has_no_local_repository_mutation(self):
         implement = block("implement", "verify")
-        self.assertIn('["git", "add", "--all", "--", *paths]', implement)
-        self.assertIn('["git", "diff", "--cached", "--binary", "--no-renames", base, "--"]', implement)
-        self.assertIn("empty staged checkpoint", implement)
-        self.assertLess(
-            implement.index('["git", "add", "--all", "--", *paths]'),
-            implement.index('["git", "diff", "--cached", "--binary", "--no-renames", base, "--"]'),
-        )
+        for forbidden in (
+            "actions/checkout@", "git ", "python3", "Write,Edit", "branch_prefix",
+            "base_branch", "track_progress", "allowed_bots",
+        ):
+            self.assertNotIn(forbidden, implement)
+        self.assertIn("exact_base_sha", implement)
+        self.assertIn("repository_write: false", implement)
 
     def test_verification_has_no_secret_oidc_or_write(self):
         verify = block("verify", "publish")
