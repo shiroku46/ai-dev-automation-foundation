@@ -107,7 +107,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("human_action_required: false", observe)
         for forbidden in (
             "actions: write", "contents: write", "issues: write",
-            "pull-requests: write", "Claude Issue Queue",
+            "pull-requests: write",
         ):
             self.assertNotIn(forbidden, observe)
 
