@@ -50,14 +50,10 @@ jobs:
               'tests/test_workflow_security.py',
           ])
           actual = sorted(subprocess.check_output(
-              ['git', 'diff', '--name-only', 'origin/main...HEAD'], text=True
+              ['git', 'diff', '--name-only', 'origin/main'], text=True
           ).splitlines())
-          working = sorted(subprocess.check_output(
-              ['git', 'diff', '--name-only'], text=True
-          ).splitlines())
-          combined = sorted(set(actual) | set(working))
-          if combined != expected:
-              raise SystemExit(f'exact scope mismatch: {combined!r}')
+          if actual != expected:
+              raise SystemExit(f'exact scope mismatch: {actual!r}')
           PY
           git diff --check
           python -m py_compile \
