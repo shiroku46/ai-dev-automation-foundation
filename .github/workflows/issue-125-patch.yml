@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   patch:
-    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Apply Issue 125 Bootstrap validation patch'
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Retry Issue 125 complete Bootstrap validation'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -20,7 +20,7 @@ jobs:
           ref: github/issue-125-bootstrap-v2
           fetch-depth: 0
       - name: Apply exact validator and guidance patch
-        run: python3 scripts/issue_125_patch.py
+        run: python3 scripts/issue_125_patch_runner.py
       - name: Validate complete Bootstrap contract
         env:
           FOUNDATION_SOURCE_SHA: ${{ github.sha }}
