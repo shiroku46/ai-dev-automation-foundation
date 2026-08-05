@@ -201,6 +201,26 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self.assertLess(branch_position, artifact_position)
         self.assertLess(artifact_position, retry_position)
 
+    def test_automation_dispatch_requires_exact_persisted_retry_intent(self):
+        queue = workflow("claude-queue.yml")
+        prepare = job_block(queue, "prepare", "implement")
+        for required in (
+            "request_fingerprint:",
+            "retry_attempt:",
+            'automation_actor = "github-actions[bot]"',
+            "automation-stops/queue-v4/issue-",
+            "automation-internal-stops",
+            'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
+            "should_auto_retry(failure_class, attempt - 1, 3)",
+        ):
+            self.assertIn(required, queue)
+        self.assertIn("actor == owner and not fingerprint_input and not attempt_input", prepare)
+        self.assertIn("elif actor == automation_actor", prepare)
+        self.assertIn("request_fingerprint(issue, base_sha)", prepare)
+        self.assertIn('re.fullmatch(r"retry-([1-3])\\.json"', prepare)
+        self.assertNotIn("contents: write", prepare)
+        self.assertNotIn("id-token: write", prepare)
+
 
 if __name__ == "__main__":
     unittest.main()
