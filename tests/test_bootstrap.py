@@ -209,6 +209,25 @@ class BootstrapTest(unittest.TestCase):
             self.assertEqual(custom.read_bytes(), before)
 
 
+
+    def test_malformed_existing_product_check_config_aborts_before_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            config = target / ".github/foundation-product-checks.json"
+            config.parent.mkdir(parents=True)
+            config.write_text("not-json", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "product check configuration"):
+                render(
+                    target,
+                    "owner",
+                    mode="existing-product",
+                    source_sha=SOURCE_SHA,
+                    installed_at=INSTALLED_AT,
+                )
+            self.assertEqual(config.read_text(encoding="utf-8"), "not-json")
+            self.assertFalse((target / "scripts").exists())
+            self.assertFalse((target / LOCK_FILE).exists())
+
     def test_product_check_config_is_target_owned_and_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)

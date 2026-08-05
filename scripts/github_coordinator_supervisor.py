@@ -447,10 +447,14 @@ def evaluate(client: Client, repo: str, pr_number: int, automation_owner: str | 
     pr = client.pull(pr_number)
     number, head = _pr_identity(pr, repo, default_branch)
     default_product_raw, default_product_checks = _product_checks(client, default_sha, "default")
-    candidate_product_raw, _candidate_product_checks = _product_checks(client, head, "candidate")
+    candidate_product_raw, candidate_product_checks = _product_checks(client, head, "candidate")
     configured_workflows = {**CHECK_WORKFLOWS, **{item.name: item.workflow for item in default_product_checks}}
     required_checks = tuple(configured_workflows)
     product_check_names = {item.name for item in default_product_checks}
+    candidate_product_blobs = tuple(
+        (item.workflow, client.file_blob(item.workflow, head))
+        for item in candidate_product_checks
+    )
     pr_body = _text(pr.get("body"), "PR body")
     source_number = source_issue_number(pr_body)
     issue = client.issue(source_number)
@@ -496,6 +500,11 @@ def evaluate(client: Client, repo: str, pr_number: int, automation_owner: str | 
         raise SupervisorError("default product check configuration changed during evaluation")
     if client.file_content(PRODUCT_CHECKS_PATH, head) != candidate_product_raw:
         raise SupervisorError("candidate product check configuration changed during evaluation")
+    if tuple(
+        (item.workflow, client.file_blob(item.workflow, head))
+        for item in candidate_product_checks
+    ) != candidate_product_blobs:
+        raise SupervisorError("candidate product workflow definitions changed during evaluation")
     if tuple(
         (name, workflow_path, client.file_blob(workflow_path, head), client.file_blob(workflow_path, default_sha))
         for name, workflow_path in configured_workflows.items()

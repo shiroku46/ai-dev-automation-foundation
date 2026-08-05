@@ -83,8 +83,8 @@ class FakeClient:
         }
         self.other = []
         self.ready_calls = []; self.merge_calls = []
-        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = self.content_reads = 0
-        self.issue_race = self.pr_race = self.run_race = self.thread_race = self.content_race = None
+        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = self.content_reads = self.blob_reads = 0
+        self.issue_race = self.pr_race = self.run_race = self.thread_race = self.content_race = self.blob_race = None
 
     def repository(self): return copy.deepcopy(self.repo)
     def default_branch_sha(self, branch): return self.default_sha
@@ -112,10 +112,16 @@ class FakeClient:
         self.content_reads += 1
         if self.content_reads == 3 and self.content_race: self.content_race(self)
         return self.contents[(path, ref)]
-    def file_blob(self, path, ref): return self.blobs[(path, ref)]
+    def file_blob(self, path, ref):
+        self.blob_reads += 1
+        if self.blob_reads == 5 and self.blob_race: self.blob_race(self)
+        try:
+            return self.blobs[(path, ref)]
+        except KeyError as exc:
+            raise SupervisorError("file blob is missing") from exc
     def mark_ready(self, node_id):
         self.ready_calls.append(node_id); self.pr["draft"] = False
-        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = self.content_reads = 0
+        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = self.content_reads = self.blob_reads = 0
     def merge(self, number, head): self.merge_calls.append((number, head))
 
 
@@ -215,7 +221,12 @@ class SupervisorTest(unittest.TestCase):
             "checks": [{"name": "Future Check", "workflow": ".github/workflows/future.yml"}],
         }).encode()
         client.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = future
+        client.blobs[(".github/workflows/future.yml", HEAD_SHA)] = "9" * 40
         self.assertEqual(evaluate(client, REPO, 5).action, "merge")
+        missing = FakeClient()
+        missing.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = future
+        with self.assertRaisesRegex(SupervisorError, "file blob is missing"):
+            evaluate(missing, REPO, 5)
         client.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = b"not-json"
         with self.assertRaisesRegex(SupervisorError, "candidate product check configuration"):
             evaluate(client, REPO, 5)
@@ -227,6 +238,18 @@ class SupervisorTest(unittest.TestCase):
             json.dumps({"schema_version": 1, "checks": []}).encode(),
         )
         with self.assertRaisesRegex(SupervisorError, "configuration changed"):
+            evaluate(client, REPO, 5)
+        client = FakeClient()
+        future = json.dumps({
+            "schema_version": 1,
+            "checks": [{"name": "Future Check", "workflow": ".github/workflows/future.yml"}],
+        }).encode()
+        client.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = future
+        client.blobs[(".github/workflows/future.yml", HEAD_SHA)] = "9" * 40
+        client.blob_race = lambda value: value.blobs.__setitem__(
+            (".github/workflows/future.yml", HEAD_SHA), "8" * 40
+        )
+        with self.assertRaisesRegex(SupervisorError, "candidate product workflow definitions changed"):
             evaluate(client, REPO, 5)
 
 

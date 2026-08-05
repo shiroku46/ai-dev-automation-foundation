@@ -2,6 +2,7 @@
 """Fail closed when a public export contains secrets or private references."""
 from __future__ import annotations
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -36,7 +37,29 @@ def iter_text_files(root: Path):
 
 def is_generated_target(root: Path) -> bool:
     checklist = root / "INSTALL_CHECKLIST.md"
-    return checklist.is_file() and GENERATED_TARGET_MARKER in checklist.read_text(encoding="utf-8")
+    lock_path = root / "FOUNDATION.lock.json"
+    source_generator = root / "bootstrap/generator.py"
+    if (
+        checklist.is_symlink()
+        or not checklist.is_file()
+        or lock_path.is_symlink()
+        or not lock_path.is_file()
+        or source_generator.exists()
+    ):
+        return False
+    if GENERATED_TARGET_MARKER not in checklist.read_text(encoding="utf-8"):
+        return False
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(lock, dict)
+        and lock.get("schema_version") == 1
+        and lock.get("source_repository") == "shiroku46/ai-dev-automation-foundation"
+        and re.fullmatch(r"[0-9a-f]{40}", str(lock.get("source_sha") or "")) is not None
+        and isinstance(lock.get("managed_files"), list)
+    )
 
 def scan(root: Path) -> list[str]:
     findings: list[str] = []

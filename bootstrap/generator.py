@@ -8,12 +8,17 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.foundation_product_checks import ProductCheckConfigError, parse_product_checks
+
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 SOURCE_REPOSITORY = "shiroku46/ai-dev-automation-foundation"
 GENERATOR_VERSION = "2.0.0"
@@ -289,6 +294,10 @@ def plan_render(
                 continue
             target_digest = _sha256_file(destination)
             if target_owned:
+                try:
+                    parse_product_checks(destination.read_bytes())
+                except ProductCheckConfigError as exc:
+                    raise ValueError(f"target-owned product check configuration is invalid: {relative}") from exc
                 action = "target-owned-unchanged" if target_digest == source_digest else "target-owned-preserved"
                 preserved.append(relative)
             elif target_digest == source_digest:

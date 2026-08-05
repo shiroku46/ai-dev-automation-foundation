@@ -65,6 +65,8 @@ class ProductCheckConfigTest(unittest.TestCase):
             [{"name": "A", "workflow": ".github/workflows/../ci.yml"}],
             [{"name": "A\nB", "workflow": ".github/workflows/a.yml"}],
             [{"name": "A", "workflow": ".github/workflows/a.json"}],
+            [{"name": "Alias CI", "workflow": ".github/workflows/ci.yml"}],
+            [{"name": "Alias Supervisor", "workflow": ".github/workflows/supervisor.yml"}],
             [{"name": "A", "workflow": ".github/workflows/a.yml", "extra": 1}],
         )
         for checks in invalid_sets:

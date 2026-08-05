@@ -14,6 +14,15 @@ MAX_CHECKS = 20
 MAX_NAME_LENGTH = 100
 MAX_PATH_LENGTH = 240
 RESERVED_CHECK_NAMES = frozenset({"CI", "Unit Tests"})
+RESERVED_WORKFLOW_PATHS = frozenset({
+    ".github/workflows/ci.yml",
+    ".github/workflows/unit-tests.yml",
+    ".github/workflows/trusted-checks.yml",
+    ".github/workflows/claude-queue.yml",
+    ".github/workflows/claude-queue-comment-bridge.yml",
+    ".github/workflows/ci-reconcile.yml",
+    ".github/workflows/supervisor.yml",
+})
 _NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]+$")
 _WORKFLOW_RE = re.compile(
     r"^\.github/workflows/(?!.*(?:^|/)\.\.(?:/|$))(?!.*[\\:\x00-\x1f])[^/][^:]*\.(?:yml|yaml)$"
@@ -77,6 +86,7 @@ def parse_product_checks(content: bytes | str) -> tuple[ProductCheck, ...]:
             _WORKFLOW_RE.fullmatch(workflow) is None
             or ".." in workflow.split("/")
             or "//" in workflow
+            or workflow in RESERVED_WORKFLOW_PATHS
         ):
             raise ProductCheckConfigError("product workflow path is unsafe")
         folded = name.casefold()
