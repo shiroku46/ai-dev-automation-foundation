@@ -44,6 +44,52 @@ jobs:
           PY
       - name: Apply exact authorized patch
         run: python .github/issue-207-implement.py
+      - name: Correct parser and generated-target import parity
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          parser = Path('scripts/foundation_product_checks.py')
+          content = parser.read_text(encoding='utf-8')
+          old = '''        if _WORKFLOW_RE.fullmatch(workflow) is None:
+            raise ProductCheckConfigError("product workflow path is unsafe")
+'''
+          new = '''        if (
+            _WORKFLOW_RE.fullmatch(workflow) is None
+            or ".." in workflow.split("/")
+            or "//" in workflow
+        ):
+            raise ProductCheckConfigError("product workflow path is unsafe")
+'''
+          if content.count(old) != 1:
+              raise SystemExit('product workflow safety pattern changed')
+          parser.write_text(content.replace(old, new, 1), encoding='utf-8')
+
+          validator = Path('scripts/validate_repository.py')
+          content = validator.read_text(encoding='utf-8')
+          old = '''from scripts.foundation_product_checks import (
+    CONFIG_PATH as PRODUCT_CHECKS_PATH,
+    ProductCheckConfigError,
+    parse_product_checks,
+)
+'''
+          new = '''try:
+    from scripts.foundation_product_checks import (
+        CONFIG_PATH as PRODUCT_CHECKS_PATH,
+        ProductCheckConfigError,
+        parse_product_checks,
+    )
+except ModuleNotFoundError:
+    from foundation_product_checks import (
+        CONFIG_PATH as PRODUCT_CHECKS_PATH,
+        ProductCheckConfigError,
+        parse_product_checks,
+    )
+'''
+          if content.count(old) != 1:
+              raise SystemExit('validator product-check import pattern changed')
+          validator.write_text(content.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Remove temporary transports
         run: |
           rm -f .github/issue-207-implement.py
