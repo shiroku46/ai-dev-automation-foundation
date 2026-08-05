@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
   patch:
-    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.ref == 'refs/heads/github/issue-190-trusted-issue-control'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -22,263 +21,27 @@ jobs:
         with:
           ref: github/issue-190-trusted-issue-control
           fetch-depth: 0
-      - name: Apply exact trusted-Issue patch and remove transport
+      - name: Apply exact branch patch
+        run: python3 scripts/issue_190_patch.py
+      - name: Validate exact persistent diff
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(text: str, old: str, new: str, label: str) -> str:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{label}: expected one source match, got {count}")
-              return text.replace(old, new, 1)
-
-          workflow_path = Path('.github/workflows/ci-reconcile.yml')
-          workflow = workflow_path.read_text(encoding='utf-8')
-
-          workflow = replace_once(
-              workflow,
-              '  workflow_dispatch:\n',
-              '  workflow_dispatch:\n  issue_comment:\n    types: [created]\n',
-              'event trigger',
-          )
-          workflow = replace_once(
-              workflow,
-              '          OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}\n          EVENT_NAME: ${{ github.event_name }}\n',
-              '          OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}\n          REPOSITORY_OWNER: ${{ github.repository_owner }}\n          ACTOR: ${{ github.actor }}\n          EVENT_NAME: ${{ github.event_name }}\n',
-              'trusted owner environment',
-          )
-          workflow = replace_once(
-              workflow,
-              '          owner = os.environ["OWNER"]\n          event_name = os.environ["EVENT_NAME"]\n',
-              '          configured_owner = os.environ["OWNER"].strip().casefold()\n          repository_owner = os.environ["REPOSITORY_OWNER"].strip().casefold()\n          trusted_owners = {value for value in (configured_owner, repository_owner) if value}\n          event_actor = os.environ["ACTOR"].strip().casefold()\n          control_trigger = "/foundation-reconcile"\n          event_name = os.environ["EVENT_NAME"]\n',
-              'normalized owner identities',
-          )
-          old_trusted = '''          def trusted_issue(number: int) -> dict[str, Any]:
-              issue = api(f"repos/{repository}/issues/{number}")
-              if (
-                  issue.get("state") != "open"
-                  or issue.get("pull_request")
-                  or ((issue.get("user") or {}).get("login") or "").casefold() != owner.casefold()
-              ):
-                  raise RuntimeError("Queue source Issue is not trusted and open")
-              return issue
-'''
-          new_trusted = '''          def issue_trust_predicates(
-              issue: dict[str, Any],
-              number: int,
-              allowed_owners: set[str],
-          ) -> dict[str, bool]:
-              author = str(((issue.get("user") or {}).get("login") or "")).strip().casefold()
-              connected_number = issue.get("number")
-              return {
-                  "exact_number": (
-                      not isinstance(number, bool)
-                      and isinstance(number, int)
-                      and number > 0
-                      and not isinstance(connected_number, bool)
-                      and isinstance(connected_number, int)
-                      and connected_number == number
-                  ),
-                  "open_state": issue.get("state") == "open",
-                  "issue_not_pr": not bool(issue.get("pull_request")),
-                  "trusted_author": bool(author) and author in allowed_owners,
-              }
-
-          def trusted_issue(number: int) -> dict[str, Any]:
-              if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-                  raise RuntimeError("Queue source Issue trust predicates failed: invalid_number=true")
-              delays = (0.0, 0.5, 1.0)
-              last = {
-                  "exact_number": False,
-                  "open_state": False,
-                  "issue_not_pr": False,
-                  "trusted_author": False,
-              }
-              for delay in delays:
-                  if delay:
-                      time.sleep(delay)
-                  issue = api(f"repos/{repository}/issues/{number}")
-                  if not isinstance(issue, dict):
-                      continue
-                  last = issue_trust_predicates(issue, number, trusted_owners)
-                  if all(last.values()):
-                      return issue
-              detail = ",".join(
-                  f"{key}={str(value).lower()}" for key, value in sorted(last.items())
-              )
-              raise RuntimeError(f"Queue source Issue trust predicates failed: {detail}")
-'''
-          workflow = replace_once(workflow, old_trusted, new_trusted, 'trusted Issue implementation')
-          workflow = replace_once(
-              workflow,
-              '                  if ((item.get("user") or {}).get("login") or "").casefold() == owner.casefold()\n',
-              '                  if str(((item.get("user") or {}).get("login") or "")).strip().casefold() in trusted_owners\n',
-              'Queue trigger author',
-          )
-          old_issue_from_run = '''          def issue_from_run(run: dict[str, Any]) -> dict[str, Any]:
-              title = str(run.get("display_title") or "")
-              match = re.fullmatch(r"Optional Claude issue-([1-9][0-9]*)", title)
-              if match is None:
-                  raise RuntimeError("Queue run title does not identify exactly one Issue")
-              return trusted_issue(int(match.group(1)))
-'''
-          new_issue_from_run = old_issue_from_run + '''
-          def issue_from_control_event() -> dict[str, Any]:
-              source = event.get("issue") or {}
-              comment = event.get("comment") or {}
-              number = source.get("number")
-              comment_author = str(((comment.get("user") or {}).get("login") or "")).strip().casefold()
-              if (
-                  source.get("pull_request")
-                  or str(comment.get("body") or "").strip() != control_trigger
-                  or not event_actor
-                  or event_actor not in trusted_owners
-                  or comment_author != event_actor
-                  or isinstance(number, bool)
-                  or not isinstance(number, int)
-                  or number <= 0
-              ):
-                  raise RuntimeError("reconciliation control event is not trusted and exact")
-              return trusted_issue(number)
-'''
-          workflow = replace_once(workflow, old_issue_from_run, new_issue_from_run, 'control event identity')
-          old_else = '''          else:
-              if not active_queue_run():
-'''
-          new_else = '''          elif event_name == "issue_comment":
-              selected_issue = issue_from_control_event()
-              if not active_queue_run() and not candidate_for_issue(int(selected_issue["number"])):
-                  resumed = resume_remote_branch(selected_issue, base_sha)
-                  if resumed is not None:
-                      action = f"resumed_pr_{resumed}"
-                  else:
-                      recovered = latest_verified_artifact(selected_issue, base_sha)
-                      if recovered is not None:
-                          recovered_run, artifact = recovered
-                          source_run_id = int(recovered_run.get("id") or 0)
-                          pr_number = publish_artifact(recovered_run, selected_issue, artifact)
-                          action = f"published_pr_{pr_number}"
-                      elif dispatch_retry(selected_issue, base_sha, FailureClass.UNKNOWN, None):
-                          action = "control_retry_dispatched"
-                      else:
-                          action = "control_already_recorded"
-          else:
-              if not active_queue_run():
-'''
-          workflow = replace_once(workflow, old_else, new_else, 'control event execution')
-          workflow_path.write_text(workflow, encoding='utf-8')
-
-          test_path = Path('tests/test_workflow_security.py')
-          tests = test_path.read_text(encoding='utf-8')
-          tests = replace_once(
-              tests,
-              'import re\nimport unittest\nfrom pathlib import Path\n',
-              'import ast\nimport re\nimport textwrap\nimport unittest\nfrom pathlib import Path\nfrom typing import Any\n',
-              'test imports',
-          )
-          helper_marker = '''def job_block(content: str, name: str, following: str | None = None) -> str:
-    block = content.split(f"\\n  {name}:\\n", 1)[1]
-    if following:
-        block = block.split(f"\\n  {following}:\\n", 1)[0]
-    return block
-'''
-          helper = helper_marker + '''
-
-def embedded_function(content: str, name: str):
-    match = re.search(
-        r"(?ms)^          python3 - <<'PY'\\n(?P<body>.*?)^          PY$",
-        content,
-    )
-    if match is None:
-        raise AssertionError("embedded reconciliation Python was not found")
-    module = ast.parse(textwrap.dedent(match.group("body")))
-    functions = [
-        node for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name == name
-    ]
-    if len(functions) != 1:
-        raise AssertionError(f"expected one {name} function")
-    namespace: dict[str, Any] = {"Any": Any}
-    exec(compile(ast.Module(body=functions, type_ignores=[]), "embedded", "exec"), namespace)
-    return namespace[name]
-'''
-          tests = replace_once(tests, helper_marker, helper, 'embedded function helper')
-          supervisor_marker = '    def test_supervisor_is_default_branch_github_coordinator_only(self):\n'
-          new_tests = '''    def test_reconciliation_control_and_trusted_issue_identity(self):
-        reconcile = read(".github/workflows/ci-reconcile.yml")
-        recovery = job_block(reconcile, "queue_recovery")
-        for required in (
-            "issue_comment:\\n    types: [created]",
-            "REPOSITORY_OWNER: ${{ github.repository_owner }}",
-            "ACTOR: ${{ github.actor }}",
-            'os.environ["OWNER"].strip().casefold()',
-            'os.environ["REPOSITORY_OWNER"].strip().casefold()',
-            'os.environ["ACTOR"].strip().casefold()',
-            'control_trigger = "/foundation-reconcile"',
-            'elif event_name == "issue_comment"',
-            'comment_author != event_actor',
-            'source.get("pull_request")',
-            'return trusted_issue(number)',
-        ):
-            self.assertIn(required, reconcile)
-        self.assertNotIn("configured_owner=", recovery)
-        self.assertNotIn("repository_owner=", recovery)
-        self.assertNotIn("comment.get(\"body\")", "Queue source Issue trust predicates failed")
-
-        predicate = embedded_function(reconcile, "issue_trust_predicates")
-        trusted = {"shiroku46"}
-        exact = {
-            "number": 173,
-            "state": "open",
-            "user": {"login": "shiroku46"},
-        }
-        self.assertTrue(all(predicate(exact, 173, trusted).values()))
-        self.assertFalse(predicate({**exact, "number": 174}, 173, trusted)["exact_number"])
-        self.assertFalse(predicate({**exact, "state": "closed"}, 173, trusted)["open_state"])
-        self.assertFalse(predicate({**exact, "pull_request": {"url": "x"}}, 173, trusted)["issue_not_pr"])
-        self.assertFalse(predicate({**exact, "user": {"login": "other"}}, 173, trusted)["trusted_author"])
-
-        identity = reconcile.split("          def trusted_issue(", 1)[1].split(
-            "\\n          def trigger_identity(", 1
-        )[0]
-        self.assertIn("delays = (0.0, 0.5, 1.0)", identity)
-        self.assertIn("time.sleep(delay)", identity)
-        self.assertIn("all(last.values())", identity)
-        self.assertIn("exact_number", identity)
-        self.assertIn("open_state", identity)
-        self.assertIn("issue_not_pr", identity)
-        self.assertIn("trusted_author", identity)
-        for forbidden in (
-            "issue.get(\"body\")",
-            "completed.stderr",
-            "completed.stdout",
-            "authorization",
-            "token=",
-            "owner=",
-        ):
-            self.assertNotIn(forbidden, identity.lower())
-
-''' + supervisor_marker
-          tests = replace_once(tests, supervisor_marker, new_tests, 'trusted Issue tests')
-          test_path.write_text(tests, encoding='utf-8')
-
-          Path('.github/workflows/issue-190-edit.yml').unlink()
-          PY
           git diff --check
-          git diff --name-only --exit-code -- .github/workflows/issue-190-edit.yml && exit 1 || true
-          test "$(git diff --name-only | sort)" = $'.github/workflows/ci-reconcile.yml\n.github/workflows/issue-190-edit.yml\ntests/test_workflow_security.py'
+          test "$(git diff --name-only | sort)" = $'.github/workflows/ci-reconcile.yml\n.github/workflows/issue-190-edit.yml\nscripts/issue_190_patch.py\ntests/test_workflow_security.py'
           python3 - <<'PY'
           from pathlib import Path
-          import re, textwrap
+          import re
+          import textwrap
           text = Path('.github/workflows/ci-reconcile.yml').read_text(encoding='utf-8')
           match = re.search(r"(?ms)^          python3 - <<'PY'\n(?P<body>.*?)^          PY$", text)
           if match is None:
               raise SystemExit('embedded Python missing')
           compile(textwrap.dedent(match.group('body')), 'ci-reconcile-embedded', 'exec')
           PY
+          python3 -m unittest tests.test_workflow_security
+      - name: Commit self-removing patch
+        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/ci-reconcile.yml tests/test_workflow_security.py .github/workflows/issue-190-edit.yml
+          git add .github/workflows/ci-reconcile.yml tests/test_workflow_security.py .github/workflows/issue-190-edit.yml scripts/issue_190_patch.py
           git commit -m 'Normalize trusted Queue Issue identity'
           git push origin HEAD:github/issue-190-trusted-issue-control
