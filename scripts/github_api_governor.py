@@ -42,9 +42,16 @@ class FailureKind(str, Enum):
 
 
 class GovernanceError(RuntimeError):
-    def __init__(self, kind: FailureKind, message: str) -> None:
+    def __init__(
+        self,
+        kind: FailureKind,
+        message: str,
+        *,
+        response: Response | None = None,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
+        self.response = response
 
     @property
     def retryable(self) -> bool:
@@ -305,21 +312,23 @@ class GovernedGitHub:
             self.circuit.record_success()
             return response
         self.last_failure = failure
-        error = GovernanceError(failure, f"GitHub request failed as {failure.value}")
+        error = GovernanceError(
+            failure,
+            f"GitHub request failed as {failure.value}",
+            response=response,
+        )
         if error.retryable:
             self.circuit.record_retryable_failure(now)
         raise error
 
     def read_page(self, path: str) -> Response:
-        response: Response | None = None
         for attempt in range(1, self.max_attempts + 1):
             try:
                 return self._once("GET", path)
             except GovernanceError as exc:
                 if not exc.retryable or attempt >= self.max_attempts:
                     raise
-                response = getattr(exc, "response", None)
-                self.sleeper(self._retry_delay(response, attempt))
+                self.sleeper(self._retry_delay(exc.response, attempt))
         raise AssertionError("bounded read attempts were exhausted unexpectedly")
 
     def read_json(self, path: str) -> Any:
