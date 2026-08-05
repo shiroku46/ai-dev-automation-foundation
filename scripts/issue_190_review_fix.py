@@ -54,6 +54,23 @@ test_path = Path("tests/test_workflow_security.py")
 tests = test_path.read_text(encoding="utf-8")
 tests = replace_once(
     tests,
+    '''        self.assertIn(
+            "if: github.event_name != 'workflow_run' || "
+            "github.event.workflow_run.path == '.github/workflows/claude-queue.yml'",
+            reconcile,
+        )
+''',
+    '''        self.assertIn("if: >-", reconcile)
+        self.assertIn(
+            "(github.event_name == 'workflow_run' && "
+            "github.event.workflow_run.path == '.github/workflows/claude-queue.yml') ||",
+            reconcile,
+        )
+''',
+    "existing job-gate regression",
+)
+tests = replace_once(
+    tests,
     '''            "issue_comment:\\n    types: [created]",
             "REPOSITORY_OWNER: ${{ github.repository_owner }}",
 ''',
