@@ -1,0 +1,350 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-dev-automation-foundation/github-capacity-state.schema.json",
+  "title": "GitHub Capacity and Collision State",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "repository",
+    "observed_at",
+    "default_sha",
+    "candidate_sha",
+    "api",
+    "actions",
+    "storage",
+    "collision",
+    "next_automatic_action",
+    "human_action_required",
+    "canonical_human_action"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "maxLength": 200
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 40
+    },
+    "default_sha": {
+      "$ref": "#/$defs/exactSha"
+    },
+    "candidate_sha": {
+      "oneOf": [
+        { "$ref": "#/$defs/exactSha" },
+        { "type": "null" }
+      ]
+    },
+    "api": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "request_budget",
+        "requests_used",
+        "attempts",
+        "consecutive_retryable_failures",
+        "retry_after_at",
+        "reset_at",
+        "circuit_reopen_at"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["normal", "throttled", "circuit-open", "unavailable"]
+        },
+        "request_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "requests_used": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "consecutive_retryable_failures": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "retry_after_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "reset_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "circuit_reopen_at": {
+          "$ref": "#/$defs/nullableTimestamp"
+        }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "active_concurrency_identity",
+        "run_count",
+        "duration_minutes",
+        "artifact_count"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["normal", "soft-budget-near", "deferred", "blocked"]
+        },
+        "active_concurrency_identity": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9._:/-]+$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "run_count": {
+          "$ref": "#/$defs/softBudget"
+        },
+        "duration_minutes": {
+          "$ref": "#/$defs/softBudget"
+        },
+        "artifact_count": {
+          "$ref": "#/$defs/softBudget"
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "repository_bytes",
+        "largest_file_bytes",
+        "artifact_bytes",
+        "artifact_retention_days"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["normal", "near-policy-limit", "blocked"]
+        },
+        "repository_bytes": {
+          "$ref": "#/$defs/nonNegativeBoundedInteger"
+        },
+        "largest_file_bytes": {
+          "$ref": "#/$defs/nonNegativeBoundedInteger"
+        },
+        "artifact_bytes": {
+          "$ref": "#/$defs/nonNegativeBoundedInteger"
+        },
+        "artifact_retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 400
+        }
+      }
+    },
+    "collision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "request_identity",
+        "active_branch",
+        "intended_pr",
+        "blocking_prs",
+        "blocking_paths",
+        "protected_path_families"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["clear", "blocked"]
+        },
+        "request_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9._:/#-]+$"
+        },
+        "active_branch": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^(?!/)(?!.*\\.\\.)(?!.*//)[A-Za-z0-9._/-]+$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "intended_pr": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            },
+            { "type": "null" }
+          ]
+        },
+        "blocking_prs": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 100,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          }
+        },
+        "blocking_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 1000,
+          "items": {
+            "$ref": "#/$defs/repositoryPath"
+          }
+        },
+        "protected_path_families": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/repositoryPath"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": { "const": "clear" }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "blocking_prs": { "maxItems": 0 },
+              "blocking_paths": { "maxItems": 0 }
+            }
+          },
+          "else": {
+            "properties": {
+              "blocking_prs": { "minItems": 1 },
+              "blocking_paths": { "minItems": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "next_automatic_action": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "human_action_required": {
+      "type": "boolean"
+    },
+    "canonical_human_action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "instruction"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "settings",
+                "billing",
+                "credential",
+                "environment",
+                "repository-creation"
+              ]
+            },
+            "instruction": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            }
+          }
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "human_action_required": { "const": true }
+        },
+        "required": ["human_action_required"]
+      },
+      "then": {
+        "properties": {
+          "canonical_human_action": { "type": "object" }
+        }
+      },
+      "else": {
+        "properties": {
+          "canonical_human_action": { "type": "null" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "exactSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "nullableTimestamp": {
+      "oneOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        { "type": "null" }
+      ]
+    },
+    "nonNegativeBoundedInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "softBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["used", "limit"],
+      "properties": {
+        "used": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        }
+      }
+    },
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000-\\u001f\\\\:])[^?\\[\\]]+$"
+    }
+  }
+}
