@@ -29,7 +29,7 @@ jobs:
           python-version: "3.12"
       - name: Run Foundation source tests or validate generated target
         run: |
-          if [ -d tests ]; then
+          if [ -f bootstrap/generator.py ]; then
             python -m unittest discover -s tests
           else
             python scripts/public_export_guard.py .
