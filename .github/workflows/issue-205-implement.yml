@@ -24,17 +24,27 @@ jobs:
         with:
           ref: github/issue-205-maintainability
           fetch-depth: 0
-      - name: Narrow the temporary script final audit
+      - name: Correct the temporary implementation assertions
         run: |
           python - <<'PY'
           from pathlib import Path
           path = Path('.github/issue-205-implement.py')
           content = path.read_text(encoding='utf-8')
-          old = '    "scripts/validate_repository.py",\n):\n    content = read(relative)\n'
-          new = '):\n    content = read(relative)\n'
-          if content.count(old) != 1:
-              raise SystemExit('temporary implementation audit pattern changed')
-          path.write_text(content.replace(old, new, 1), encoding='utf-8')
+          replacements = (
+              (
+                  '    "scripts/validate_repository.py",\n):\n    content = read(relative)\n',
+                  '):\n    content = read(relative)\n',
+              ),
+              (
+                  '    for forbidden in ("EVENT_PATH", "github.event_path", "Path(os.environ"):\n',
+                  '    for forbidden in ("EVENT_PATH", "github.event_path"):\n',
+              ),
+          )
+          for old, new in replacements:
+              if content.count(old) != 1:
+                  raise SystemExit(f'temporary implementation pattern changed: {old!r}')
+              content = content.replace(old, new, 1)
+          path.write_text(content, encoding='utf-8')
           PY
       - name: Apply authorized maintenance changes
         run: python .github/issue-205-implement.py
