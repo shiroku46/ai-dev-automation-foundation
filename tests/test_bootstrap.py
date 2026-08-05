@@ -249,6 +249,58 @@ class BootstrapTest(unittest.TestCase):
             result = validate(target)
             self.assertNotEqual(result.returncode, 0)
 
+    def test_invalid_source_identity_aborts_before_any_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            with self.assertRaisesRegex(ValueError, "source_sha"):
+                render(
+                    target,
+                    "owner",
+                    mode="new-repository",
+                    source_sha="bad",
+                    installed_at=INSTALLED_AT,
+                )
+            self.assertFalse(target.exists())
+
+    def test_invalid_existing_lock_identity_aborts_before_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            (target / LOCK_FILE).write_text(json.dumps({
+                "schema_version": 1,
+                "generator_version": GENERATOR_VERSION,
+                "source_repository": "other/repository",
+                "source_sha": SOURCE_SHA,
+                "installation_mode": "existing-product",
+                "installed_at": INSTALLED_AT,
+                "managed_files": [],
+            }), encoding="utf-8")
+            before = (target / LOCK_FILE).read_bytes()
+            with self.assertRaisesRegex(ValueError, "source repository"):
+                render(
+                    target,
+                    "owner",
+                    mode="existing-product",
+                    source_sha=SOURCE_SHA,
+                    installed_at=INSTALLED_AT,
+                )
+            self.assertEqual((target / LOCK_FILE).read_bytes(), before)
+            self.assertFalse((target / "scripts").exists())
+
+    def test_target_ancestor_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real = root / "real"
+            real.mkdir()
+            link = root / "link"
+            try:
+                link.symlink_to(real, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("directory symlinks are unavailable")
+            target = link / "target"
+            with self.assertRaisesRegex(ValueError, "contains a symlink"):
+                plan_render(target, "owner", mode="new-repository")
+            self.assertFalse((real / "target").exists())
+
     def test_renderer_rejects_nonempty_new_mode_and_source_tree(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)

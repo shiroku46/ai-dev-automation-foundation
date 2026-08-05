@@ -84,6 +84,12 @@ def _validate_relative_path(relative: str) -> None:
         raise ValueError(f"unsafe managed path: {relative!r}")
 
 
+def _assert_safe_target_root(target: Path) -> None:
+    for candidate in (target, *target.parents):
+        if candidate.exists() and candidate.is_symlink():
+            raise ValueError(f"target path contains a symlink: {candidate}")
+
+
 def _assert_safe_destination(target: Path, relative: str) -> Path:
     _validate_relative_path(relative)
     destination = target / relative
@@ -129,6 +135,16 @@ def _load_lock(target: Path) -> dict[str, object] | None:
         raise ValueError(f"{LOCK_FILE} is malformed") from exc
     if not isinstance(value, dict) or value.get("schema_version") != LOCK_SCHEMA_VERSION:
         raise ValueError(f"{LOCK_FILE} has an unsupported schema")
+    if value.get("source_repository") != SOURCE_REPOSITORY:
+        raise ValueError(f"{LOCK_FILE} source repository is invalid")
+    if not _SHA_RE.fullmatch(str(value.get("source_sha") or "")):
+        raise ValueError(f"{LOCK_FILE} source SHA is invalid")
+    if value.get("generator_version") != GENERATOR_VERSION:
+        raise ValueError(f"{LOCK_FILE} generator version is unsupported")
+    if value.get("installation_mode") not in INSTALL_MODES:
+        raise ValueError(f"{LOCK_FILE} installation mode is invalid")
+    if not isinstance(value.get("installed_at"), str) or not value["installed_at"]:
+        raise ValueError(f"{LOCK_FILE} installation time is invalid")
     files = value.get("managed_files")
     if not isinstance(files, list):
         raise ValueError(f"{LOCK_FILE} managed_files is invalid")
@@ -238,8 +254,7 @@ def plan_render(
     target = target.expanduser().absolute()
     if target == ROOT.resolve():
         raise ValueError("target must not be the Foundation source directory")
-    if target.exists() and target.is_symlink():
-        raise ValueError("target must not be a symlink")
+    _assert_safe_target_root(target)
 
     authorized = frozenset(authorize_overwrite)
     for relative in authorized:
@@ -355,6 +370,12 @@ def render(
     plan = plan_render(target, owner, mode=mode, authorize_overwrite=authorize_overwrite)
     if not plan.is_safe:
         raise ValueError("Bootstrap collisions: " + ", ".join(plan.collisions))
+    resolved_sha = (source_sha or _source_sha()).strip().lower()
+    if not _SHA_RE.fullmatch(resolved_sha):
+        raise ValueError("source_sha must be an exact 40-character lowercase SHA")
+    resolved_time = installed_at or _installed_at()
+    if not isinstance(resolved_time, str) or not resolved_time:
+        raise ValueError("installed_at must be a nonempty string")
 
     target.mkdir(parents=True, exist_ok=True)
     sources = _source_contents(owner, mode)
@@ -365,8 +386,6 @@ def render(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(sources[relative])
 
-    resolved_sha = (source_sha or _source_sha()).strip().lower()
-    resolved_time = installed_at or _installed_at()
     lock = _lock_payload(
         target,
         plan,
