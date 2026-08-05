@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the deterministic patch generator with raw replacement literals."""
+"""Execute the deterministic patch generator without replacement escape expansion."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,8 +11,16 @@ if source.count("implement = '''\n") != 1:
 method_literals = source.count("'''    def ")
 if method_literals != 8:
     raise SystemExit(f"expected eight method literals, found {method_literals}")
+old_subn = '    updated, count = pattern.subn(replacement.rstrip() + "\\n\\n", text, count=1)'
+new_subn = (
+    '    value = replacement.rstrip() + "\\n\\n"\n'
+    '    updated, count = pattern.subn(lambda _match: value, text, count=1)'
+)
+if source.count(old_subn) != 1:
+    raise SystemExit("replace_method substitution identity changed")
+source = source.replace(old_subn, new_subn, 1)
 source = source.replace("implement = '''\n", "implement = r'''\n", 1)
 source = source.replace("'''    def ", "r'''    def ")
-compile(source, str(path), "exec")
+code = compile(source, str(path), "exec")
 namespace = {"__name__": "__main__", "__file__": str(path)}
-exec(compile(source, str(path), "exec"), namespace)
+exec(code, namespace)
