@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   patch:
-    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Add Issues 196 and 198 patch transport'
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Retry Issues 196 and 198 patch transport'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -20,7 +20,7 @@ jobs:
           ref: github/issues-196-198-stability-isolation
           fetch-depth: 0
       - name: Generate exact protected patch
-        run: python3 scripts/issues_196_198_patch.py
+        run: python3 scripts/issues_196_198_patch_runner.py
       - name: Validate generated workflows and focused tests
         run: |
           git diff --check
