@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-dev-automation-foundation/agent-handoff.schema.json",
+  "title": "Foundation minimal agent handoff task state",
+  "description": "Structural schema for task-state.json. The standard-library parser is authoritative for digests, JSONL canonicalization, stale-head checks, Markdown consistency, and cross-field invariants.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "repository",
+    "issue_number",
+    "base_sha",
+    "candidate_sha",
+    "updated_at",
+    "phase",
+    "completed_work",
+    "pending_work",
+    "read_paths",
+    "changed_paths",
+    "next_action",
+    "blockers",
+    "human_action_required",
+    "decision_count",
+    "decisions_sha256",
+    "handoff_sha256"
+  ],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "task_id": {"$ref": "#/$defs/identity"},
+    "repository": {"$ref": "#/$defs/repository"},
+    "issue_number": {"type": "integer", "minimum": 1, "maximum": 1000000000},
+    "base_sha": {"$ref": "#/$defs/sha"},
+    "candidate_sha": {"$ref": "#/$defs/sha"},
+    "updated_at": {"$ref": "#/$defs/utcTimestamp"},
+    "phase": {
+      "enum": ["planning", "implementation", "validation", "review", "blocked", "completed"]
+    },
+    "completed_work": {"$ref": "#/$defs/workItems"},
+    "pending_work": {"$ref": "#/$defs/workItems"},
+    "read_paths": {"$ref": "#/$defs/paths"},
+    "changed_paths": {"$ref": "#/$defs/paths"},
+    "next_action": {"$ref": "#/$defs/text"},
+    "blockers": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"$ref": "#/$defs/blocker"}
+    },
+    "human_action_required": {"type": "boolean"},
+    "decision_count": {"type": "integer", "minimum": 0, "maximum": 200},
+    "decisions_sha256": {"$ref": "#/$defs/digest"},
+    "handoff_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,127})$"
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 201,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$"
+    },
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "detail": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/|\\\\|\\./|\\.\\./|[A-Za-z]:/)(?!.*(?:^|/)[.][gG][iI][tT](?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\\\)(?!.*[?*\\[\\]{}])[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "workItems": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/text"}
+    },
+    "paths": {
+      "type": "array",
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/path"}
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        },
+        "detail": {"$ref": "#/$defs/detail"}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "decision_id",
+        "repository",
+        "issue_number",
+        "recorded_head_sha",
+        "recorded_at",
+        "summary",
+        "rationale",
+        "supersedes"
+      ],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "decision_id": {"$ref": "#/$defs/identity"},
+        "repository": {"$ref": "#/$defs/repository"},
+        "issue_number": {"type": "integer", "minimum": 1, "maximum": 1000000000},
+        "recorded_head_sha": {"$ref": "#/$defs/sha"},
+        "recorded_at": {"$ref": "#/$defs/utcTimestamp"},
+        "summary": {"$ref": "#/$defs/text"},
+        "rationale": {"$ref": "#/$defs/detail"},
+        "supersedes": {
+          "oneOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/identity"}
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"phase": {"const": "blocked"}},
+        "required": ["phase"]
+      },
+      "then": {"properties": {"blockers": {"minItems": 1}}}
+    },
+    {
+      "if": {
+        "properties": {"human_action_required": {"const": true}},
+        "required": ["human_action_required"]
+      },
+      "then": {
+        "properties": {
+          "phase": {"const": "blocked"},
+          "blockers": {
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "enum": [
+                    "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
+                    "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
+                    "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"phase": {"const": "completed"}},
+        "required": ["phase"]
+      },
+      "then": {
+        "properties": {
+          "pending_work": {"maxItems": 0},
+          "blockers": {"maxItems": 0},
+          "human_action_required": {"const": false},
+          "next_action": {"const": "none"}
+        }
+      }
+    }
+  ]
+}
