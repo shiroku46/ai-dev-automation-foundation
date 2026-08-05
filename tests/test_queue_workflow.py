@@ -40,6 +40,9 @@ class OptionalQueueTest(unittest.TestCase):
             "COMMENT_ISSUE:", "COMMENT_BODY:", "COMMENT_IS_PR:",
             "decision = resolve_queue_event(", "decision.issue_number",
             "decision.allowed", "decision.automated_retry",
+            'owner = os.environ["OWNER"].casefold()',
+            "def api(path):", "def api_pages(path):", "def trigger_identity(issue):",
+            "def request_fingerprint(issue, base_sha):",
         ):
             self.assertIn(required, prepare)
 
