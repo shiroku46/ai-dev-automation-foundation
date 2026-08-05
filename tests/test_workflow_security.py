@@ -424,6 +424,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             "PRESERVE_IF_PRESENT", "plan_render", "Bootstrap collisions",
             "FOUNDATION.lock.json", "source_sha", "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
+            "scripts/foundation_product_checks.py", ".github/foundation-product-checks.json",
             "scripts/queue_event_guard.py", "scripts/github_api_governor.py",
             "scripts/supervisor_policy.py", "destination.write_bytes(sources[relative])",
             "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",

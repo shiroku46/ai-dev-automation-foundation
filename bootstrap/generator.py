@@ -8,12 +8,17 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.foundation_product_checks import ProductCheckConfigError, parse_product_checks
+
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 SOURCE_REPOSITORY = "shiroku46/ai-dev-automation-foundation"
 GENERATOR_VERSION = "2.0.0"
@@ -23,6 +28,7 @@ INSTALL_MODES = ("new-repository", "existing-product")
 PRESERVE_IF_PRESENT = frozenset(
     {"README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md"}
 )
+TARGET_OWNED_FILES = frozenset({".github/foundation-product-checks.json"})
 MANAGED_FILES = (
     "README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     "docs/PROJECT_STARTUP.md", "docs/MINIMUM_SAFETY_PROFILE.md",
@@ -30,8 +36,10 @@ MANAGED_FILES = (
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
+    "scripts/foundation_product_checks.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
+    ".github/foundation-product-checks.json",
     ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
     ".github/workflows/trusted-checks.yml", ".github/workflows/claude-queue.yml",
     ".github/workflows/claude-queue-comment-bridge.yml",
@@ -197,6 +205,7 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - version file: `{LOCK_FILE}`
 - [ ] Confirm the lock records the exact Foundation source SHA and sorted managed-file hashes.
 - [ ] Keep target-owned files outside the managed lock.
+- [ ] Configure required product workflows in `.github/foundation-product-checks.json`; the previous default-branch config judges each configuration-changing PR.
 - [ ] For upgrades, render a candidate in a separate directory and compare locks before publication.
 
 ## Non-destructive publication
@@ -277,13 +286,21 @@ def plan_render(
         destination = _assert_safe_destination(target, relative)
         source_digest = _sha256_bytes(sources[relative])
         target_digest: str | None = None
+        target_owned = relative in TARGET_OWNED_FILES
         if destination.exists():
             if not destination.is_file():
                 collisions.append(relative)
                 entries.append(PlanEntry(relative, "collision", source_digest, None))
                 continue
             target_digest = _sha256_file(destination)
-            if target_digest == source_digest:
+            if target_owned:
+                try:
+                    parse_product_checks(destination.read_bytes())
+                except ProductCheckConfigError as exc:
+                    raise ValueError(f"target-owned product check configuration is invalid: {relative}") from exc
+                action = "target-owned-unchanged" if target_digest == source_digest else "target-owned-preserved"
+                preserved.append(relative)
+            elif target_digest == source_digest:
                 action = "unchanged"
                 managed.append(relative)
             elif relative in authorized:
@@ -301,9 +318,12 @@ def plan_render(
                 action = "collision"
                 collisions.append(relative)
         else:
-            action = "add"
+            action = "add-target-owned" if target_owned else "add"
             writes.append(relative)
-            managed.append(relative)
+            if target_owned:
+                preserved.append(relative)
+            else:
+                managed.append(relative)
         entries.append(PlanEntry(relative, action, source_digest, target_digest))
 
     lock_destination = _assert_safe_destination(target, LOCK_FILE)
@@ -333,7 +353,7 @@ def _verify_plan_state(target: Path, plan: RenderPlan) -> None:
     """Fail before mutation when any planned destination changed after planning."""
     for entry in plan.entries:
         destination = _assert_safe_destination(target, entry.path)
-        if entry.action == "add":
+        if entry.action in {"add", "add-target-owned"}:
             if destination.exists():
                 raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
             continue

@@ -8,6 +8,8 @@ then after a complete fresh evaluation merge that exact expected head.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import fnmatch
 import json
 import os
@@ -17,6 +19,12 @@ import sys
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Protocol, Sequence
+
+from scripts.foundation_product_checks import (
+    CONFIG_PATH as PRODUCT_CHECKS_PATH,
+    ProductCheckConfigError,
+    parse_product_checks,
+)
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -39,6 +47,7 @@ ALLOWED_HEADINGS = {
     "additional allowed paths",
 }
 PROTECTED_EXACT = {
+    PRODUCT_CHECKS_PATH,
     "SECURITY.md", "AGENTS.md", "CLAUDE.md",
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
     "docs/MINIMUM_SAFETY_PROFILE.md", "docs/OPERATING_RULES.md",
@@ -105,6 +114,7 @@ class Client(Protocol):
     def open_pulls(self) -> Sequence[Mapping[str, Any]]: ...
     def workflow_runs(self, head_sha: str) -> Sequence[Mapping[str, Any]]: ...
     def review_threads(self, number: int) -> Sequence[Mapping[str, Any]]: ...
+    def file_content(self, path: str, ref: str) -> bytes: ...
     def file_blob(self, path: str, ref: str) -> str: ...
     def mark_ready(self, node_id: str) -> None: ...
     def merge(self, number: int, head_sha: str) -> None: ...
@@ -358,18 +368,30 @@ def _pr_identity(pr: Mapping[str, Any], repo: str, default_branch: str) -> tuple
     return number, _sha(head.get("sha"), "PR head")
 
 
-def _check_snapshot(runs: Sequence[Mapping[str, Any]], head: str, repo: str, number: int) -> tuple[tuple[str, str, int], ...]:
+def _check_snapshot(
+    runs: Sequence[Mapping[str, Any]],
+    head: str,
+    repo: str,
+    number: int,
+    required_checks: Sequence[str],
+) -> tuple[tuple[str, str, int], ...]:
+    required = tuple(required_checks)
+    if not required or len(required) != len(set(required)):
+        raise SupervisorError("required check identity is invalid")
+    required_set = set(required)
     latest: dict[str, tuple[str, int, str]] = {}
     for run in runs:
         if run.get("event") != "pull_request" or run.get("head_sha") != head:
             continue
         if str(((run.get("repository") or {}).get("full_name")) or "").casefold() != repo.casefold():
             continue
-        prs = run.get("pull_requests") or []
-        if prs and not any(isinstance(item, dict) and item.get("number") == number for item in prs):
+        prs = run.get("pull_requests")
+        if not isinstance(prs, list) or not any(
+            isinstance(item, dict) and item.get("number") == number for item in prs
+        ):
             continue
         name = str(run.get("name") or "")
-        if name not in REQUIRED_CHECKS:
+        if name not in required_set:
             continue
         run_id = run.get("id")
         updated = str(run.get("updated_at") or run.get("created_at") or "")
@@ -379,7 +401,10 @@ def _check_snapshot(runs: Sequence[Mapping[str, Any]], head: str, repo: str, num
         candidate = (updated, run_id, state)
         if name not in latest or candidate[:2] > latest[name][:2]:
             latest[name] = candidate
-    return tuple((name, latest.get(name, ("", 0, "missing"))[2], latest.get(name, ("", 0, "missing"))[1]) for name in REQUIRED_CHECKS)
+    return tuple(
+        (name, latest.get(name, ("", 0, "missing"))[2], latest.get(name, ("", 0, "missing"))[1])
+        for name in required
+    )
 
 
 def _authorization_snapshot(scope: TaskScope) -> tuple[tuple[int, str, str, str, str], ...]:
@@ -401,6 +426,14 @@ def _overlaps(client: Client, repo: str, number: int, candidate: Sequence[str]) 
     return tuple(sorted(result))
 
 
+
+def _product_checks(client: Client, ref: str, where: str):
+    raw = client.file_content(PRODUCT_CHECKS_PATH, ref)
+    try:
+        return raw, parse_product_checks(raw)
+    except ProductCheckConfigError as exc:
+        raise SupervisorError(f"{where} product check configuration is invalid") from exc
+
 def evaluate(client: Client, repo: str, pr_number: int, automation_owner: str | None = None) -> Decision:
     if not REPO_RE.fullmatch(repo):
         raise SupervisorError("repository identity is invalid")
@@ -413,6 +446,15 @@ def evaluate(client: Client, repo: str, pr_number: int, automation_owner: str | 
     default_sha = client.default_branch_sha(default_branch)
     pr = client.pull(pr_number)
     number, head = _pr_identity(pr, repo, default_branch)
+    default_product_raw, default_product_checks = _product_checks(client, default_sha, "default")
+    candidate_product_raw, candidate_product_checks = _product_checks(client, head, "candidate")
+    configured_workflows = {**CHECK_WORKFLOWS, **{item.name: item.workflow for item in default_product_checks}}
+    required_checks = tuple(configured_workflows)
+    product_check_names = {item.name for item in default_product_checks}
+    candidate_product_blobs = tuple(
+        (item.workflow, client.file_blob(item.workflow, head))
+        for item in candidate_product_checks
+    )
     pr_body = _text(pr.get("body"), "PR body")
     source_number = source_issue_number(pr_body)
     issue = client.issue(source_number)
@@ -431,11 +473,18 @@ def evaluate(client: Client, repo: str, pr_number: int, automation_owner: str | 
     overlap = _overlaps(client, repo, number, files)
     if overlap:
         raise SupervisorError(f"live Pull Request #{overlap[0][0]} overlaps the candidate path set")
-    for name, workflow_path in CHECK_WORKFLOWS.items():
-        if client.file_blob(workflow_path, head) != client.file_blob(workflow_path, default_sha):
+    workflow_blobs = tuple(
+        (name, workflow_path, client.file_blob(workflow_path, head), client.file_blob(workflow_path, default_sha))
+        for name, workflow_path in configured_workflows.items()
+    )
+    for name, _workflow_path, candidate_blob, default_blob in workflow_blobs:
+        if candidate_blob != default_blob:
             raise SupervisorError(f"{name} workflow differs from the default-branch definition")
-    checks = _check_snapshot(client.workflow_runs(head), head, repo, number)
-    if any(state not in PASSING for _, state, _ in checks):
+    checks = _check_snapshot(client.workflow_runs(head), head, repo, number, required_checks)
+    if any(
+        state != "success" if name in product_check_names else state not in PASSING
+        for name, state, _ in checks
+    ):
         raise SupervisorError("required exact-head checks are not all successful")
     review = review_evidence(client.issue_comments(number), client.review_threads(number), head, scope.risk, trusted)
     if review.state != "clean":
@@ -447,9 +496,23 @@ def evaluate(client: Client, repo: str, pr_number: int, automation_owner: str | 
         raise SupervisorError("source authorization comments changed during evaluation")
     if client.default_branch_sha(default_branch) != default_sha:
         raise SupervisorError("default branch changed during evaluation")
+    if client.file_content(PRODUCT_CHECKS_PATH, default_sha) != default_product_raw:
+        raise SupervisorError("default product check configuration changed during evaluation")
+    if client.file_content(PRODUCT_CHECKS_PATH, head) != candidate_product_raw:
+        raise SupervisorError("candidate product check configuration changed during evaluation")
+    if tuple(
+        (item.workflow, client.file_blob(item.workflow, head))
+        for item in candidate_product_checks
+    ) != candidate_product_blobs:
+        raise SupervisorError("candidate product workflow definitions changed during evaluation")
+    if tuple(
+        (name, workflow_path, client.file_blob(workflow_path, head), client.file_blob(workflow_path, default_sha))
+        for name, workflow_path in configured_workflows.items()
+    ) != workflow_blobs:
+        raise SupervisorError("product workflow definitions changed during evaluation")
     if changed_paths(client.pull_files(number)) != files or _overlaps(client, repo, number, files) != overlap:
         raise SupervisorError("path or collision state changed during evaluation")
-    if _check_snapshot(client.workflow_runs(head), head, repo, number) != checks:
+    if _check_snapshot(client.workflow_runs(head), head, repo, number, required_checks) != checks:
         raise SupervisorError("exact-head check evidence changed during evaluation")
     if review_evidence(client.issue_comments(number), client.review_threads(number), head, scope.risk, trusted) != review:
         raise SupervisorError("coordinator review evidence changed during evaluation")
@@ -534,9 +597,18 @@ class GhClient:
             cursor = page_info.get("endCursor")
             if not isinstance(cursor, str) or not cursor: raise SupervisorError("thread cursor invalid")
         raise SupervisorError("thread pagination exceeded")
+    def file_content(self, path, ref):
+        value = self._api(f"repos/{self.repo}/contents/{urllib.parse.quote(path, safe='/')}?ref={ref}")
+        if value.get("type") != "file" or value.get("encoding") != "base64":
+            raise SupervisorError("configuration content response is invalid")
+        encoded = str(value.get("content") or "").replace("\n", "")
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise SupervisorError("configuration content encoding is invalid") from exc
     def file_blob(self, path, ref):
         value = self._api(f"repos/{self.repo}/contents/{urllib.parse.quote(path, safe='/')}?ref={ref}")
-        return _sha(value.get("sha"), "workflow blob")
+        return _sha(value.get("sha"), "file blob")
     def mark_ready(self, node_id): self._run(["api", "graphql", "-f", f"query={self.READY_MUTATION}", "-F", f"id={node_id}"])
     def merge(self, number, head_sha):
         result = self._api(f"repos/{self.repo}/pulls/{number}/merge", "PUT", {"sha": head_sha, "merge_method": "merge"})

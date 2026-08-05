@@ -17,6 +17,7 @@ from bootstrap.generator import (
     LOCK_FILE,
     MANAGED_FILES,
     PRESERVE_IF_PRESENT,
+    TARGET_OWNED_FILES,
     plan_render,
     render,
 )
@@ -56,6 +57,8 @@ class BootstrapTest(unittest.TestCase):
             "scripts/queue_issue_hydration.py",
             "scripts/queue_retry_identity.py",
             "scripts/queue_event_guard.py",
+            "scripts/foundation_product_checks.py",
+            ".github/foundation-product-checks.json",
             "scripts/github_api_governor.py",
             "scripts/supervisor_policy.py",
             ".github/workflows/claude-queue-comment-bridge.yml",
@@ -98,7 +101,8 @@ class BootstrapTest(unittest.TestCase):
             self.assertEqual(lock["installed_at"], INSTALLED_AT)
             paths = [item["path"] for item in lock["managed_files"]]
             self.assertEqual(paths, sorted(paths))
-            self.assertEqual(set(paths), set(MANAGED_FILES) | {"INSTALL_CHECKLIST.md"})
+            self.assertEqual(set(paths), (set(MANAGED_FILES) - set(TARGET_OWNED_FILES)) | {"INSTALL_CHECKLIST.md"})
+            self.assertTrue(set(TARGET_OWNED_FILES).isdisjoint(paths))
             for item in lock["managed_files"]:
                 digest = hashlib.sha256((target / item["path"]).read_bytes()).hexdigest()
                 self.assertEqual(item["sha256"], digest)
@@ -121,7 +125,7 @@ class BootstrapTest(unittest.TestCase):
                 source_sha=SOURCE_SHA,
                 installed_at=INSTALLED_AT,
             )
-            self.assertEqual(set(plan.preserved), set(PRESERVE_IF_PRESENT))
+            self.assertEqual(set(plan.preserved), set(PRESERVE_IF_PRESENT) | set(TARGET_OWNED_FILES))
             for relative, content in originals.items():
                 self.assertEqual((target / relative).read_bytes(), content)
             self.assertEqual((target / "package.json").read_text(), '{"private":true}\n')
@@ -204,6 +208,49 @@ class BootstrapTest(unittest.TestCase):
                 )
             self.assertEqual(custom.read_bytes(), before)
 
+
+
+    def test_malformed_existing_product_check_config_aborts_before_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            config = target / ".github/foundation-product-checks.json"
+            config.parent.mkdir(parents=True)
+            config.write_text("not-json", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "product check configuration"):
+                render(
+                    target,
+                    "owner",
+                    mode="existing-product",
+                    source_sha=SOURCE_SHA,
+                    installed_at=INSTALLED_AT,
+                )
+            self.assertEqual(config.read_text(encoding="utf-8"), "not-json")
+            self.assertFalse((target / "scripts").exists())
+            self.assertFalse((target / LOCK_FILE).exists())
+
+    def test_product_check_config_is_target_owned_and_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render_new(target)
+            config = target / ".github/foundation-product-checks.json"
+            customized = '{"schema_version":1,"checks":[{"name":"Product CI","workflow":".github/workflows/product-ci.yml"}]}\n'
+            config.write_text(customized, encoding="utf-8")
+            plan = render(
+                target,
+                "owner",
+                mode="existing-product",
+                source_sha="b" * 40,
+                installed_at="2026-08-06T00:00:00Z",
+            )
+            self.assertIn(".github/foundation-product-checks.json", plan.preserved)
+            self.assertEqual(config.read_text(encoding="utf-8"), customized)
+            lock = json.loads((target / LOCK_FILE).read_text(encoding="utf-8"))
+            self.assertNotIn(
+                ".github/foundation-product-checks.json",
+                {item["path"] for item in lock["managed_files"]},
+            )
+            self.assertEqual(validate(target).returncode, 0)
+
     def test_install_checklist_describes_github_only_non_destructive_path(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
@@ -221,6 +268,7 @@ class BootstrapTest(unittest.TestCase):
                 "BOOTSTRAP_WORKFLOW_TOKEN",
                 "Do not force-update",
                 "human_action_required: false",
+                ".github/foundation-product-checks.json",
             ):
                 self.assertIn(marker, checklist)
 
