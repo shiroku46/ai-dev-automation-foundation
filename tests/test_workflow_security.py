@@ -148,6 +148,34 @@ class WorkflowSecurityTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, recovery)
 
+    def test_queue_recovery_records_use_non_force_git_data_cas(self):
+        reconcile = read(".github/workflows/ci-reconcile.yml")
+        record = reconcile.split("          def put_record(", 1)[1].split("\n          def retry_records(", 1)[0]
+        for required in (
+            'f"repos/{repository}/git/ref/heads/{quoted_branch}"',
+            'f"repos/{repository}/git/commits/{observed_head}"',
+            'f"repos/{repository}/git/blobs"',
+            'f"repos/{repository}/git/trees"',
+            '"base_tree": observed_tree',
+            '"mode": "100644"',
+            '"type": "blob"',
+            'f"repos/{repository}/git/commits"',
+            '"parents": [observed_head]',
+            'f"repos/{repository}/git/refs/heads/{quoted_branch}"',
+            '{"sha": commit_sha, "force": False}',
+            'if read_record(path) == payload:',
+            'if read_record(path) != payload:',
+            'recovery record compare-and-swap failed',
+        ):
+            self.assertIn(required, record)
+        self.assertIn('"--input", "-"', reconcile)
+        self.assertIn("json.dumps(payload, sort_keys=True", reconcile)
+        self.assertIn("sanitized Git Data request failed", reconcile)
+        self.assertNotIn('"--method", "PUT", f"repos/{repository}/contents/', record)
+        self.assertNotIn('"force": True', record)
+        self.assertNotIn("completed.stderr", record)
+        self.assertNotIn("completed.stdout", record)
+
     def test_supervisor_is_default_branch_github_coordinator_only(self):
         supervisor = read(".github/workflows/supervisor.yml")
         self.assertIn('workflows: ["CI", "Unit Tests"]', supervisor)

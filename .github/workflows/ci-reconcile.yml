@@ -116,6 +116,28 @@ jobs:
           def api(path: str) -> Any:
               return json.loads(gh("api", "-H", "Accept: application/vnd.github+json", path))
 
+          def typed_api(method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+              completed = subprocess.run(
+                  [
+                      "gh", "api", "--method", method,
+                      "-H", "Accept: application/vnd.github+json",
+                      path, "--input", "-",
+                  ],
+                  input=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                  text=True,
+                  capture_output=True,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  raise RuntimeError("sanitized Git Data request failed")
+              try:
+                  value = json.loads(completed.stdout or "{}")
+              except json.JSONDecodeError as exc:
+                  raise RuntimeError("sanitized Git Data response was malformed") from exc
+              if not isinstance(value, dict):
+                  raise RuntimeError("sanitized Git Data response was not an object")
+              return value
+
           def api_pages(path: str, key: str | None = None) -> list[dict[str, Any]]:
               payload = json.loads(gh("api", "-H", "Accept: application/vnd.github+json", "--paginate", "--slurp", path))
               values: list[dict[str, Any]] = []
@@ -246,25 +268,82 @@ jobs:
               return value
 
           def put_record(path: str, payload: dict[str, Any], message: str, base_sha: str) -> bool:
+              pattern = rf"{re.escape(retry_root)}/issue-[1-9][0-9]*/request-[0-9a-f]{{20}}/(?:retry-[1-9][0-9]*|internal-stop|exhausted)\.json"
+              if re.fullmatch(pattern, path) is None:
+                  raise RuntimeError("recovery record path is outside the fixed root")
               ensure_stop_branch(base_sha)
               existing = read_record(path)
               if existing is not None:
                   if existing != payload:
                       raise RuntimeError("deterministic recovery record identity changed")
                   return False
-              content = base64.b64encode(
-                  (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-              ).decode("ascii")
-              encoded_path = urllib.parse.quote(path, safe="/")
-              result = subprocess.run(
-                  ["gh", "api", "--method", "PUT", f"repos/{repository}/contents/{encoded_path}", "-f", f"message={message}", "-f", f"content={content}", "-f", f"branch={stop_branch}"],
-                  capture_output=True, text=True, check=False,
+
+              canonical = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+              quoted_branch = urllib.parse.quote(stop_branch, safe="")
+              ref = api(f"repos/{repository}/git/ref/heads/{quoted_branch}")
+              observed_head = str((ref.get("object") or {}).get("sha") or "")
+              if not exact_sha.fullmatch(observed_head):
+                  raise RuntimeError("recovery record branch head is invalid")
+              commit = api(f"repos/{repository}/git/commits/{observed_head}")
+              observed_tree = str((commit.get("tree") or {}).get("sha") or "")
+              if not exact_sha.fullmatch(observed_tree):
+                  raise RuntimeError("recovery record branch tree is invalid")
+
+              blob = typed_api(
+                  "POST",
+                  f"repos/{repository}/git/blobs",
+                  {
+                      "content": base64.b64encode(canonical).decode("ascii"),
+                      "encoding": "base64",
+                  },
               )
-              if result.returncode == 0:
-                  return True
-              if read_record(path) == payload:
-                  return False
-              raise RuntimeError("could not persist deterministic recovery record")
+              blob_sha = str(blob.get("sha") or "")
+              if not exact_sha.fullmatch(blob_sha):
+                  raise RuntimeError("recovery record blob identity is invalid")
+              tree = typed_api(
+                  "POST",
+                  f"repos/{repository}/git/trees",
+                  {
+                      "base_tree": observed_tree,
+                      "tree": [
+                          {
+                              "path": path,
+                              "mode": "100644",
+                              "type": "blob",
+                              "sha": blob_sha,
+                          }
+                      ],
+                  },
+              )
+              tree_sha = str(tree.get("sha") or "")
+              if not exact_sha.fullmatch(tree_sha):
+                  raise RuntimeError("recovery record tree identity is invalid")
+              created = typed_api(
+                  "POST",
+                  f"repos/{repository}/git/commits",
+                  {
+                      "message": message,
+                      "tree": tree_sha,
+                      "parents": [observed_head],
+                  },
+              )
+              commit_sha = str(created.get("sha") or "")
+              if not exact_sha.fullmatch(commit_sha):
+                  raise RuntimeError("recovery record commit identity is invalid")
+
+              try:
+                  typed_api(
+                      "PATCH",
+                      f"repos/{repository}/git/refs/heads/{quoted_branch}",
+                      {"sha": commit_sha, "force": False},
+                  )
+              except RuntimeError:
+                  if read_record(path) == payload:
+                      return False
+                  raise RuntimeError("recovery record compare-and-swap failed")
+              if read_record(path) != payload:
+                  raise RuntimeError("recovery record commit is not GitHub-visible")
+              return True
 
           def retry_records(issue_number: int, fingerprint: str) -> list[dict[str, Any]]:
               root = record_path(issue_number, fingerprint, "").rstrip("/")
