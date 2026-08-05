@@ -5,13 +5,18 @@ on:
     branches: [github/issue-205-maintainability]
     paths:
       - .github/issue-205-implement.py
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
 
 jobs:
   implement:
-    if: github.event.head_commit.message == 'Run Issue 205 implementation'
+    if: >-
+      (github.event_name == 'push' && github.event.head_commit.message == 'Run Issue 205 implementation') ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'github/issue-205-maintainability')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
