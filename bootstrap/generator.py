@@ -208,6 +208,7 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - [ ] `ai-no-merge` blocks readiness and merge.
 - [ ] Merge only with expected-head-SHA protection.
 - [ ] Optional provider failure remains non-blocking with `human_action_required: false`.
+- [ ] Persist routine automation stops only on `automation-internal-stops`; never publish routine stop comments.
 - [ ] Never output, persist, copy, hash, or infer Secret values.
 - [ ] Never execute proposed-branch code in a job carrying Secrets, OIDC, or repository write permission.
 """
