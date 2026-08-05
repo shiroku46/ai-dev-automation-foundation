@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import unittest
 from typing import Any, Sequence
 
+from scripts.foundation_product_checks import CONFIG_PATH as PRODUCT_CHECKS_PATH
 from scripts.github_coordinator_supervisor import (
     SupervisorError,
     evaluate,
@@ -68,6 +70,11 @@ class FakeClient:
             {"id": 101, "name": "CI", "event": "pull_request", "status": "completed", "conclusion": "success", "head_sha": HEAD_SHA, "updated_at": "2026-08-05T00:10:00Z", "repository": {"full_name": REPO}, "pull_requests": [{"number": 5}]},
             {"id": 102, "name": "Unit Tests", "event": "pull_request", "status": "completed", "conclusion": "success", "head_sha": HEAD_SHA, "updated_at": "2026-08-05T00:11:00Z", "repository": {"full_name": REPO}, "pull_requests": [{"number": 5}]},
         ]
+        empty_config = json.dumps({"schema_version": 1, "checks": []}).encode()
+        self.contents = {
+            (PRODUCT_CHECKS_PATH, DEFAULT_SHA): empty_config,
+            (PRODUCT_CHECKS_PATH, HEAD_SHA): empty_config,
+        }
         self.blobs = {
             (".github/workflows/ci.yml", HEAD_SHA): "c" * 40,
             (".github/workflows/ci.yml", DEFAULT_SHA): "c" * 40,
@@ -76,8 +83,8 @@ class FakeClient:
         }
         self.other = []
         self.ready_calls = []; self.merge_calls = []
-        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = 0
-        self.issue_race = self.pr_race = self.run_race = self.thread_race = None
+        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = self.content_reads = 0
+        self.issue_race = self.pr_race = self.run_race = self.thread_race = self.content_race = None
 
     def repository(self): return copy.deepcopy(self.repo)
     def default_branch_sha(self, branch): return self.default_sha
@@ -101,10 +108,14 @@ class FakeClient:
         self.thread_reads += 1
         if self.thread_reads == 2 and self.thread_race: self.thread_race(self)
         return copy.deepcopy(self.threads)
+    def file_content(self, path, ref):
+        self.content_reads += 1
+        if self.content_reads == 3 and self.content_race: self.content_race(self)
+        return self.contents[(path, ref)]
     def file_blob(self, path, ref): return self.blobs[(path, ref)]
     def mark_ready(self, node_id):
         self.ready_calls.append(node_id); self.pr["draft"] = False
-        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = 0
+        self.issue_reads = self.pr_reads = self.run_reads = self.thread_reads = self.content_reads = 0
     def merge(self, number, head): self.merge_calls.append((number, head))
 
 
@@ -153,6 +164,70 @@ class SupervisorTest(unittest.TestCase):
     def test_provider_fields_are_not_gates(self):
         client = FakeClient(); client.pr["body"] += "selected_auditor: none\naudit_state: route-unavailable\n"
         self.assertEqual(evaluate(client, REPO, 5).action, "merge")
+
+    def configure_product_check(self, client, *, candidate_config=None):
+        config = json.dumps({
+            "schema_version": 1,
+            "checks": [{"name": "Product CI", "workflow": ".github/workflows/product-ci.yml"}],
+        }).encode()
+        client.contents[(PRODUCT_CHECKS_PATH, DEFAULT_SHA)] = config
+        client.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = candidate_config or config
+        client.blobs[(".github/workflows/product-ci.yml", DEFAULT_SHA)] = "e" * 40
+        client.blobs[(".github/workflows/product-ci.yml", HEAD_SHA)] = "e" * 40
+        client.runs.append({
+            "id": 103, "name": "Product CI", "event": "pull_request", "status": "completed",
+            "conclusion": "success", "head_sha": HEAD_SHA, "updated_at": "2026-08-05T00:12:00Z",
+            "repository": {"full_name": REPO}, "pull_requests": [{"number": 5}],
+        })
+
+    def test_default_configured_product_check_is_required(self):
+        client = FakeClient(); self.configure_product_check(client)
+        self.assertEqual(evaluate(client, REPO, 5).action, "merge")
+        for state in ("failure", "pending"):
+            broken = FakeClient(); self.configure_product_check(broken)
+            run = next(item for item in broken.runs if item["name"] == "Product CI")
+            if state == "pending":
+                run.update(status="in_progress", conclusion=None)
+            else:
+                run["conclusion"] = state
+            with self.subTest(state=state):
+                with self.assertRaisesRegex(SupervisorError, "checks are not all successful"):
+                    evaluate(broken, REPO, 5)
+        missing = FakeClient(); self.configure_product_check(missing)
+        missing.runs = [item for item in missing.runs if item["name"] != "Product CI"]
+        with self.assertRaisesRegex(SupervisorError, "checks are not all successful"):
+            evaluate(missing, REPO, 5)
+
+    def test_product_run_must_be_explicitly_associated_and_workflow_immutable(self):
+        client = FakeClient(); self.configure_product_check(client)
+        next(item for item in client.runs if item["name"] == "Product CI")["pull_requests"] = []
+        with self.assertRaisesRegex(SupervisorError, "checks are not all successful"):
+            evaluate(client, REPO, 5)
+        client = FakeClient(); self.configure_product_check(client)
+        client.blobs[(".github/workflows/product-ci.yml", HEAD_SHA)] = "f" * 40
+        with self.assertRaisesRegex(SupervisorError, "workflow differs"):
+            evaluate(client, REPO, 5)
+
+    def test_candidate_config_is_validated_but_does_not_judge_itself(self):
+        client = FakeClient()
+        future = json.dumps({
+            "schema_version": 1,
+            "checks": [{"name": "Future Check", "workflow": ".github/workflows/future.yml"}],
+        }).encode()
+        client.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = future
+        self.assertEqual(evaluate(client, REPO, 5).action, "merge")
+        client.contents[(PRODUCT_CHECKS_PATH, HEAD_SHA)] = b"not-json"
+        with self.assertRaisesRegex(SupervisorError, "candidate product check configuration"):
+            evaluate(client, REPO, 5)
+
+    def test_product_config_and_definition_races_fail_closed(self):
+        client = FakeClient(); self.configure_product_check(client)
+        client.content_race = lambda value: value.contents.__setitem__(
+            (PRODUCT_CHECKS_PATH, DEFAULT_SHA),
+            json.dumps({"schema_version": 1, "checks": []}).encode(),
+        )
+        with self.assertRaisesRegex(SupervisorError, "configuration changed"):
+            evaluate(client, REPO, 5)
 
 
 if __name__ == "__main__": unittest.main()

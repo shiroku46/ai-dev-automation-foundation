@@ -41,3 +41,7 @@ When no usable checkpoint exists, the recovery path classifies immutable complet
 `CI` and `Unit Tests` run on the exact candidate with no Secrets, OIDC, or write permission. Candidate-authored status evidence is not merge-authorizing. Actions are pinned to immutable commit SHAs.
 
 Bootstrap copies every managed Foundation file byte-for-byte, including Supervisor, optional Queue, bounded reconciliation, validator, classifier, templates, policy, and startup guidance. Existing consumers must update all managed files from one Foundation revision rather than copying only the recovery workflow. GitHub-only Phase 0 requires connected repository access, enabled Actions/Foundation workflows, and Workflow permissions; no provider environment or credential is required.
+
+## Default-branch product validation
+
+The coordinator reads `.github/foundation-product-checks.json` from one captured default-branch SHA. Candidate configuration bytes are validated but do not select checks for that candidate. Every configured workflow definition must match the captured default blob, and its successful Pull Request run must be bound to the exact remote head and PR. Configuration, workflow, run, association or default-branch races fail closed before expected-head merge.

@@ -8,6 +8,19 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    from scripts.foundation_product_checks import (
+        CONFIG_PATH as PRODUCT_CHECKS_PATH,
+        ProductCheckConfigError,
+        parse_product_checks,
+    )
+except ModuleNotFoundError:
+    from foundation_product_checks import (
+        CONFIG_PATH as PRODUCT_CHECKS_PATH,
+        ProductCheckConfigError,
+        parse_product_checks,
+    )
+
 ROOT = Path(__file__).resolve().parents[1]
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
 REQUIRED = {
@@ -17,8 +30,10 @@ REQUIRED = {
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
+    "scripts/foundation_product_checks.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
+    PRODUCT_CHECKS_PATH,
     ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
     ".github/workflows/claude-queue.yml",
     ".github/workflows/claude-queue-comment-bridge.yml",
@@ -63,6 +78,10 @@ def validate() -> None:
     missing = sorted(path for path in required if not (ROOT / path).is_file())
     if missing:
         raise ValidationError("missing files: " + ", ".join(missing))
+    try:
+        parse_product_checks((ROOT / PRODUCT_CHECKS_PATH).read_bytes())
+    except ProductCheckConfigError as exc:
+        raise ValidationError(f"product check configuration is invalid: {exc}") from exc
 
     if generated_target:
         lock_path = ROOT / "FOUNDATION.lock.json"
@@ -107,7 +126,8 @@ def validate() -> None:
         if normalized != sorted(normalized):
             raise ValidationError("generated target managed files are not sorted")
         preserved = {"README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md"}
-        lock_required = (REQUIRED - preserved) | {"INSTALL_CHECKLIST.md"}
+        target_owned = {PRODUCT_CHECKS_PATH}
+        lock_required = (REQUIRED - preserved - target_owned) | {"INSTALL_CHECKLIST.md"}
         if not lock_required.issubset(seen):
             raise ValidationError("generated target lock omits required managed files")
         for relative, expected_digest in normalized:
@@ -264,7 +284,8 @@ def validate() -> None:
             "Bootstrap collisions", "FOUNDATION.lock.json", "source_sha",
             "destination.write_bytes(sources[relative])", "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
-            "scripts/queue_event_guard.py", "scripts/github_api_governor.py",
+            "scripts/queue_event_guard.py", "scripts/foundation_product_checks.py",
+            "scripts/github_api_governor.py",
             "scripts/github_coordinator_supervisor.py", "scripts/supervisor_policy.py",
             ".github/workflows/supervisor.yml", "Codex and Claude setup is optional",
             "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",

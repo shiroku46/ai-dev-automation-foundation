@@ -123,3 +123,7 @@ python scripts/foundation_drift.py --root . --expected-lock /path/to/candidate/F
 Publish rendered bytes through the connected GitHub App/API on one dedicated same-repository branch and Draft Pull Request. Verify the exact observed default SHA before branch creation and the exact candidate SHA after publication. Never install by committing a temporary workflow to the default branch, never require `BOOTSTRAP_WORKFLOW_TOKEN` or a PAT, and never force-update the Bootstrap branch.
 
 Rollback requires no installer cleanup commit: close the unmerged Draft Pull Request, or revert the single protected Bootstrap merge.
+
+## Configure product-native validation
+
+After Bootstrap, define required application lint, test, build or type-check workflows in `.github/foundation-product-checks.json`. The file is target-owned and excluded from `FOUNDATION.lock.json`. Use only fixed same-repository Pull Request workflows. The GitHub Coordinator requires successful exact-head runs explicitly associated with the candidate PR and refuses candidate-modified workflow definitions. Provider availability is unrelated to product validation.

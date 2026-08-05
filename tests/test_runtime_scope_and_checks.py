@@ -74,6 +74,7 @@ class ActiveCoordinatorContractTest(unittest.TestCase):
             "bootstrap/generator.py",
             "scripts/github_coordinator_supervisor.py",
             "scripts/supervisor_policy.py",
+            ".github/foundation-product-checks.json",
         ):
             self.assertTrue(is_protected_path(relative), relative)
         self.assertFalse(is_protected_path("docs/product-note.md"))

@@ -73,7 +73,11 @@ def parse_product_checks(content: bytes | str) -> tuple[ProductCheck, ...]:
         )
         if name.casefold() in reserved:
             raise ProductCheckConfigError("product check name is reserved")
-        if _WORKFLOW_RE.fullmatch(workflow) is None:
+        if (
+            _WORKFLOW_RE.fullmatch(workflow) is None
+            or ".." in workflow.split("/")
+            or "//" in workflow
+        ):
             raise ProductCheckConfigError("product workflow path is unsafe")
         folded = name.casefold()
         if folded in names or workflow in paths:

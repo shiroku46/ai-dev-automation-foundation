@@ -190,3 +190,7 @@ Only after successful validation does a fixed default-branch publication job rec
 - Supported active runtime modules are `scripts/github_coordinator_supervisor.py`, `scripts/supervisor_policy.py`, `scripts/queue_event_guard.py`, the Queue classifier/hydration/retry-identity modules, `scripts/github_api_governor.py`, and `scripts/foundation_drift.py`.
 - The former `ai_recovery_supervisor`, `supervisor_final_guard`, `supervisor_runtime`, and `supervisor_queue_recovery` v1/v2/v3 entry points are retired and are not distributed by Bootstrap.
 - Queue event admission receives bounded scalar GitHub context only. It never reads `github.event_path` or an event payload file; connected source-Issue, trigger-identity, base-SHA, retry-record, exact-head review, collision, and expected-head merge checks remain fail closed.
+
+## Target-owned product check contract
+
+Generated targets keep `.github/foundation-product-checks.json` outside the Foundation lock. The captured default-branch version names bounded product workflows that must succeed on the exact candidate SHA and be explicitly associated with the same Pull Request. A candidate configuration is parsed for future validity but never judges itself. A configuration-changing Pull Request is therefore judged by the previous default configuration and the new configuration becomes effective only after merge. Currently configured product workflow definitions must remain byte-identical to the captured default branch while they judge a candidate.
