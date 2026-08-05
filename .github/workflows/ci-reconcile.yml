@@ -81,6 +81,7 @@ jobs:
           import stat
           import subprocess
           import tempfile
+          import time
           import urllib.parse
           import zipfile
           from typing import Any
@@ -267,6 +268,25 @@ jobs:
                   raise RuntimeError("recovery record is not an object")
               return value
 
+          def wait_for_record(path: str, payload: dict[str, Any], expected_commit: str | None) -> bool:
+              quoted_branch = urllib.parse.quote(stop_branch, safe="")
+              visibility_delays = (0.0, 0.5, 1.0, 2.0)
+              for delay in visibility_delays:
+                  if delay:
+                      time.sleep(delay)
+                  if expected_commit is not None:
+                      current_ref = api(f"repos/{repository}/git/ref/heads/{quoted_branch}")
+                      current_sha = str((current_ref.get("object") or {}).get("sha") or "")
+                      if current_sha != expected_commit:
+                          raise RuntimeError("recovery record ref moved during visibility verification")
+                  visible = read_record(path)
+                  if visible is None:
+                      continue
+                  if visible != payload:
+                      raise RuntimeError("deterministic recovery record identity changed")
+                  return True
+              return False
+
           def put_record(path: str, payload: dict[str, Any], message: str, base_sha: str) -> bool:
               pattern = rf"{re.escape(retry_root)}/issue-[1-9][0-9]*/request-[0-9a-f]{{20}}/(?:retry-[1-9][0-9]*|internal-stop|exhausted)\.json"
               if re.fullmatch(pattern, path) is None:
@@ -338,11 +358,11 @@ jobs:
                       {"sha": commit_sha, "force": False},
                   )
               except RuntimeError:
-                  if read_record(path) == payload:
+                  if wait_for_record(path, payload, None):
                       return False
                   raise RuntimeError("recovery record compare-and-swap failed")
-              if read_record(path) != payload:
-                  raise RuntimeError("recovery record commit is not GitHub-visible")
+              if not wait_for_record(path, payload, commit_sha):
+                  raise RuntimeError("recovery record visibility remained incomplete")
               return True
 
           def retry_records(issue_number: int, fingerprint: str) -> list[dict[str, Any]]:
@@ -442,31 +462,50 @@ jobs:
               ]
               detail_parts = [str(run.get("conclusion") or "")]
               permission_denials = 0
+              explicit_permission_markers = (
+                  "tool policy violated",
+                  "tool permission denied",
+                  "not allowed by tool",
+                  "not permitted by tool",
+                  "command is not allowed",
+              )
+              explicit_max_turn_markers = (
+                  "error_max_turns",
+                  "maximum turn limit reached",
+                  "turn limit exhausted",
+              )
+              max_turns = False
               for job in failed:
                   for step in job.get("steps") or []:
                       if str(step.get("conclusion") or "") == "failure":
                           name = str(step.get("name") or "").lower()
                           detail_parts.append(name)
-                          if any(token in name for token in ("permission", "allowedtools", "not allowed", "tool policy")):
+                          if any(marker in name for marker in explicit_permission_markers):
                               permission_denials += 1
+                          if any(marker in name for marker in explicit_max_turn_markers):
+                              max_turns = True
                   job_id = int(job.get("id") or 0)
                   if job_id > 0:
                       logs = gh_bytes("api", f"repos/{repository}/actions/jobs/{job_id}/logs", check=False)
                       low = logs.decode("utf-8", errors="replace").lower()
                       for marker in (
-                          "error_max_turns", "max turns", "connect tunnel", "could not resolve host",
-                          "connection reset", "network is unreachable", "token expired",
-                          "authentication failed", "bad credentials", "missing secret", "http 401", "http 403",
+                          "connect tunnel", "could not resolve host", "connection reset",
+                          "network is unreachable", "token expired", "authentication failed",
+                          "bad credentials", "missing secret", "http 401", "http 403",
                           "assertionerror", "tests failed", "service unavailable",
                           "runner lost communication", "timed out",
                       ):
                           if marker in low:
                               detail_parts.append(marker)
-                      if any(marker in low for marker in ("tool policy", "allowedtools", "command is not allowed")):
-                          permission_denials += 1
-              conclusion = str(run.get("conclusion") or "failure")
-              if any(part in {"error_max_turns", "max turns"} for part in detail_parts):
-                  conclusion = "error_max_turns"
+                      for marker in explicit_permission_markers:
+                          if marker in low:
+                              detail_parts.append(marker)
+                              permission_denials += 1
+                      for marker in explicit_max_turn_markers:
+                          if marker in low:
+                              detail_parts.append(marker)
+                              max_turns = True
+              conclusion = "error_max_turns" if max_turns else str(run.get("conclusion") or "failure")
               return classify_conclusion(conclusion, permission_denials, "; ".join(detail_parts))
 
           def verify_artifact(run: dict[str, Any], issue: dict[str, Any]) -> tuple[pathlib.Path, dict[str, Any], str] | None:
