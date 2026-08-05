@@ -48,7 +48,7 @@ The state records only bounded recovery information:
 - the audited human-action flag;
 - decision count and exact artifact digests.
 
-Work lists and paths are unique. Completed and pending work cannot overlap. Paths are exact POSIX-style repository-relative paths; parent traversal, backslashes, empty segments, and absolute paths are rejected.
+Work lists and paths are unique. Completed and pending work cannot overlap. Paths are exact POSIX-style repository-relative paths. Parent traversal, backslashes, empty segments, Windows drive paths, `.git` segments, absolute paths, and glob metacharacters are rejected; scope patterns such as `tests/**` are not handoff evidence.
 
 A completed state has no pending work or blockers, never requires a person, and uses `next_action: "none"`. Any other phase must state a concrete next automatic action.
 
