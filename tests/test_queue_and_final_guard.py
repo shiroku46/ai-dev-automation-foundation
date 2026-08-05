@@ -212,6 +212,9 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             "automation-internal-stops",
             'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
             "should_auto_retry(failure_class, attempt - 1, 3)",
+            'RUN_ATTEMPT: ${{ github.run_attempt }}',
+            'os.environ.get("RUN_ATTEMPT") == "1"',
+            '{"internal-stop.json", "exhausted.json"}',
         ):
             self.assertIn(required, queue)
         self.assertIn("actor == owner and not fingerprint_input and not attempt_input", prepare)
