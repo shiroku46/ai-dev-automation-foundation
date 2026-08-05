@@ -48,6 +48,46 @@ jobs:
           PY
       - name: Apply authorized maintenance changes
         run: python .github/issue-205-implement.py
+      - name: Correct active guard test fixtures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          guard = Path('tests/test_queue_event_guard.py')
+          content = guard.read_text(encoding='utf-8')
+          old = '''                decision = self.decision(
+                    event_name="issue_comment",
+                    dispatch_issue="",
+                    comment_issue="173",
+                    comment_body="/claude-run",
+                    **override,
+                )
+'''
+          new = '''                values = {
+                    "event_name": "issue_comment",
+                    "dispatch_issue": "",
+                    "comment_issue": "173",
+                    "comment_body": "/claude-run",
+                }
+                values.update(override)
+                decision = self.decision(**values)
+'''
+          if content.count(old) != 1:
+              raise SystemExit('Queue guard fixture pattern changed')
+          guard.write_text(content.replace(old, new, 1), encoding='utf-8')
+
+          security = Path('tests/test_workflow_security.py')
+          content = security.read_text(encoding='utf-8')
+          old = '        self.assertIn("body.strip() == trigger", queue)\n'
+          new = (
+              '        self.assertIn("from scripts.queue_event_guard import resolve_queue_event", queue)\n'
+              '        self.assertNotIn("github.event_path", queue)\n'
+              '        self.assertNotIn("EVENT_PATH", queue)\n'
+          )
+          if content.count(old) != 1:
+              raise SystemExit('Workflow security guard assertion pattern changed')
+          security.write_text(content.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Remove temporary transports
         run: |
           rm -f .github/workflows/issue-205-reference-audit.yml
