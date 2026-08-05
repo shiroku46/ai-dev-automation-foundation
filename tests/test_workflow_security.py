@@ -163,11 +163,13 @@ class WorkflowSecurityTest(unittest.TestCase):
             '"parents": [observed_head]',
             'f"repos/{repository}/git/refs/heads/{quoted_branch}"',
             '{"sha": commit_sha, "force": False}',
-            'if read_record(path) == payload:',
-            'if read_record(path) != payload:',
+            'wait_for_record(path, payload, None)',
+            'wait_for_record(path, payload, commit_sha)',
             'recovery record compare-and-swap failed',
+            'recovery record visibility remained incomplete',
         ):
             self.assertIn(required, record)
+        self.assertEqual(record.count('"PATCH"'), 1)
         self.assertIn('"--input", "-"', reconcile)
         self.assertIn("json.dumps(payload, sort_keys=True", reconcile)
         self.assertIn("sanitized Git Data request failed", reconcile)
@@ -175,6 +177,43 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn('"force": True', record)
         self.assertNotIn("completed.stderr", record)
         self.assertNotIn("completed.stdout", record)
+
+    def test_queue_recovery_uses_explicit_failure_evidence_and_bounded_visibility(self):
+        reconcile = read(".github/workflows/ci-reconcile.yml")
+        evidence = reconcile.split("          def failure_class_for_run(", 1)[1].split(
+            "\n          def verify_artifact(", 1
+        )[0]
+        for required in (
+            '"tool policy violated"',
+            '"tool permission denied"',
+            '"not allowed by tool"',
+            '"not permitted by tool"',
+            '"command is not allowed"',
+            '"error_max_turns"',
+            '"maximum turn limit reached"',
+            '"turn limit exhausted"',
+            'conclusion = "error_max_turns" if max_turns else',
+        ):
+            self.assertIn(required, evidence)
+        for forbidden in (
+            '("permission", "allowedtools", "not allowed", "tool policy")',
+            '("tool policy", "allowedtools", "command is not allowed")',
+            '"error_max_turns", "max turns"',
+            'part in {"error_max_turns", "max turns"}',
+        ):
+            self.assertNotIn(forbidden, evidence)
+
+        visibility = reconcile.split("          def wait_for_record(", 1)[1].split(
+            "\n          def put_record(", 1
+        )[0]
+        self.assertIn("visibility_delays = (0.0, 0.5, 1.0, 2.0)", visibility)
+        self.assertIn("time.sleep(delay)", visibility)
+        self.assertIn("current_sha != expected_commit", visibility)
+        self.assertIn("visible != payload", visibility)
+        self.assertIn("return True", visibility)
+        self.assertIn("return False", visibility)
+        self.assertLessEqual(sum((0.0, 0.5, 1.0, 2.0)), 6.0)
+        self.assertEqual(len((0.0, 0.5, 1.0, 2.0)), 4)
 
     def test_supervisor_is_default_branch_github_coordinator_only(self):
         supervisor = read(".github/workflows/supervisor.yml")
