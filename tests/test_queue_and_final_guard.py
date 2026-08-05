@@ -204,6 +204,7 @@ class QueueAndFinalGuardTest(unittest.TestCase):
     def test_automation_dispatch_requires_exact_persisted_retry_intent(self):
         queue = workflow("claude-queue.yml")
         prepare = job_block(queue, "prepare", "implement")
+        recovery = job_block(workflow("ci-reconcile.yml"), "queue_recovery")
         for required in (
             "request_fingerprint:",
             "retry_attempt:",
@@ -219,8 +220,13 @@ class QueueAndFinalGuardTest(unittest.TestCase):
             self.assertIn(required, queue)
         self.assertIn("actor == owner and not fingerprint_input and not attempt_input", prepare)
         self.assertIn("elif actor == automation_actor", prepare)
-        self.assertIn("request_fingerprint(issue, base_sha)", prepare)
-        self.assertIn('re.fullmatch(r"retry-([1-3])\\.json"', prepare)
+        self.assertIn('re.fullmatch(r"[0-9a-f]{20}", fingerprint_input)', prepare)
+        self.assertIn('attempt_input in {"1", "2", "3"}', prepare)
+        self.assertIn("if fingerprint_input != fingerprint", prepare)
+        self.assertNotIn("not fingerprint_input or", prepare)
+        self.assertNotIn("if attempt_input:\n                      attempts", prepare)
+        self.assertIn('f"request_fingerprint={fingerprint}"', recovery)
+        self.assertIn('f"retry_attempt={attempt}"', recovery)
         self.assertNotIn("contents: write", prepare)
         self.assertNotIn("id-token: write", prepare)
 
