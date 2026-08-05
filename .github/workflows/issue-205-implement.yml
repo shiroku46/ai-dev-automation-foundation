@@ -5,17 +5,18 @@ on:
     branches: [github/issue-205-maintainability]
     paths:
       - .github/issue-205-implement.py
+      - .github/workflows/issue-205-implement.yml
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   implement:
     if: >-
-      (github.event_name == 'push' && github.event.head_commit.message == 'Run Issue 205 implementation') ||
+      (github.event_name == 'push') ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'github/issue-205-maintainability')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -24,6 +25,7 @@ jobs:
         with:
           ref: github/issue-205-maintainability
           fetch-depth: 0
+          persist-credentials: false
       - name: Correct the temporary implementation assertions
         run: |
           python - <<'PY'
@@ -63,22 +65,75 @@ jobs:
           rules = Path('docs/OPERATING_RULES.md')
           rules.write_text(rules.read_text(encoding='utf-8').rstrip() + '\n', encoding='utf-8')
           PY
-      - name: Remove temporary transports
+      - name: Remove temporary transports and generated caches
         run: |
           rm -f .github/workflows/issue-205-reference-audit.yml
           rm -f .github/workflows/issue-205-implement.yml
           rm -f .github/issue-205-implement.py
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f -name '*.pyc' -delete
       - name: Validate repository
         run: |
-          python -m compileall -q scripts bootstrap tests
           python scripts/public_export_guard.py .
           python scripts/validate_repository.py
           python -m unittest discover -s tests
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          find . -type f -name '*.pyc' -delete
           git diff --check
-      - name: Publish exact branch candidate
+      - name: Build immutable candidate bundle
+        env:
+          BUNDLE_ROOT: ${{ runner.temp }}/issue-205-candidate
         run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A
-          git commit -m "Extract Queue admission and retire legacy recovery runtimes"
-          git push origin HEAD:github/issue-205-maintainability
+          python - <<'PY'
+          import json
+          import os
+          import shutil
+          import stat
+          import subprocess
+          from pathlib import Path
+
+          root = Path.cwd()
+          bundle = Path(os.environ['BUNDLE_ROOT'])
+          files_root = bundle / 'files'
+          files_root.mkdir(parents=True, exist_ok=True)
+          base_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          rows = subprocess.check_output(
+              ['git', 'diff', '--name-status', '--no-renames', 'HEAD'], text=True
+          ).splitlines()
+          entries = []
+          for row in rows:
+              status_code, relative = row.split('\t', 1)
+              status_code = status_code[0]
+              source = root / relative
+              if status_code == 'D':
+                  entries.append({'path': relative, 'status': 'deleted', 'mode': None})
+                  continue
+              if not source.is_file():
+                  raise SystemExit(f'candidate path is not a regular file: {relative}')
+              target = files_root / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(source, target)
+              executable = bool(source.stat().st_mode & stat.S_IXUSR)
+              entries.append({
+                  'path': relative,
+                  'status': 'upsert',
+                  'mode': '100755' if executable else '100644',
+              })
+          if not entries:
+              raise SystemExit('candidate bundle is empty')
+          manifest = {
+              'schema': 'issue-205-candidate-v1',
+              'base_sha': base_sha,
+              'entries': entries,
+          }
+          (bundle / 'manifest.json').write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(manifest, indent=2, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: issue-205-validated-candidate-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue-205-candidate
+          if-no-files-found: error
+          retention-days: 1
