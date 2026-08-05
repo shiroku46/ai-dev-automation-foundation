@@ -53,14 +53,21 @@ class FailureStatus:
 
 def classify_conclusion(conclusion: str, permission_denials_count: int = 0, error_detail: str = "") -> FailureClass:
     low = (error_detail or "").lower()
-    policy = (
-        "tool policy", "tool permission", "allowedtools", "allowed tools",
-        "not allowed by tool", "not permitted by tool", "command is not allowed",
+    explicit_policy_denials = (
+        "tool policy violated",
+        "tool permission denied",
+        "not allowed by tool",
+        "not permitted by tool",
+        "command is not allowed",
     )
-    if permission_denials_count > 0 or any(value in low for value in policy):
+    if any(value in low for value in explicit_policy_denials):
         return FailureClass.PERMISSION_CONTRACT
     if conclusion == "error_max_turns":
-        return FailureClass.MAX_TURNS
+        return (
+            FailureClass.PERMISSION_CONTRACT
+            if permission_denials_count > 0
+            else FailureClass.MAX_TURNS
+        )
     transport = (
         "connect tunnel", "git transport", "transport error", "could not resolve host",
         "connection reset", "connection refused", "network is unreachable", "remote ref",
