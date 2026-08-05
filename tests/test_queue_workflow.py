@@ -32,11 +32,16 @@ class OptionalQueueTest(unittest.TestCase):
         self.assertNotIn("\n  issues:\n", TEXT)
         self.assertNotIn("workflow_run:", TEXT)
         self.assertNotIn("schedule:", TEXT)
-        self.assertIn('trigger = "/claude-run"', TEXT)
-        self.assertIn("body.strip() == trigger", TEXT)
+        self.assertIn("from scripts.queue_event_guard import resolve_queue_event", TEXT)
+        self.assertNotIn("EVENT_PATH", TEXT)
+        self.assertNotIn("github.event_path", TEXT)
         prepare = block("prepare", "implement")
-        self.assertIn("REF_NAME: ${{ github.ref_name }}", prepare)
-        self.assertIn('os.environ.get("REF_NAME") == os.environ["DEFAULT_BRANCH"]', prepare)
+        for required in (
+            "COMMENT_ISSUE:", "COMMENT_BODY:", "COMMENT_IS_PR:",
+            "decision = resolve_queue_event(", "decision.issue_number",
+            "decision.allowed", "decision.automated_retry",
+        ):
+            self.assertIn(required, prepare)
 
     def test_actions_are_pinned(self):
         for line in TEXT.splitlines():
@@ -101,10 +106,9 @@ class OptionalQueueTest(unittest.TestCase):
     def test_automated_retry_guard_remains_exact(self):
         prepare = block("prepare", "implement")
         for required in (
-            'automation_actor = "github-actions[bot]"',
-            'os.environ.get("RUN_ATTEMPT") == "1"',
-            're.fullmatch(r"[0-9a-f]{20}", fingerprint_input)',
-            'attempt_input in {"1", "2", "3"}',
+            "from scripts.queue_event_guard import resolve_queue_event",
+            "decision.fingerprint",
+            "decision.retry_attempt",
             'record.get("base_sha") == base_sha',
             'record.get("issue_number") == number',
             'record.get("request_fingerprint") == fingerprint',

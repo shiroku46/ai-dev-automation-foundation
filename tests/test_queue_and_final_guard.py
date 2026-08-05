@@ -34,8 +34,9 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         self.assertNotIn("\n  issues:\n", queue)
         self.assertNotIn("workflow_run:", queue)
         self.assertNotIn("schedule:", queue)
-        self.assertIn('trigger = "/claude-run"', queue)
-        self.assertIn("body.strip() == trigger", queue)
+        self.assertIn("from scripts.queue_event_guard import resolve_queue_event", queue)
+        self.assertNotIn("EVENT_PATH", queue)
+        self.assertNotIn("github.event_path", queue)
 
     def test_permission_contract_precedes_provider_invocation(self):
         queue = workflow("claude-queue.yml")
@@ -212,20 +213,21 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         for required in (
             "request_fingerprint:",
             "retry_attempt:",
-            'automation_actor = "github-actions[bot]"',
+            "from scripts.queue_event_guard import resolve_queue_event",
+            "decision.fingerprint",
+            "decision.retry_attempt",
             "automation-stops/queue-v4/issue-",
             "automation-internal-stops",
             'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
             "should_auto_retry(failure_class, attempt - 1, 3)",
             'RUN_ATTEMPT: ${{ github.run_attempt }}',
-            'os.environ.get("RUN_ATTEMPT") == "1"',
+            "COMMENT_ISSUE:", "COMMENT_BODY:", "COMMENT_IS_PR:",
             '{"internal-stop.json", "exhausted.json"}',
         ):
             self.assertIn(required, queue)
-        self.assertIn("actor == owner and not fingerprint_input and not attempt_input", prepare)
-        self.assertIn("elif actor == automation_actor", prepare)
-        self.assertIn('re.fullmatch(r"[0-9a-f]{20}", fingerprint_input)', prepare)
-        self.assertIn('attempt_input in {"1", "2", "3"}', prepare)
+        self.assertIn("decision = resolve_queue_event(", prepare)
+        self.assertIn("decision.allowed", prepare)
+        self.assertIn("decision.automated_retry", prepare)
         self.assertIn("if fingerprint_input != fingerprint", prepare)
         self.assertNotIn("not fingerprint_input or", prepare)
         self.assertNotIn("if attempt_input:\n                      attempts", prepare)

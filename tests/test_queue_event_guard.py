@@ -51,13 +51,14 @@ class QueueEventGuardTest(unittest.TestCase):
         )
         for override in cases:
             with self.subTest(override=override):
-                decision = self.decision(
-                    event_name="issue_comment",
-                    dispatch_issue="",
-                    comment_issue="173",
-                    comment_body="/claude-run",
-                    **override,
-                )
+                values = {
+                    "event_name": "issue_comment",
+                    "dispatch_issue": "",
+                    "comment_issue": "173",
+                    "comment_body": "/claude-run",
+                }
+                values.update(override)
+                decision = self.decision(**values)
                 self.assertFalse(decision.allowed)
 
     def test_owner_manual_dispatch_never_needs_event_path(self):

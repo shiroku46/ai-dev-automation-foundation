@@ -55,10 +55,21 @@ class BootstrapTest(unittest.TestCase):
             "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py",
             "scripts/queue_retry_identity.py",
+            "scripts/queue_event_guard.py",
             "scripts/github_api_governor.py",
+            "scripts/supervisor_policy.py",
             ".github/workflows/claude-queue-comment-bridge.yml",
         ):
             self.assertIn(required, MANAGED_FILES)
+        for retired in (
+            "scripts/ai_recovery_supervisor.py",
+            "scripts/supervisor_final_guard.py",
+            "scripts/supervisor_runtime.py",
+            "scripts/supervisor_queue_recovery.py",
+            "scripts/supervisor_queue_recovery_v2.py",
+            "scripts/supervisor_queue_recovery_v3.py",
+        ):
+            self.assertNotIn(retired, MANAGED_FILES)
 
     def test_plan_only_does_not_create_target(self):
         with tempfile.TemporaryDirectory() as directory:
