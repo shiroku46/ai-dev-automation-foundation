@@ -2,6 +2,8 @@
 """Validate GitHub-only runtime, optional-provider isolation and Bootstrap parity."""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -13,9 +15,12 @@ REQUIRED = {
     "docs/PROJECT_STARTUP.md", "docs/MINIMUM_SAFETY_PROFILE.md",
     "docs/OPERATING_RULES.md", "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
-    "scripts/queue_failure_classifier.py", "scripts/github_coordinator_supervisor.py",
+    "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
+    "scripts/queue_retry_identity.py", "scripts/github_api_governor.py",
+    "scripts/github_coordinator_supervisor.py", "scripts/foundation_drift.py",
     ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
     ".github/workflows/claude-queue.yml",
+    ".github/workflows/claude-queue-comment-bridge.yml",
     ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
 }
@@ -57,6 +62,60 @@ def validate() -> None:
     missing = sorted(path for path in required if not (ROOT / path).is_file())
     if missing:
         raise ValidationError("missing files: " + ", ".join(missing))
+
+    if generated_target:
+        lock_path = ROOT / "FOUNDATION.lock.json"
+        if lock_path.is_symlink() or not lock_path.is_file():
+            raise ValidationError("generated target lock is missing or unsafe")
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValidationError("generated target lock is malformed") from exc
+        if not isinstance(lock, dict) or lock.get("schema_version") != 1:
+            raise ValidationError("generated target lock schema is invalid")
+        if lock.get("generator_version") != "2.0.0":
+            raise ValidationError("generated target generator version is unsupported")
+        if lock.get("source_repository") != "shiroku46/ai-dev-automation-foundation":
+            raise ValidationError("generated target source repository is invalid")
+        if re.fullmatch(r"[0-9a-f]{40}", str(lock.get("source_sha") or "")) is None:
+            raise ValidationError("generated target source SHA is invalid")
+        if lock.get("installation_mode") not in {"new-repository", "existing-product"}:
+            raise ValidationError("generated target installation mode is invalid")
+        if not isinstance(lock.get("installed_at"), str) or not lock["installed_at"]:
+            raise ValidationError("generated target installation time is invalid")
+        managed = lock.get("managed_files")
+        if not isinstance(managed, list):
+            raise ValidationError("generated target managed file list is invalid")
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in managed:
+            if not isinstance(item, dict):
+                raise ValidationError("generated target managed file entry is invalid")
+            relative = item.get("path")
+            digest = item.get("sha256")
+            if (
+                not isinstance(relative, str)
+                or re.fullmatch(r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))(?!.*[\x00-\x1f\\])[^:]+$", relative) is None
+                or relative in seen
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise ValidationError("generated target managed file identity is invalid")
+            seen.add(relative)
+            normalized.append((relative, digest))
+        if normalized != sorted(normalized):
+            raise ValidationError("generated target managed files are not sorted")
+        preserved = {"README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md"}
+        lock_required = (REQUIRED - preserved) | {"INSTALL_CHECKLIST.md"}
+        if not lock_required.issubset(seen):
+            raise ValidationError("generated target lock omits required managed files")
+        for relative, expected_digest in normalized:
+            path = ROOT / relative
+            if path.is_symlink() or not path.is_file():
+                raise ValidationError(f"generated target managed file is missing or unsafe: {relative}")
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            if actual != expected_digest:
+                raise ValidationError(f"generated target managed file drifted: {relative}")
 
     for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
         content = path.read_text(encoding="utf-8")
@@ -179,9 +238,13 @@ def validate() -> None:
     if not generated_target:
         generator = text("bootstrap/generator.py")
         require(generator, (
-            "MANAGED_FILES", "write_bytes(source.read_bytes())",
-            "scripts/github_coordinator_supervisor.py", ".github/workflows/supervisor.yml",
-            "Codex and Claude setup is optional", "bounded Queue recovery",
+            "MANAGED_FILES", "INSTALL_MODES", "PRESERVE_IF_PRESENT", "plan_render",
+            "Bootstrap collisions", "FOUNDATION.lock.json", "source_sha",
+            "destination.write_bytes(sources[relative])", "scripts/foundation_drift.py",
+            "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
+            "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
+            ".github/workflows/supervisor.yml", "Codex and Claude setup is optional",
+            "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
         ), "Bootstrap")
 
 

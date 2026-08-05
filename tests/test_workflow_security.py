@@ -412,13 +412,25 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertIn("self_resolution_audit", notice)
         self.assertIn('item.get("created_at") == item.get("updated_at")', notice)
 
-    def test_guidance_and_bootstrap_keep_internal_stop_parity(self):
+    def test_guidance_and_bootstrap_keep_internal_stop_and_lock_parity(self):
         for path in ("docs/OPERATING_RULES.md", "AGENTS.md", "CLAUDE.md", "bootstrap/generator.py"):
             self.assertIn("automation-internal-stops", read(path))
         generator = read("bootstrap/generator.py")
-        self.assertIn("MANAGED_FILES", generator)
-        self.assertIn("ALLOWLIST = MANAGED_FILES", generator)
-        self.assertIn("write_bytes(source.read_bytes())", generator)
+        for required in (
+            "MANAGED_FILES", "ALLOWLIST = MANAGED_FILES", "INSTALL_MODES",
+            "PRESERVE_IF_PRESENT", "plan_render", "Bootstrap collisions",
+            "FOUNDATION.lock.json", "source_sha", "scripts/foundation_drift.py",
+            "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
+            "scripts/github_api_governor.py", "destination.write_bytes(sources[relative])",
+            "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
+        ):
+            self.assertIn(required, generator)
+        for forbidden in (
+            "force=True", '"force": True', "git push --force", "BOOTSTRAP_WORKFLOW_TOKEN =",
+            "requests.", "urllib.request", "http.client",
+        ):
+            self.assertNotIn(forbidden, generator)
+
 
 
 if __name__ == "__main__":

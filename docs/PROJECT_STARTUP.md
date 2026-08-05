@@ -98,3 +98,28 @@ Record only non-secret evidence:
 - optional Claude Secret **name** confirmation only when Claude was deliberately enabled, never its value.
 
 After the exact repository passes Phase 0, **Do not request these steps again** unless connected evidence shows that repository authorization, Actions availability, Workflow permissions, or a deliberately enabled optional provider route is no longer usable. Resume orchestration automatically after the missing UI-only prerequisite is completed; the owner must not be asked to repost a provider command, copy a prompt, create a Pull Request, press Retry, or repeat routine instructions.
+
+## Non-destructive Bootstrap publication
+
+Choose the installation mode before rendering:
+
+- `new-repository` requires an empty target except for `.git`;
+- `existing-product` preserves an existing `README.md`, `LICENSE`, `AGENTS.md`, `CLAUDE.md`, and `SECURITY.md`, adds absent Foundation-specific paths, and stops before mutation when a different managed destination already exists.
+
+The renderer computes the complete plan before writing. Review every `add`, `upgrade`, `preserved`, `overwrite-authorized`, and `collision` entry. An exact trusted Issue may authorize overwrite of one named managed path, but no blanket overwrite is allowed.
+
+Every successful render creates `FOUNDATION.lock.json` with the exact source repository/SHA, generator version, installation mode, timestamp, and sorted managed path hashes. Run:
+
+```bash
+python scripts/foundation_drift.py --root .
+```
+
+For an upgrade, render the new Foundation into a separate candidate directory and compare its lock:
+
+```bash
+python scripts/foundation_drift.py --root . --expected-lock /path/to/candidate/FOUNDATION.lock.json
+```
+
+Publish rendered bytes through the connected GitHub App/API on one dedicated same-repository branch and Draft Pull Request. Verify the exact observed default SHA before branch creation and the exact candidate SHA after publication. Never install by committing a temporary workflow to the default branch, never require `BOOTSTRAP_WORKFLOW_TOKEN` or a PAT, and never force-update the Bootstrap branch.
+
+Rollback requires no installer cleanup commit: close the unmerged Draft Pull Request, or revert the single protected Bootstrap merge.
