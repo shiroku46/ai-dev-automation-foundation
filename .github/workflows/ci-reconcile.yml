@@ -151,7 +151,6 @@ jobs:
                       "kind": "issue-body",
                       "id": int(issue.get("number") or 0),
                       "created_at": str(issue.get("created_at") or ""),
-                      "updated_at": str(issue.get("updated_at") or ""),
                   }
               number = int(issue.get("number") or 0)
               comments = api_pages(f"repos/{repository}/issues/{number}/comments?per_page=100")
@@ -302,15 +301,20 @@ jobs:
               )
               if not should_auto_retry(failure_class, len(records), max_retries):
                   name = "exhausted.json" if len(records) >= max_retries else "internal-stop.json"
+                  next_action = (
+                      "optional provider route unavailable; continue GitHub-direct work"
+                      if failure_class is FailureClass.AUTH_SECRET
+                      else status.next_automatic_action
+                  )
                   put_record(
                       record_path(issue_number, fingerprint, name),
                       {
                           "attempt": len(records),
                           "base_sha": base_sha,
                           "failure_class": status.failure_class.value,
-                          "human_action_required": status.human_action_required,
+                          "human_action_required": False,
                           "issue_number": issue_number,
-                          "next_automatic_action": status.next_automatic_action,
+                          "next_automatic_action": next_action,
                           "notification": False,
                           "request_fingerprint": fingerprint,
                           "source_run_id": source_run_id,
@@ -362,8 +366,9 @@ jobs:
                       for marker in (
                           "error_max_turns", "max turns", "connect tunnel", "could not resolve host",
                           "connection reset", "network is unreachable", "token expired",
-                          "authentication failed", "missing secret", "unauthorized", "assertionerror",
-                          "tests failed", "service unavailable", "runner lost communication", "timed out",
+                          "authentication failed", "bad credentials", "missing secret", "http 401", "http 403",
+                          "assertionerror", "tests failed", "service unavailable",
+                          "runner lost communication", "timed out",
                       ):
                           if marker in low:
                               detail_parts.append(marker)
@@ -533,7 +538,10 @@ jobs:
               compare = api(f"repos/{repository}/compare/{base_sha}...{sha}")
               if compare.get("status") != "ahead" or int(compare.get("behind_by") or 0) != 0:
                   raise RuntimeError("remote Queue checkpoint is not based on the exact default SHA")
-              changed_paths = sorted(str(item.get("filename") or "") for item in compare.get("files") or [])
+              files = compare.get("files") or []
+              if not isinstance(files, list) or len(files) >= 300:
+                  raise RuntimeError("remote Queue checkpoint changed-file evidence is incomplete")
+              changed_paths = sorted(str(item.get("filename") or "") for item in files)
               if not changed_paths or not policy.scope_is_authorized(changed_paths, str(issue.get("body") or "")):
                   raise RuntimeError("remote Queue checkpoint exceeds Issue scope")
               if not policy.protected_scope_is_authorized(changed_paths, str(issue.get("body") or "")):
