@@ -1,0 +1,67 @@
+name: Issues 196 and 198 exact patch
+
+on:
+  push:
+    branches:
+      - github/issues-196-198-stability-isolation
+
+permissions: {}
+
+jobs:
+  patch:
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Add Issues 196 and 198 patch transport'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: github/issues-196-198-stability-isolation
+          fetch-depth: 0
+      - name: Generate exact protected patch
+        run: python3 scripts/issues_196_198_patch.py
+      - name: Validate generated workflows and focused tests
+        run: |
+          git diff --check
+          changed_paths() { { git diff --name-only; git ls-files --others --exclude-standard; } | sort; }
+          test "$(changed_paths)" = $'automation-tmp/issues-196-198-ci-reconcile.yml\nautomation-tmp/issues-196-198-claude-queue.yml\ntests/test_queue_workflow.py\ntests/test_workflow_security.py'
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          import textwrap
+
+          pairs = (
+              (Path('automation-tmp/issues-196-198-ci-reconcile.yml'), Path('.github/workflows/ci-reconcile.yml')),
+              (Path('automation-tmp/issues-196-198-claude-queue.yml'), Path('.github/workflows/claude-queue.yml')),
+          )
+          originals = {target: target.read_bytes() for _, target in pairs}
+          try:
+              for generated, target in pairs:
+                  text = generated.read_text(encoding='utf-8')
+                  blocks = re.findall(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", text)
+                  if not blocks:
+                      raise SystemExit(f'embedded Python missing: {generated}')
+                  for index, body in enumerate(blocks, start=1):
+                      compile(textwrap.dedent(body), f'{generated}-{index}', 'exec')
+                  target.write_bytes(generated.read_bytes())
+              subprocess.run([
+                  'python3', '-m', 'unittest',
+                  'tests.test_queue_issue_hydration',
+                  'tests.test_workflow_security',
+                  'tests.test_queue_workflow',
+              ], check=True)
+          finally:
+              for target, content in originals.items():
+                  target.write_bytes(content)
+          PY
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          test "$(changed_paths)" = $'automation-tmp/issues-196-198-ci-reconcile.yml\nautomation-tmp/issues-196-198-claude-queue.yml\ntests/test_queue_workflow.py\ntests/test_workflow_security.py'
+      - name: Push non-workflow handoff only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add automation-tmp/issues-196-198-ci-reconcile.yml automation-tmp/issues-196-198-claude-queue.yml tests/test_queue_workflow.py tests/test_workflow_security.py
+          git commit -m 'Stage Issues 196 and 198 validated workflow blobs'
+          git push origin HEAD:github/issues-196-198-stability-isolation
