@@ -21,27 +21,36 @@ jobs:
         with:
           ref: github/issue-190-trusted-issue-control
           fetch-depth: 0
-      - name: Apply exact branch patch
+      - name: Generate exact workflow blob and test patch
         run: python3 scripts/issue_190_patch.py
-      - name: Validate exact persistent diff
+      - name: Validate generated workflow and focused tests
         run: |
           git diff --check
-          test "$(git diff --name-only | sort)" = $'.github/workflows/ci-reconcile.yml\n.github/workflows/issue-190-edit.yml\nscripts/issue_190_patch.py\ntests/test_workflow_security.py'
+          test "$(git diff --name-only | sort)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
           python3 - <<'PY'
           from pathlib import Path
           import re
           import textwrap
-          text = Path('.github/workflows/ci-reconcile.yml').read_text(encoding='utf-8')
+          generated = Path('automation-tmp/issue-190-ci-reconcile.yml')
+          text = generated.read_text(encoding='utf-8')
           match = re.search(r"(?ms)^          python3 - <<'PY'\n(?P<body>.*?)^          PY$", text)
           if match is None:
               raise SystemExit('embedded Python missing')
           compile(textwrap.dedent(match.group('body')), 'ci-reconcile-embedded', 'exec')
+          target = Path('.github/workflows/ci-reconcile.yml')
+          original = target.read_bytes()
+          target.write_bytes(generated.read_bytes())
+          try:
+              import subprocess
+              subprocess.run(['python3', '-m', 'unittest', 'tests.test_workflow_security'], check=True)
+          finally:
+              target.write_bytes(original)
           PY
-          python3 -m unittest tests.test_workflow_security
-      - name: Commit self-removing patch
+          test "$(git diff --name-only | sort)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
+      - name: Push non-workflow handoff only
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/workflows/ci-reconcile.yml tests/test_workflow_security.py .github/workflows/issue-190-edit.yml scripts/issue_190_patch.py
-          git commit -m 'Normalize trusted Queue Issue identity'
+          git add automation-tmp/issue-190-ci-reconcile.yml tests/test_workflow_security.py
+          git commit -m 'Stage trusted Queue Issue identity patch'
           git push origin HEAD:github/issue-190-trusted-issue-control
