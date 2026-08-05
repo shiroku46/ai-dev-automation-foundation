@@ -113,10 +113,11 @@ def validate() -> None:
     queue = text(".github/workflows/claude-queue.yml")
     require(queue, (
         'trigger = "/claude-run"', "body.strip() == trigger",
-        "check_tool_permission_contract", "contract_ok", "continue-on-error: true",
-        "track_progress: false", "reserve the final 5 turns", '"complete" if', 'else "wip"',
-        "retry_identity", "notification: false", "human_action_required: false",
-        "publication_route: GitHub-direct coordinator", "request_fingerprint:",
+        "check_tool_permission_contract", "contract_ok",
+        "Optional provider missing secret", "credential-isolated route unavailable",
+        "provider_invocation: false", "repository_credentials_exposed: false",
+        "repository_write: false", "notification: false", "human_action_required: false",
+        "exit 1", "publication_route: GitHub-direct coordinator", "request_fingerprint:",
         "retry_attempt:", 'automation_actor = "github-actions[bot]"',
         "automation-stops/queue-v4/issue-", "automation-internal-stops",
         'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
@@ -133,10 +134,20 @@ def validate() -> None:
         if forbidden in prepare:
             raise ValidationError(f"Queue dispatch guard can write or obtain OIDC: {forbidden}")
     implement = job(queue, "implement", "verify")
-    require(implement, ("contents: read", "issues: read", "id-token: write", "persist-credentials: false"), "provider job")
-    for forbidden in ("contents: write", "issues: write", "pull-requests: write"):
+    require(implement, (
+        "timeout-minutes: 5", "permissions: {}", "Optional provider missing secret",
+        "credential-isolated route unavailable", "provider_invocation: false",
+        "repository_credentials_exposed: false", "repository_write: false",
+        "notification: false", "human_action_required: false", "exit 1",
+    ), "credential-isolated optional route")
+    for forbidden in (
+        "continue-on-error: true", "secrets.", "id-token: write", "anthropics/",
+        "actions/checkout@", "GH_TOKEN", "github.token", "persist-credentials",
+        "remote.origin", "contents: write", "issues: write", "pull-requests: write",
+        "queue-checkpoint", "candidate.patch", "checkpoint.json", "upload-artifact@",
+    ):
         if forbidden in implement:
-            raise ValidationError(f"provider job can write: {forbidden}")
+            raise ValidationError(f"credential-isolated optional route retains forbidden capability: {forbidden}")
     verify = job(queue, "verify", "publish")
     for forbidden in ("secrets.", "id-token: write", "contents: write", "pull-requests: write"):
         if forbidden in verify:
