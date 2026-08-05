@@ -72,7 +72,9 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn("workflow_run:", queue)
         self.assertNotIn("schedule:", queue)
         self.assertIn('trigger = "/claude-run"', queue)
-        self.assertIn("body.strip() == trigger", queue)
+        self.assertIn("from scripts.queue_event_guard import resolve_queue_event", queue)
+        self.assertNotIn("github.event_path", queue)
+        self.assertNotIn("EVENT_PATH", queue)
         self.assertIn("ACTOR: ${{ github.actor }}", queue)
         self.assertIn("OWNER: ${{ vars.AUTOMATION_OWNER || github.repository_owner }}", queue)
         self.assertNotIn("github.triggering_actor", queue)
@@ -390,27 +392,28 @@ class WorkflowSecurityTest(unittest.TestCase):
         self.assertNotIn("secrets.", runtime)
         self.assertNotIn("actions/checkout", runtime)
 
-    def test_legacy_internal_stops_remain_non_commenting(self):
-        runtime = read("scripts/supervisor_runtime.py")
-        self.assertIn('INTERNAL_STOP_BRANCH = "automation-internal-stops"', runtime)
-        self.assertIn('INTERNAL_STOP_ROOT = "automation-stops"', runtime)
-        self.assertIn("persist_internal_stop_record", runtime)
-        stop = runtime.split("def stop_report(", 1)[1].split("\ndef format_human_only_notice(", 1)[0]
-        self.assertNotIn("comment(", stop)
-        self.assertNotIn("/comments", stop)
-        self.assertNotIn("gh issue comment", stop)
-
-    def test_human_only_notice_still_requires_connected_evidence(self):
-        runtime = read("scripts/supervisor_runtime.py")
-        for reason in (
-            "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
-            "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
-            "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED",
+    def test_retired_runtime_modules_are_absent_and_active_modules_remain(self):
+        retired = (
+            "scripts/ai_recovery_supervisor.py",
+            "scripts/supervisor_final_guard.py",
+            "scripts/supervisor_runtime.py",
+            "scripts/supervisor_queue_recovery.py",
+            "scripts/supervisor_queue_recovery_v2.py",
+            "scripts/supervisor_queue_recovery_v3.py",
+        )
+        for relative in retired:
+            self.assertFalse((ROOT / relative).exists(), relative)
+        for relative in (
+            "scripts/github_coordinator_supervisor.py",
+            "scripts/supervisor_policy.py",
+            "scripts/queue_event_guard.py",
+            "scripts/queue_failure_classifier.py",
+            "scripts/queue_issue_hydration.py",
+            "scripts/queue_retry_identity.py",
+            "scripts/github_api_governor.py",
+            "scripts/foundation_drift.py",
         ):
-            self.assertIn(reason, runtime)
-        notice = runtime.split("def human_only_notice(", 1)[1].split("\ndef discover_targets(", 1)[0]
-        self.assertIn("self_resolution_audit", notice)
-        self.assertIn('item.get("created_at") == item.get("updated_at")', notice)
+            self.assertTrue((ROOT / relative).is_file(), relative)
 
     def test_guidance_and_bootstrap_keep_internal_stop_and_lock_parity(self):
         for path in ("docs/OPERATING_RULES.md", "AGENTS.md", "CLAUDE.md", "bootstrap/generator.py"):
@@ -421,7 +424,8 @@ class WorkflowSecurityTest(unittest.TestCase):
             "PRESERVE_IF_PRESENT", "plan_render", "Bootstrap collisions",
             "FOUNDATION.lock.json", "source_sha", "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
-            "scripts/github_api_governor.py", "destination.write_bytes(sources[relative])",
+            "scripts/queue_event_guard.py", "scripts/github_api_governor.py",
+            "scripts/supervisor_policy.py", "destination.write_bytes(sources[relative])",
             "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
         ):
             self.assertIn(required, generator)

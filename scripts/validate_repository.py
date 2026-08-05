@@ -16,8 +16,9 @@ REQUIRED = {
     "docs/OPERATING_RULES.md", "docs/PUBLIC_SECURITY_MODEL.md",
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
-    "scripts/queue_retry_identity.py", "scripts/github_api_governor.py",
-    "scripts/github_coordinator_supervisor.py", "scripts/foundation_drift.py",
+    "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
+    "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
+    "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
     ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
     ".github/workflows/claude-queue.yml",
     ".github/workflows/claude-queue-comment-bridge.yml",
@@ -171,23 +172,30 @@ def validate() -> None:
 
     queue = text(".github/workflows/claude-queue.yml")
     require(queue, (
-        'trigger = "/claude-run"', "body.strip() == trigger",
-        "check_tool_permission_contract", "contract_ok",
+        "from scripts.queue_event_guard import resolve_queue_event",
+        "COMMENT_ISSUE:", "COMMENT_BODY:", "COMMENT_IS_PR:",
+        "decision = resolve_queue_event(", "check_tool_permission_contract", "contract_ok",
         "Optional provider missing secret", "credential-isolated route unavailable",
         "provider_invocation: false", "repository_credentials_exposed: false",
         "repository_write: false", "notification: false", "human_action_required: false",
         "exit 1", "publication_route: GitHub-direct coordinator", "request_fingerprint:",
-        "retry_attempt:", 'automation_actor = "github-actions[bot]"',
-        "automation-stops/queue-v4/issue-", "automation-internal-stops",
+        "retry_attempt:", "automation-stops/queue-v4/issue-", "automation-internal-stops",
         'record.get("next_automatic_action") == "dispatch one optional Queue retry"',
         "should_auto_retry(failure_class, attempt - 1, 3)",
     ), "optional Queue")
+    for forbidden in ("EVENT_PATH", "github.event_path"):
+        if forbidden in queue:
+            raise ValidationError(f"optional Queue still reads an event payload file: {forbidden}")
     if "\n  issues:\n" in queue or "workflow_run:" in queue or "schedule:" in queue:
         raise ValidationError("optional Queue has an ordinary automatic trigger")
     prepare = job(queue, "prepare", "implement")
     require(prepare, (
-        "actor == owner and not fingerprint_input and not attempt_input",
-        "elif actor == automation_actor", "request_fingerprint(issue, base_sha)",
+        "resolve_queue_event", "decision.issue_number", "decision.allowed",
+        "decision.automated_retry", "decision.fingerprint", "decision.retry_attempt",
+        'owner = os.environ["OWNER"].casefold()',
+        "def api(path):", "def api_pages(path):", "def trigger_identity(issue):",
+        "def request_fingerprint(issue, base_sha):",
+        "request_fingerprint(issue, base_sha)",
     ), "optional Queue dispatch guard")
     for forbidden in ("contents: write", "issues: write", "pull-requests: write", "id-token: write"):
         if forbidden in prepare:
@@ -230,6 +238,20 @@ def validate() -> None:
         "optional provider route unavailable; continue GitHub-direct work",
     ), "provider failure policy")
 
+
+    if not generated_target:
+        retired = (
+            "scripts/ai_recovery_supervisor.py",
+            "scripts/supervisor_final_guard.py",
+            "scripts/supervisor_runtime.py",
+            "scripts/supervisor_queue_recovery.py",
+            "scripts/supervisor_queue_recovery_v2.py",
+            "scripts/supervisor_queue_recovery_v3.py",
+        )
+        present = [relative for relative in retired if (ROOT / relative).exists()]
+        if present:
+            raise ValidationError("retired runtime files remain: " + ", ".join(present))
+
     issue_template = text(".github/ISSUE_TEMPLATE/ai-task.yml")
     require(issue_template, ("GitHub-only", "Risk tier", "Allowed paths", "Required checks", "Prohibited effects", "Rollback"), "Issue template")
     pr_template = text(".github/pull_request_template.md")
@@ -242,7 +264,8 @@ def validate() -> None:
             "Bootstrap collisions", "FOUNDATION.lock.json", "source_sha",
             "destination.write_bytes(sources[relative])", "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
-            "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
+            "scripts/queue_event_guard.py", "scripts/github_api_governor.py",
+            "scripts/github_coordinator_supervisor.py", "scripts/supervisor_policy.py",
             ".github/workflows/supervisor.yml", "Codex and Claude setup is optional",
             "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
         ), "Bootstrap")
