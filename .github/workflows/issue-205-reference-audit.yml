@@ -1,0 +1,38 @@
+name: Issue 205 legacy reference audit
+
+on:
+  push:
+    branches:
+      - github/issue-205-maintainability
+
+permissions: {}
+
+jobs:
+  audit:
+    if: github.repository == 'shiroku46/ai-dev-automation-foundation' && github.actor == github.repository_owner && github.event.head_commit.message == 'Audit Issue 205 legacy runtime references'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: github/issue-205-maintainability
+          persist-credentials: false
+      - name: Report active references excluding the legacy definitions themselves
+        run: |
+          set -o pipefail
+          names='ai_recovery_supervisor|supervisor_final_guard|supervisor_runtime|supervisor_queue_recovery(_v2|_v3)?'
+          echo '## All references'
+          grep -R -n -E "$names" -- . \
+            ':!.git' \
+            ':!scripts/ai_recovery_supervisor.py' \
+            ':!scripts/supervisor_final_guard.py' \
+            ':!scripts/supervisor_runtime.py' \
+            ':!scripts/supervisor_queue_recovery.py' \
+            ':!scripts/supervisor_queue_recovery_v2.py' \
+            ':!scripts/supervisor_queue_recovery_v3.py' || true
+          echo '## Direct imports and executions'
+          grep -R -n -E '(from scripts\.(ai_recovery_supervisor|supervisor_final_guard|supervisor_runtime|supervisor_queue_recovery)|import scripts\.(ai_recovery_supervisor|supervisor_final_guard|supervisor_runtime|supervisor_queue_recovery)|python(3)? scripts/(ai_recovery_supervisor|supervisor_final_guard|supervisor_runtime|supervisor_queue_recovery))' -- . ':!.git' || true
+          echo '## Test files containing legacy references'
+          grep -R -l -E "$names" -- tests | sort || true
