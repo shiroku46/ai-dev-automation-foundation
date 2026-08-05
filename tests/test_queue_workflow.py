@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import re
+import textwrap
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TEXT = (ROOT / ".github/workflows/claude-queue.yml").read_text(encoding="utf-8")
 PIN = re.compile(r"uses:\s*[^@\s]+@[0-9a-f]{40}\s*$")
+HEREDOC = re.compile(
+    r"(?ms)^          python3 - <<'PY'\n(?P<body>.*?)^          PY$"
+)
 
 
 def block(name: str, following: str | None = None) -> str:
@@ -15,6 +19,10 @@ def block(name: str, following: str | None = None) -> str:
     if following:
         value = value.split(f"\n  {following}:\n", 1)[0]
     return value
+
+
+def embedded_python() -> list[str]:
+    return [textwrap.dedent(match.group("body")) for match in HEREDOC.finditer(TEXT)]
 
 
 class OptionalQueueTest(unittest.TestCase):
@@ -34,6 +42,16 @@ class OptionalQueueTest(unittest.TestCase):
         for line in TEXT.splitlines():
             if line.strip().removeprefix("- ").startswith("uses:"):
                 self.assertRegex(line, PIN)
+
+    def test_every_embedded_python_block_compiles(self):
+        sources = embedded_python()
+        self.assertEqual(len(sources), 3)
+        for index, source in enumerate(sources, start=1):
+            with self.subTest(index=index):
+                compile(source, f"claude-queue-heredoc-{index}", "exec")
+        self.assertIn("check_tool_permission_contract", sources[0])
+        self.assertIn("checkpoint_kind", sources[1])
+        self.assertIn("checkpoint digest mismatch", sources[2])
 
     def test_permission_preflight_is_before_provider(self):
         prepare = block("prepare", "implement")
