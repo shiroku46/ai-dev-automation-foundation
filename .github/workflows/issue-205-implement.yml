@@ -60,6 +60,8 @@ jobs:
           if content.count(old) != 1:
               raise SystemExit('Workflow security guard assertion pattern changed')
           security.write_text(content.replace(old, new, 1), encoding='utf-8')
+          rules = Path('docs/OPERATING_RULES.md')
+          rules.write_text(rules.read_text(encoding='utf-8').rstrip() + '\n', encoding='utf-8')
           PY
       - name: Remove temporary transports
         run: |
