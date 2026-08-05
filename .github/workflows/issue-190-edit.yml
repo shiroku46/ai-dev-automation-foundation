@@ -26,7 +26,8 @@ jobs:
       - name: Validate generated workflow and focused tests
         run: |
           git diff --check
-          test "$(git diff --name-only | sort)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
+          changed_paths() { { git diff --name-only; git ls-files --others --exclude-standard; } | sort; }
+          test "$(changed_paths)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
           python3 - <<'PY'
           from pathlib import Path
           import re
@@ -46,7 +47,7 @@ jobs:
           finally:
               target.write_bytes(original)
           PY
-          test "$(git diff --name-only | sort)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
+          test "$(changed_paths)" = $'automation-tmp/issue-190-ci-reconcile.yml\ntests/test_workflow_security.py'
       - name: Push non-workflow handoff only
         run: |
           git config user.name 'github-actions[bot]'
