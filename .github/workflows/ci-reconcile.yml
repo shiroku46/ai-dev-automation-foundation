@@ -46,7 +46,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   queue_recovery:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.path == '.github/workflows/claude-queue.yml'
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.path == '.github/workflows/claude-queue.yml') ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.body == '/foundation-reconcile' &&
+       github.actor == github.repository_owner &&
+       github.event.issue.pull_request == null)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -180,7 +187,7 @@ jobs:
                       and connected_number == number
                   ),
                   "open_state": issue.get("state") == "open",
-                  "issue_not_pr": not bool(issue.get("pull_request")),
+                  "issue_not_pr": issue.get("pull_request") is None,
                   "trusted_author": bool(author) and author in allowed_owners,
               }
 
@@ -197,7 +204,10 @@ jobs:
               for delay in delays:
                   if delay:
                       time.sleep(delay)
-                  issue = api(f"repos/{repository}/issues/{number}")
+                  try:
+                      issue = api(f"repos/{repository}/issues/{number}")
+                  except (RuntimeError, json.JSONDecodeError):
+                      continue
                   if not isinstance(issue, dict):
                       continue
                   last = issue_trust_predicates(issue, number, trusted_owners)
