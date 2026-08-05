@@ -24,6 +24,18 @@ jobs:
         with:
           ref: github/issue-205-maintainability
           fetch-depth: 0
+      - name: Narrow the temporary script final audit
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/issue-205-implement.py')
+          content = path.read_text(encoding='utf-8')
+          old = '    "scripts/validate_repository.py",\n):\n    content = read(relative)\n'
+          new = '):\n    content = read(relative)\n'
+          if content.count(old) != 1:
+              raise SystemExit('temporary implementation audit pattern changed')
+          path.write_text(content.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Apply authorized maintenance changes
         run: python .github/issue-205-implement.py
       - name: Remove temporary transports
