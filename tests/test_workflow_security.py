@@ -115,6 +115,11 @@ class WorkflowSecurityTest(unittest.TestCase):
             "github.event.workflow_run.name != 'Claude Issue Queue'",
             reconcile,
         )
+        self.assertNotIn('queue_name = "Claude Issue Queue"', reconcile)
+        self.assertNotIn('run.get("name") == queue_name', reconcile)
+        self.assertNotIn('run.get("name") != queue_name', reconcile)
+        fixed_path = 'str(run.get("path") or "").split("@", 1)[0]'
+        self.assertGreaterEqual(reconcile.count(fixed_path), 3)
 
         observe = job_block(reconcile, "observe", "queue_recovery")
         self.assertIn("actions: read", observe)
