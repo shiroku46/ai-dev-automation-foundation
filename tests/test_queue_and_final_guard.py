@@ -128,21 +128,49 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, supervisor)
 
-    def test_ci_reconciliation_cannot_retry_or_mutate(self):
+    def test_ci_reconciliation_separates_observation_and_bounded_recovery(self):
         reconcile = workflow("ci-reconcile.yml")
-        self.assertIn('workflows: ["CI", "Unit Tests"]', reconcile)
-        self.assertIn("read-only compatibility observation", reconcile)
-        self.assertIn("provider_invocation: false", reconcile)
-        self.assertIn("human_action_required: false", reconcile)
+        self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
+        self.assertIn("schedule:", reconcile)
+        self.assertIn("cancel-in-progress: false", reconcile)
+
+        observe = job_block(reconcile, "observe", "queue_recovery")
+        self.assertIn("actions: read", observe)
+        self.assertIn("contents: read", observe)
+        self.assertIn("pull-requests: read", observe)
+        self.assertIn("read-only compatibility observation", observe)
+        self.assertIn("provider_invocation: false", observe)
+        self.assertIn("human_action_required: false", observe)
         for forbidden in (
             "actions: write",
             "contents: write",
             "issues: write",
             "pull-requests: write",
-            "supervisor_queue_recovery",
-            "workflow dispatch",
         ):
-            self.assertNotIn(forbidden, reconcile)
+            self.assertNotIn(forbidden, observe)
+
+        recovery = job_block(reconcile, "queue_recovery")
+        for required in (
+            "actions: write",
+            "contents: write",
+            "issues: read",
+            "pull-requests: write",
+            "max_retries = 3",
+            "should_auto_retry",
+            "candidate_execution_with_write_token: `false`",
+            "notification: `false`",
+            "human_action_required: `false`",
+        ):
+            self.assertIn(required, recovery)
+        for forbidden in (
+            "secrets.",
+            "id-token: write",
+            "anthropics/",
+            "codex",
+            "gh issue comment",
+            "issues: write",
+        ):
+            self.assertNotIn(forbidden, recovery)
 
 
 if __name__ == "__main__":
