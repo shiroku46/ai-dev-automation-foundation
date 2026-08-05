@@ -31,14 +31,8 @@ jobs:
           path = Path('.github/issue-205-implement.py')
           content = path.read_text(encoding='utf-8')
           replacements = (
-              (
-                  '    "scripts/validate_repository.py",\n):\n    content = read(relative)\n',
-                  '):\n    content = read(relative)\n',
-              ),
-              (
-                  '    for forbidden in ("EVENT_PATH", "github.event_path", "Path(os.environ"):\n',
-                  '    for forbidden in ("EVENT_PATH", "github.event_path"):\n',
-              ),
+              ('    "scripts/validate_repository.py",\n):\n    content = read(relative)\n', '):\n    content = read(relative)\n'),
+              ('    for forbidden in ("EVENT_PATH", "github.event_path", "Path(os.environ"):\n', '    for forbidden in ("EVENT_PATH", "github.event_path"):\n'),
           )
           for old, new in replacements:
               if content.count(old) != 1:
@@ -52,38 +46,17 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-
           guard = Path('tests/test_queue_event_guard.py')
           content = guard.read_text(encoding='utf-8')
-          old = '''                decision = self.decision(
-                    event_name="issue_comment",
-                    dispatch_issue="",
-                    comment_issue="173",
-                    comment_body="/claude-run",
-                    **override,
-                )
-'''
-          new = '''                values = {
-                    "event_name": "issue_comment",
-                    "dispatch_issue": "",
-                    "comment_issue": "173",
-                    "comment_body": "/claude-run",
-                }
-                values.update(override)
-                decision = self.decision(**values)
-'''
+          old = '                decision = self.decision(\n                    event_name="issue_comment",\n                    dispatch_issue="",\n                    comment_issue="173",\n                    comment_body="/claude-run",\n                    **override,\n                )\n'
+          new = '                values = {\n                    "event_name": "issue_comment",\n                    "dispatch_issue": "",\n                    "comment_issue": "173",\n                    "comment_body": "/claude-run",\n                }\n                values.update(override)\n                decision = self.decision(**values)\n'
           if content.count(old) != 1:
               raise SystemExit('Queue guard fixture pattern changed')
           guard.write_text(content.replace(old, new, 1), encoding='utf-8')
-
           security = Path('tests/test_workflow_security.py')
           content = security.read_text(encoding='utf-8')
           old = '        self.assertIn("body.strip() == trigger", queue)\n'
-          new = (
-              '        self.assertIn("from scripts.queue_event_guard import resolve_queue_event", queue)\n'
-              '        self.assertNotIn("github.event_path", queue)\n'
-              '        self.assertNotIn("EVENT_PATH", queue)\n'
-          )
+          new = '        self.assertIn("from scripts.queue_event_guard import resolve_queue_event", queue)\n        self.assertNotIn("github.event_path", queue)\n        self.assertNotIn("EVENT_PATH", queue)\n'
           if content.count(old) != 1:
               raise SystemExit('Workflow security guard assertion pattern changed')
           security.write_text(content.replace(old, new, 1), encoding='utf-8')
