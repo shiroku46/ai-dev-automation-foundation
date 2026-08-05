@@ -100,7 +100,6 @@ jobs:
           event = json.loads(pathlib.Path(os.environ["EVENT_PATH"]).read_text(encoding="utf-8"))
           exact_sha = re.compile(r"^[0-9a-f]{40}$")
           queue_workflow = "claude-queue.yml"
-          queue_name = "Claude Issue Queue"
           stop_branch = "automation-internal-stops"
           retry_root = "automation-stops/queue-v4"
           max_retries = 3
@@ -186,7 +185,7 @@ jobs:
           def active_queue_run() -> bool:
               runs = api_pages(f"repos/{repository}/actions/workflows/{queue_workflow}/runs?per_page=100", "workflow_runs")
               return any(
-                  run.get("name") == queue_name
+                  str(run.get("path") or "").split("@", 1)[0] == ".github/workflows/claude-queue.yml"
                   and run.get("head_branch") == default_branch
                   and str(run.get("status") or "") in {"queued", "in_progress", "waiting", "pending", "requested"}
                   for run in runs
@@ -595,8 +594,7 @@ jobs:
               candidates = sorted(
                   (
                       run for run in runs
-                      if run.get("name") == queue_name
-                      and run.get("display_title") == f"Optional Claude issue-{issue_number}"
+                      if run.get("display_title") == f"Optional Claude issue-{issue_number}"
                       and str(run.get("path") or "").split("@", 1)[0] == ".github/workflows/claude-queue.yml"
                       and run.get("head_branch") == default_branch
                       and run.get("head_sha") == base_sha
@@ -624,8 +622,7 @@ jobs:
           if event_name == "workflow_run":
               run = event.get("workflow_run") or {}
               if (
-                  run.get("name") != queue_name
-                  or str(run.get("path") or "").split("@", 1)[0] != ".github/workflows/claude-queue.yml"
+                  str(run.get("path") or "").split("@", 1)[0] != ".github/workflows/claude-queue.yml"
                   or run.get("head_branch") != default_branch
                   or run.get("status") != "completed"
                   or ((run.get("repository") or {}).get("full_name") or repository) != repository
