@@ -172,6 +172,22 @@ class QueueAndFinalGuardTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, recovery)
 
+    def test_recovery_identity_and_failure_classification_fail_closed(self):
+        recovery = job_block(workflow("ci-reconcile.yml"), "queue_recovery")
+        body_trigger = recovery.split('if first == "/claude-run":', 1)[1].split(
+            "              number = int(issue.get", 1
+        )[0]
+        self.assertIn('"created_at": str(issue.get("created_at") or "")', body_trigger)
+        self.assertNotIn('"updated_at"', body_trigger)
+        self.assertIn('"bad credentials"', recovery)
+        self.assertIn('"http 401"', recovery)
+        self.assertIn('"http 403"', recovery)
+        self.assertNotIn('"missing secret", "unauthorized"', recovery)
+        self.assertIn('"human_action_required": False', recovery)
+        self.assertIn("optional provider route unavailable; continue GitHub-direct work", recovery)
+        self.assertIn("len(files) >= 300", recovery)
+        self.assertIn("remote Queue checkpoint changed-file evidence is incomplete", recovery)
+
 
 if __name__ == "__main__":
     unittest.main()
