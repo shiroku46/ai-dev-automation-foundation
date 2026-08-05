@@ -40,10 +40,10 @@ class QueueIssueHydrationTest(unittest.TestCase):
         self.assertIsNone(value)
         self.assertFalse(predicates["issue_not_pr"])
 
-    def test_transient_disagreement_recovers_only_after_two_good_reads(self):
+    def test_repeated_transient_rejection_yields_to_later_trusted_pair(self):
         bad = issue(state="closed", pull_request={"url": "x"}, updated="2026-08-05T04:59:00Z")
         good = issue()
-        status, value, predicates = self.resolve([bad, good, good])
+        status, value, predicates = self.resolve([bad, bad, good, good])
         self.assertEqual(status, "trusted")
         self.assertEqual(value, good)
         self.assertTrue(all(predicates.values()))
