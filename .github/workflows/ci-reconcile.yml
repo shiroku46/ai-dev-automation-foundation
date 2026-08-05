@@ -574,6 +574,36 @@ jobs:
                   raise RuntimeError("Queue run title does not identify exactly one Issue")
               return trusted_issue(int(match.group(1)))
 
+          def latest_verified_artifact(issue: dict[str, Any], base_sha: str) -> tuple[dict[str, Any], tuple[pathlib.Path, dict[str, Any], str]] | None:
+              issue_number = int(issue["number"])
+              runs = api_pages(
+                  f"repos/{repository}/actions/workflows/{queue_workflow}/runs?per_page=100",
+                  "workflow_runs",
+              )
+              candidates = sorted(
+                  (
+                      run for run in runs
+                      if run.get("name") == queue_name
+                      and run.get("display_title") == f"Optional Claude issue-{issue_number}"
+                      and str(run.get("path") or "").split("@", 1)[0] == ".github/workflows/claude-queue.yml"
+                      and run.get("head_branch") == default_branch
+                      and run.get("head_sha") == base_sha
+                      and run.get("status") == "completed"
+                      and ((run.get("repository") or {}).get("full_name") or repository) == repository
+                  ),
+                  key=lambda run: (
+                      int(run.get("run_number") or 0),
+                      int(run.get("run_attempt") or 0),
+                      int(run.get("id") or 0),
+                  ),
+                  reverse=True,
+              )
+              for run in candidates:
+                  artifact = verify_artifact(run, issue)
+                  if artifact is not None:
+                      return run, artifact
+              return None
+
           base_sha = current_default_sha()
           action = "none"
           selected_issue: dict[str, Any] | None = None
@@ -614,13 +644,20 @@ jobs:
                       if trigger_identity(issue) is None or candidate_for_issue(int(issue["number"])):
                           continue
                       selected_issue = issue
-                      resumed = resume_remote_branch(issue, base_sha)
-                      if resumed is not None:
-                          action = f"resumed_pr_{resumed}"
-                      elif dispatch_retry(issue, base_sha, FailureClass.UNKNOWN, None):
-                          action = "silent_stop_retry_dispatched"
+                      recovered = latest_verified_artifact(issue, base_sha)
+                      if recovered is not None:
+                          recovered_run, artifact = recovered
+                          source_run_id = int(recovered_run.get("id") or 0)
+                          pr_number = publish_artifact(recovered_run, issue, artifact)
+                          action = f"published_pr_{pr_number}"
                       else:
-                          action = "silent_stop_already_recorded"
+                          resumed = resume_remote_branch(issue, base_sha)
+                          if resumed is not None:
+                              action = f"resumed_pr_{resumed}"
+                          elif dispatch_retry(issue, base_sha, FailureClass.UNKNOWN, None):
+                              action = "silent_stop_retry_dispatched"
+                          else:
+                              action = "silent_stop_already_recorded"
                       break
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
