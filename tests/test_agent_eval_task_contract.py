@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -164,6 +165,7 @@ class EvaluationTaskContractTest(unittest.TestCase):
             ("entrypoint", "grade.py"),
             ("entrypoint", "grader/../grade.py"),
             ("entrypoint", "grader/*.py"),
+            ("entrypoint", "grader/.GIT/grade.py"),
             ("entrypoint", "C:/grader/grade.py"),
             ("timeout_seconds", True),
             ("timeout_seconds", 0),
@@ -188,6 +190,8 @@ class EvaluationTaskContractTest(unittest.TestCase):
             ["src\\file.py"],
             ["src//file.py"],
             [".git/config"],
+            [".GIT/config"],
+            ["src/.Git/config"],
             ["src/*.py"],
             ["src/**/file.py"],
             ["src/**", "tests/**"],
@@ -341,6 +345,20 @@ class EvaluationTaskContractTest(unittest.TestCase):
         )
         human_enum = schema["properties"]["expected_human_action_reason"]["oneOf"][1]["enum"]
         self.assertEqual(set(human_enum), set(HUMAN_ONLY_REASON_CODES))
+
+        exact_pattern = schema["$defs"]["exactPath"]["pattern"]
+        allowed_pattern = schema["$defs"]["allowedPath"]["pattern"]
+        grader_pattern = schema["$defs"]["grader"]["properties"]["entrypoint"]["pattern"]
+        self.assertIsNotNone(re.fullmatch(exact_pattern, ".github/workflows/ci.yml"))
+        self.assertIsNotNone(re.fullmatch(allowed_pattern, "tests/**"))
+        self.assertIsNotNone(re.fullmatch(grader_pattern, "grader/grade.py"))
+        for unsafe in (".git/config", ".GIT/config", "src/.Git/config"):
+            with self.subTest(schema_path=unsafe):
+                self.assertIsNone(re.fullmatch(exact_pattern, unsafe))
+                self.assertIsNone(re.fullmatch(allowed_pattern, unsafe))
+        for unsafe in ("grader/.git/grade.py", "grader/.GIT/grade.py"):
+            with self.subTest(schema_grader=unsafe):
+                self.assertIsNone(re.fullmatch(grader_pattern, unsafe))
 
 
 if __name__ == "__main__":
