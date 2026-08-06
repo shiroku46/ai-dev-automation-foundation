@@ -1,6 +1,7 @@
 """Immutable coding-agent evaluation task manifest tests."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import unittest
@@ -83,29 +84,20 @@ class EvaluationTaskContractTest(unittest.TestCase):
         raw = canonical(valid_payload())
         parsed = parse_evaluation_task(raw)
         self.assertEqual(parsed.task_id, "foundation.task-001")
-        self.assertEqual(
-            parsed.allowed_paths, ("src/parser.py", "tests/**")
-        )
-        self.assertEqual(
-            parsed.manifest_sha256, hashlib.sha256(raw).hexdigest()
-        )
+        self.assertEqual(parsed.allowed_paths, ("src/parser.py", "tests/**"))
+        self.assertEqual(parsed.manifest_sha256, hashlib.sha256(raw).hexdigest())
         with self.assertRaisesRegex(Exception, "cannot assign"):
             parsed.task_version = 2
 
     def test_manifest_must_be_canonical_utf8_json(self):
         payload = valid_payload()
-        noncanonical = json.dumps(
-            payload, indent=2, ensure_ascii=False
-        ).encode("utf-8")
+        noncanonical = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
         with self.assertRaises(EvaluationTaskError):
             parse_evaluation_task(noncanonical)
         with self.assertRaises(EvaluationTaskError):
             parse_evaluation_task(canonical(payload) + b"\n")
         for content in (
-            b"",
-            b"[]",
-            b"not-json",
-            b"\xff",
+            b"", b"[]", b"not-json", b"\xff",
             b'{"schema_version":1,"schema_version":1}',
             b'{"x":NaN}',
         ):
@@ -115,7 +107,7 @@ class EvaluationTaskContractTest(unittest.TestCase):
         with self.assertRaises(EvaluationTaskError):
             parse_evaluation_task(b"x" * (MAX_MANIFEST_BYTES + 1))
 
-    def test_schema_version_unknown_missing_and_nested_keys_fail(self):
+    def test_schema_version_unknown_missing_and_duplicate_keys_fail(self):
         for version in (2, True):
             payload = valid_payload()
             payload["schema_version"] = version
@@ -165,7 +157,7 @@ class EvaluationTaskContractTest(unittest.TestCase):
             with self.subTest(key=key, value=value):
                 self.assert_invalid(payload)
 
-    def test_grader_contract_is_fully_bound(self):
+    def test_grader_contract_is_digest_runtime_path_timeout_and_network_bound(self):
         mutations = (
             ("sha256", "A" * 64),
             ("runtime", "python"),
@@ -183,10 +175,11 @@ class EvaluationTaskContractTest(unittest.TestCase):
             with self.subTest(key=key, value=value):
                 self.assert_invalid(payload)
 
-    def test_allowed_paths_accept_exact_and_one_trailing_scope_only(self):
-        payload = valid_payload()
-        payload["allowed_paths"] = ["docs/guide.md", "src/module/**"]
-        self.parse(payload)
+    def test_allowed_paths_accept_exact_paths_and_one_trailing_scope_only(self):
+        valid = valid_payload()
+        valid["allowed_paths"] = ["docs/guide.md", "src/module/**"]
+        self.parse(valid)
+
         invalid_sets = (
             [],
             ["../src/file.py"],
@@ -206,13 +199,14 @@ class EvaluationTaskContractTest(unittest.TestCase):
             with self.subTest(paths=paths):
                 self.assert_invalid(payload)
 
-    def test_text_collections_are_bounded_and_unique(self):
+    def test_issue_effect_check_and_tag_collections_are_bounded_and_unique(self):
         payload = valid_payload()
         payload["issue"]["title"] = " bad"
         self.assert_invalid(payload)
         payload = valid_payload()
         payload["issue"]["body"] = "bad\r\nbody"
         self.assert_invalid(payload)
+
         for key, values in (
             ("prohibited_effects", []),
             ("prohibited_effects", ["No writes", "no writes"]),
@@ -232,22 +226,24 @@ class EvaluationTaskContractTest(unittest.TestCase):
         payload["risk_tier"] = "protected"
         self.assert_invalid(payload)
 
-        authorization = {
+        payload = valid_payload()
+        payload["risk_tier"] = "protected"
+        payload["protected_authorization"] = {
             "actor": "shiroku46",
             "source": "issue_body",
             "required_marker": "AUTHORIZED_PROTECTED_CHANGE",
             "expected_head_required": True,
         }
-        payload = valid_payload()
-        payload["risk_tier"] = "protected"
-        payload["protected_authorization"] = authorization.copy()
         parsed = self.parse(payload)
-        self.assertTrue(
-            parsed.protected_authorization.expected_head_required
-        )
+        self.assertTrue(parsed.protected_authorization.expected_head_required)
 
         payload = valid_payload()
-        payload["protected_authorization"] = authorization.copy()
+        payload["protected_authorization"] = {
+            "actor": "shiroku46",
+            "source": "issue_body",
+            "required_marker": "AUTHORIZED_PROTECTED_CHANGE",
+            "expected_head_required": True,
+        }
         self.assert_invalid(payload)
 
         for key, value in (
@@ -259,18 +255,21 @@ class EvaluationTaskContractTest(unittest.TestCase):
         ):
             payload = valid_payload()
             payload["risk_tier"] = "protected"
-            payload["protected_authorization"] = authorization.copy()
+            payload["protected_authorization"] = {
+                "actor": "shiroku46",
+                "source": "issue_body",
+                "required_marker": "AUTHORIZED_PROTECTED_CHANGE",
+                "expected_head_required": True,
+            }
             payload["protected_authorization"][key] = value
             with self.subTest(key=key, value=value):
                 self.assert_invalid(payload)
 
-    def test_expected_human_reason_agrees_with_completion_class(self):
+    def test_expected_human_action_reason_agrees_with_completion_class(self):
         for reason in HUMAN_ONLY_REASON_CODES:
             payload = valid_payload()
             payload["category"] = "human_only"
-            payload["expected_completion_class"] = (
-                "human_action_required"
-            )
+            payload["expected_completion_class"] = "human_action_required"
             payload["expected_human_action_reason"] = reason
             with self.subTest(reason=reason):
                 self.parse(payload)
@@ -278,19 +277,19 @@ class EvaluationTaskContractTest(unittest.TestCase):
         payload = valid_payload()
         payload["expected_completion_class"] = "human_action_required"
         self.assert_invalid(payload)
+
         payload = valid_payload()
-        payload["expected_human_action_reason"] = next(
-            iter(HUMAN_ONLY_REASON_CODES)
-        )
+        payload["expected_human_action_reason"] = next(iter(HUMAN_ONLY_REASON_CODES))
         self.assert_invalid(payload)
+
         payload = valid_payload()
         payload["expected_completion_class"] = "human_action_required"
         payload["expected_human_action_reason"] = "HUMAN_ONLY_GENERIC"
         self.assert_invalid(payload)
 
-    def test_sensitive_credentials_and_reasoning_markers_fail_closed(self):
+    def test_sensitive_credentials_and_hidden_reasoning_markers_fail_closed(self):
         values = (
-            "github_pat_abcdefghijklmnopqrstuvwxyz1234567890",
+            "github" + "_pat_" + "abcdefghijklmnopqrstuvwxyz1234567890",
             "password=correct-horse-battery-staple",
             "-----BEGIN PRIVATE KEY-----",
             "<analysis>private material</analysis>",
@@ -302,68 +301,45 @@ class EvaluationTaskContractTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assert_invalid(payload)
 
-    def test_public_schema_tracks_parser_contract(self):
+    def test_public_schema_tracks_parser_keys_enums_and_nested_contracts(self):
         schema = json.loads(
-            (ROOT / "docs/AGENT_EVAL_TASK.schema.json").read_text(
-                encoding="utf-8"
-            )
+            (ROOT / "docs/AGENT_EVAL_TASK.schema.json").read_text(encoding="utf-8")
         )
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(set(schema["required"]), set(TOP_LEVEL_KEYS))
         self.assertEqual(set(schema["properties"]), set(TOP_LEVEL_KEYS))
         self.assertEqual(
-            set(schema["$defs"]["bundle"]["required"]),
-            set(BUNDLE_KEYS),
+            set(schema["$defs"]["bundle"]["required"]), set(BUNDLE_KEYS)
         )
         self.assertEqual(
-            set(schema["$defs"]["grader"]["required"]),
-            set(GRADER_KEYS),
+            set(schema["$defs"]["grader"]["required"]), set(GRADER_KEYS)
         )
         self.assertEqual(
-            set(schema["$defs"]["issue"]["required"]),
-            set(ISSUE_KEYS),
+            set(schema["$defs"]["issue"]["required"]), set(ISSUE_KEYS)
         )
         self.assertEqual(
-            set(
-                schema["$defs"]["protectedAuthorization"]["required"]
-            ),
+            set(schema["$defs"]["protectedAuthorization"]["required"]),
             set(PROTECTED_AUTHORIZATION_KEYS),
         )
+        self.assertEqual(set(schema["properties"]["category"]["enum"]), set(CATEGORIES))
+        self.assertEqual(set(schema["properties"]["risk_tier"]["enum"]), set(RISK_TIERS))
         self.assertEqual(
-            set(schema["properties"]["category"]["enum"]),
-            set(CATEGORIES),
-        )
-        self.assertEqual(
-            set(schema["properties"]["risk_tier"]["enum"]),
-            set(RISK_TIERS),
-        )
-        self.assertEqual(
-            set(
-                schema["$defs"]["grader"]["properties"]["runtime"]["enum"]
-            ),
+            set(schema["$defs"]["grader"]["properties"]["runtime"]["enum"]),
             set(GRADER_RUNTIMES),
         )
         self.assertEqual(
-            set(
-                schema["$defs"]["grader"]["properties"]["network_mode"]["enum"]
-            ),
+            set(schema["$defs"]["grader"]["properties"]["network_mode"]["enum"]),
             set(NETWORK_MODES),
         )
         self.assertEqual(
-            set(
-                schema["$defs"]["protectedAuthorization"]["properties"]["source"]["enum"]
-            ),
+            set(schema["$defs"]["protectedAuthorization"]["properties"]["source"]["enum"]),
             set(AUTHORIZATION_SOURCES),
         )
         self.assertEqual(
-            set(
-                schema["properties"]["expected_completion_class"]["enum"]
-            ),
+            set(schema["properties"]["expected_completion_class"]["enum"]),
             set(EXPECTED_COMPLETION_CLASSES),
         )
-        human_enum = schema["properties"][
-            "expected_human_action_reason"
-        ]["oneOf"][1]["enum"]
+        human_enum = schema["properties"]["expected_human_action_reason"]["oneOf"][1]["enum"]
         self.assertEqual(set(human_enum), set(HUMAN_ONLY_REASON_CODES))
 
 
