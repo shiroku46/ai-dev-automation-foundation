@@ -1,0 +1,365 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/ai-dev-automation-foundation/agent-eval-task.schema.json",
+  "title": "Foundation coding-agent evaluation task",
+  "description": "An immutable canonical task and grader contract. scripts/agent_eval_task_contract.py is authoritative for canonicalization and cross-field invariants.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "task_version",
+    "category",
+    "risk_tier",
+    "fixture_bundle",
+    "grader",
+    "issue",
+    "allowed_paths",
+    "prohibited_effects",
+    "required_checks",
+    "protected_authorization",
+    "expected_completion_class",
+    "expected_human_action_reason",
+    "trial_count",
+    "environment_profile",
+    "tags"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "task_id": {
+      "$ref": "#/$defs/identity"
+    },
+    "task_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000
+    },
+    "category": {
+      "enum": [
+        "bug_fix",
+        "test_addition",
+        "multi_file_change",
+        "scope_trap",
+        "protected_boundary",
+        "stale_evidence",
+        "provider_unavailable",
+        "human_only",
+        "handoff_resume"
+      ]
+    },
+    "risk_tier": {
+      "enum": [
+        "low",
+        "standard",
+        "protected"
+      ]
+    },
+    "fixture_bundle": {
+      "$ref": "#/$defs/bundle"
+    },
+    "grader": {
+      "$ref": "#/$defs/grader"
+    },
+    "issue": {
+      "$ref": "#/$defs/issue"
+    },
+    "allowed_paths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/allowedPath"
+      }
+    },
+    "prohibited_effects": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/effect"
+      }
+    },
+    "required_checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/checkName"
+      }
+    },
+    "protected_authorization": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/protectedAuthorization"
+        }
+      ]
+    },
+    "expected_completion_class": {
+      "enum": [
+        "change_required",
+        "no_change_required",
+        "human_action_required"
+      ]
+    },
+    "expected_human_action_reason": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
+            "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
+            "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED"
+          ]
+        }
+      ]
+    },
+    "trial_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "environment_profile": {
+      "$ref": "#/$defs/identity"
+    },
+    "tags": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/tag"
+      }
+    }
+  },
+  "$defs": {
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,127})$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "singleLine": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "file_count",
+        "uncompressed_bytes"
+      ],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10737418240
+        }
+      }
+    },
+    "grader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "runtime",
+        "entrypoint",
+        "timeout_seconds",
+        "network_mode"
+      ],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "runtime": {
+          "enum": [
+            "python3.12",
+            "python3.13",
+            "node20",
+            "bash"
+          ]
+        },
+        "entrypoint": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 240,
+          "pattern": "^grader/(?!.*(?:^|/)\\.git(?:/|$))(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*[\\\\*?\\[\\]{}])[^/]+(?:/[^/]+)*$"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "network_mode": {
+          "enum": [
+            "disabled",
+            "allowlisted"
+          ]
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "body"
+      ],
+      "properties": {
+        "title": {
+          "$ref": "#/$defs/singleLine"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        }
+      }
+    },
+    "exactPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*(?:^|/)\\.git(?:/|$))(?!.*[\\*?\\[\\]{}])[^/]+(?:/[^/]+)*$"
+    },
+    "allowedPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 243,
+      "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*(?:^|/)\\.git(?:/|$))(?!.*[?\\[\\]{}])[^/*]+(?:/[^/*]+)*(?:/\\*\\*)?$"
+    },
+    "effect": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "checkName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "tag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,63})$"
+    },
+    "protectedAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "source",
+        "required_marker",
+        "expected_head_required"
+      ],
+      "properties": {
+        "actor": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"
+        },
+        "source": {
+          "enum": [
+            "issue_body",
+            "issue_comment",
+            "pull_request_review"
+          ]
+        },
+        "required_marker": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        },
+        "expected_head_required": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_tier": {
+            "const": "protected"
+          }
+        },
+        "required": [
+          "risk_tier"
+        ]
+      },
+      "then": {
+        "properties": {
+          "protected_authorization": {
+            "$ref": "#/$defs/protectedAuthorization"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "protected_authorization": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_completion_class": {
+            "const": "human_action_required"
+          }
+        },
+        "required": [
+          "expected_completion_class"
+        ]
+      },
+      "then": {
+        "properties": {
+          "expected_human_action_reason": {
+            "enum": [
+              "HUMAN_ONLY_ACCOUNT_LEVEL_REPOSITORY_CREATION_UI_UNAVAILABLE",
+              "HUMAN_ONLY_CREDENTIAL_PROVIDER_UI_REQUIRED",
+              "HUMAN_ONLY_DISCONNECTED_INTEGRATION_RECONNECTION_UI_REQUIRED"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "expected_human_action_reason": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}
