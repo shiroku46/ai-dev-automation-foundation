@@ -41,6 +41,15 @@ RUNTIME_COMMANDS = {
     "node20": "node",
     "bash": "bash",
 }
+GRADER_IDENTITY_ENVIRONMENT_KEYS = (
+    "AI_DEV_EVAL_TASK_ID",
+    "AI_DEV_EVAL_TASK_VERSION",
+    "AI_DEV_EVAL_MANIFEST_SHA256",
+    "AI_DEV_EVAL_GRADER_SHA256",
+    "AI_DEV_EVAL_FOUNDATION_SHA",
+    "AI_DEV_EVAL_BASE_SHA",
+    "AI_DEV_EVAL_CANDIDATE_SHA",
+)
 
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,127})$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -264,6 +273,23 @@ def _validate_expectation(value: Any) -> GraderResultExpectation:
             "expected candidate SHA",
         ),
     )
+
+
+def build_grader_identity_environment(
+    expected: GraderResultExpectation,
+) -> tuple[tuple[str, str], ...]:
+    """Return only the validated non-secret identity variables in fixed order."""
+    identity = _validate_expectation(expected)
+    values = (
+        identity.task_id,
+        str(identity.task_version),
+        identity.manifest_sha256,
+        identity.grader_sha256,
+        identity.foundation_sha,
+        identity.base_sha,
+        identity.candidate_sha,
+    )
+    return tuple(zip(GRADER_IDENTITY_ENVIRONMENT_KEYS, values, strict=True))
 
 
 def parse_grader_result(
