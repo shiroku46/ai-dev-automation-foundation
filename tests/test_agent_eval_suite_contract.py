@@ -38,7 +38,10 @@ def task_payload(fixture: suite.DirectoryBundle, grader: suite.DirectoryBundle) 
             "timeout_seconds": 60,
             "network_mode": "disabled",
         },
-        "issue": {"title": "[Eval] Bounded task", "body": "## Goal\n\nRepair one bounded fixture."},
+        "issue": {
+            "title": "[Eval] Bounded task",
+            "body": "## Goal\n\nRepair one bounded fixture.",
+        },
         "allowed_paths": ["src/example.py", "tests/**"],
         "prohibited_effects": ["No workflow changes", "No credential access"],
         "required_checks": ["CI", "Unit Tests"],
@@ -82,7 +85,8 @@ def make_suite(root: Path) -> tuple[bytes, bytes, dict]:
     tasks.mkdir()
     (fixture / "input.txt").write_text("fixture", encoding="utf-8")
     (grader / "grade.py").write_text(
-        "from pathlib import Path\nPath('EXECUTED').write_text('bad')\n", encoding="utf-8"
+        "from pathlib import Path\nPath('EXECUTED').write_text('bad')\n",
+        encoding="utf-8",
     )
     fixture_id = suite.inspect_directory_bundle(fixture)
     grader_id = suite.inspect_directory_bundle(grader.parent)
@@ -100,7 +104,10 @@ class EvaluationSuiteContractTest(unittest.TestCase):
             loaded = suite.load_evaluation_suite(raw, root)
             self.assertEqual(loaded.catalog.suite_id, "foundation.initial")
             self.assertEqual(loaded.catalog.task_count, 1)
-            self.assertEqual(loaded.catalog.catalog_sha256, hashlib.sha256(raw).hexdigest())
+            self.assertEqual(
+                loaded.catalog.catalog_sha256,
+                hashlib.sha256(raw).hexdigest(),
+            )
             self.assertFalse((root / "EXECUTED").exists())
             with self.assertRaisesRegex(Exception, "cannot assign"):
                 loaded.catalog.suite_version = 2
@@ -108,12 +115,18 @@ class EvaluationSuiteContractTest(unittest.TestCase):
     def test_catalog_requires_canonical_bounded_strict_json(self):
         raw = canonical(catalog([entry(b"manifest")]))
         suite.parse_evaluation_suite_catalog(raw)
-        for invalid in (
-            b"", b"[]", b"not-json", b"\xff", raw + b"\n",
+        invalid_values = (
+            b"",
+            b"[]",
+            b"not-json",
+            b"\xff",
+            raw + b"\n",
             json.dumps(json.loads(raw), indent=2).encode(),
-            b'{"schema_version":1,"schema_version":1}', b'{"x":NaN}',
+            b'{"schema_version":1,"schema_version":1}',
+            b'{"x":NaN}',
             b"x" * (suite.MAX_CATALOG_BYTES + 1),
-        ):
+        )
+        for invalid in invalid_values:
             with self.subTest(invalid=invalid[:30]):
                 with self.assertRaises(suite.EvaluationSuiteError):
                     suite.parse_evaluation_suite_catalog(invalid)
@@ -122,11 +135,19 @@ class EvaluationSuiteContractTest(unittest.TestCase):
         first = entry(b"one")
         second = entry(b"two", "foundation.task-002")
         cases = []
-        data = catalog([first]); data["unknown"] = True; cases.append(data)
-        data = catalog([first]); data["schema_version"] = 2; cases.append(data)
-        data = catalog([first]); data["task_count"] = 2; cases.append(data)
+
+        data = catalog([first])
+        data["unknown"] = True
+        cases.append(data)
+        data = catalog([first])
+        data["schema_version"] = 2
+        cases.append(data)
+        data = catalog([first])
+        data["task_count"] = 2
+        cases.append(data)
         cases.append(catalog([second, first]))
         cases.append(catalog([first, first]))
+
         for key, value in (
             ("task_id", "Bad"),
             ("manifest_path", "other/task.json"),
@@ -135,13 +156,20 @@ class EvaluationSuiteContractTest(unittest.TestCase):
             ("fixture_root", "fixtures/../task"),
             ("grader_root", "C:/graders/task"),
         ):
-            bad = dict(first); bad[key] = value; cases.append(catalog([bad]))
-        duplicate = dict(second); duplicate["fixture_root"] = first["fixture_root"]
+            bad = dict(first)
+            bad[key] = value
+            cases.append(catalog([bad]))
+
+        duplicate = dict(second)
+        duplicate["fixture_root"] = first["fixture_root"]
         cases.append(catalog([first, duplicate]))
-        middle = dict(second); middle["fixture_root"] = first["fixture_root"] + "-peer"
+
+        middle = dict(second)
+        middle["fixture_root"] = first["fixture_root"] + "-peer"
         third = entry(b"three", "foundation.task-003")
         third["fixture_root"] = first["fixture_root"] + "/nested"
         cases.append(catalog([first, middle, third]))
+
         for data in cases:
             with self.subTest(data=data):
                 with self.assertRaises(suite.EvaluationSuiteError):
@@ -152,37 +180,114 @@ class EvaluationSuiteContractTest(unittest.TestCase):
             root = Path(temp)
             raw, manifest, data = make_suite(root)
             mutations = []
-            bad = json.loads(json.dumps(data)); bad["tasks"][0]["manifest_sha256"] = "0" * 64
+
+            bad = json.loads(json.dumps(data))
+            bad["tasks"][0]["manifest_sha256"] = "0" * 64
             mutations.append((canonical(bad), None))
-            bad_manifest = json.loads(manifest); bad_manifest["task_id"] = "foundation.other"
-            mutations.append((raw, (root / "tasks/foundation.task-001.json", canonical(bad_manifest))))
+
+            bad_manifest = json.loads(manifest)
+            bad_manifest["task_id"] = "foundation.other"
+            mutations.append(
+                (
+                    raw,
+                    (
+                        root / "tasks/foundation.task-001.json",
+                        canonical(bad_manifest),
+                    ),
+                )
+            )
             fixture_file = root / "fixtures/foundation.task-001/input.txt"
             mutations.append((raw, (fixture_file, b"changed")))
             grader_file = root / "graders/foundation.task-001/grader/grade.py"
             mutations.append((raw, (grader_file, b"changed")))
+
             for catalog_raw, change in mutations:
                 original = None
                 if change:
-                    path, content = change; original = path.read_bytes(); path.write_bytes(content)
+                    path, content = change
+                    original = path.read_bytes()
+                    path.write_bytes(content)
                 with self.subTest(change=change):
                     with self.assertRaises(suite.EvaluationSuiteError):
                         suite.load_evaluation_suite(catalog_raw, root)
                 if change:
                     path.write_bytes(original)
+
             grader_file.unlink()
             with self.assertRaises(suite.EvaluationSuiteError):
                 suite.load_evaluation_suite(raw, root)
 
+    def test_grader_entrypoint_must_exist_in_the_bound_grader_bundle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            make_suite(root)
+            fixture_root = root / "fixtures/foundation.task-001"
+            grader_root = root / "graders/foundation.task-001"
+            (grader_root / "grader/grade.py").unlink()
+            (grader_root / "README.txt").write_text(
+                "grader metadata",
+                encoding="utf-8",
+            )
+
+            fixture_id = suite.inspect_directory_bundle(fixture_root)
+            grader_id = suite.inspect_directory_bundle(grader_root)
+            manifest = canonical(task_payload(fixture_id, grader_id))
+            (root / "tasks/foundation.task-001.json").write_bytes(manifest)
+            raw = canonical(catalog([entry(manifest)]))
+
+            with self.assertRaisesRegex(suite.EvaluationSuiteError, "entrypoint"):
+                suite.load_evaluation_suite(raw, root)
+
+    def test_directory_mutation_during_scan_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "initial.txt").write_text("initial", encoding="utf-8")
+            real_scandir = suite.os.scandir
+            changed = False
+
+            class Snapshot:
+                def __init__(self, path):
+                    self.path = Path(path)
+                    with real_scandir(path) as iterator:
+                        self.entries = list(iterator)
+
+                def __enter__(self):
+                    nonlocal changed
+                    if not changed:
+                        (self.path / "late.txt").write_text(
+                            "late",
+                            encoding="utf-8",
+                        )
+                        changed = True
+                    return iter(self.entries)
+
+                def __exit__(self, exc_type, exc, traceback):
+                    return False
+
+            with mock.patch.object(suite.os, "scandir", side_effect=Snapshot):
+                with self.assertRaisesRegex(suite.EvaluationSuiteError, "changed"):
+                    suite.inspect_directory_bundle(root)
+
     def test_bundle_digest_binds_sorted_paths_content_size_and_executable(self):
         with tempfile.TemporaryDirectory() as left, tempfile.TemporaryDirectory() as right:
-            a, b = Path(left), Path(right)
-            for root, order in ((a, ("z.txt", "a.txt")), (b, ("a.txt", "z.txt"))):
+            first_root = Path(left)
+            second_root = Path(right)
+            for root, order in (
+                (first_root, ("z.txt", "a.txt")),
+                (second_root, ("a.txt", "z.txt")),
+            ):
                 for name in order:
                     (root / name).write_text(name, encoding="utf-8")
-            self.assertEqual(suite.inspect_directory_bundle(a), suite.inspect_directory_bundle(b))
-            before = suite.inspect_directory_bundle(a).sha256
-            os.chmod(a / "a.txt", 0o755)
-            self.assertNotEqual(before, suite.inspect_directory_bundle(a).sha256)
+            self.assertEqual(
+                suite.inspect_directory_bundle(first_root),
+                suite.inspect_directory_bundle(second_root),
+            )
+            before = suite.inspect_directory_bundle(first_root).sha256
+            os.chmod(first_root / "a.txt", 0o755)
+            self.assertNotEqual(
+                before,
+                suite.inspect_directory_bundle(first_root).sha256,
+            )
 
     def test_bundle_rejects_symlink_hardlink_fifo_case_ambiguity_and_limits(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -190,9 +295,13 @@ class EvaluationSuiteContractTest(unittest.TestCase):
             (root / "file.txt").write_text("x", encoding="utf-8")
             variants = []
             if hasattr(os, "symlink"):
-                variants.append(lambda: os.symlink(root / "file.txt", root / "link.txt"))
+                variants.append(
+                    lambda: os.symlink(root / "file.txt", root / "link.txt")
+                )
             if hasattr(os, "link"):
-                variants.append(lambda: os.link(root / "file.txt", root / "hard.txt"))
+                variants.append(
+                    lambda: os.link(root / "file.txt", root / "hard.txt")
+                )
             if hasattr(os, "mkfifo"):
                 variants.append(lambda: os.mkfifo(root / "pipe"))
             for create in variants:
@@ -200,10 +309,13 @@ class EvaluationSuiteContractTest(unittest.TestCase):
                 with self.assertRaises(suite.EvaluationSuiteError):
                     suite.inspect_directory_bundle(root)
                 for child in root.iterdir():
-                    if child.name != "file.txt": child.unlink()
+                    if child.name != "file.txt":
+                        child.unlink()
+
             (root / "FILE.txt").write_text("y", encoding="utf-8")
             with self.assertRaises(suite.EvaluationSuiteError):
                 suite.inspect_directory_bundle(root)
+
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with self.assertRaises(suite.EvaluationSuiteError):
@@ -226,6 +338,7 @@ class EvaluationSuiteContractTest(unittest.TestCase):
                     suite.load_evaluation_suite(raw, alias)
             finally:
                 alias.unlink()
+
             fixture = root / "fixtures/foundation.task-001"
             moved = root / "fixtures/real"
             fixture.rename(moved)
@@ -234,11 +347,16 @@ class EvaluationSuiteContractTest(unittest.TestCase):
                 suite.load_evaluation_suite(raw, root)
 
     def test_public_schema_tracks_parser_keys_and_path_rules(self):
-        schema = json.loads((ROOT / "docs/AGENT_EVAL_SUITE.schema.json").read_text())
+        schema = json.loads(
+            (ROOT / "docs/AGENT_EVAL_SUITE.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(set(schema["required"]), set(suite.TOP_LEVEL_KEYS))
         self.assertEqual(
-            set(schema["$defs"]["taskEntry"]["required"]), set(suite.TASK_ENTRY_KEYS)
+            set(schema["$defs"]["taskEntry"]["required"]),
+            set(suite.TASK_ENTRY_KEYS),
         )
         patterns = {
             key: schema["$defs"][key]["pattern"]
