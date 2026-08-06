@@ -1,7 +1,6 @@
 """Immutable coding-agent evaluation task manifest tests."""
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
