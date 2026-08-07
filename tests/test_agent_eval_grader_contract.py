@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.agent_eval_grader_contract import (
     CHECK_KEYS,
+    GRADER_IDENTITY_ENVIRONMENT_KEYS,
     MAX_RESULT_BYTES,
     OUTCOMES,
     RUNTIME_COMMANDS,
@@ -17,6 +20,7 @@ from scripts.agent_eval_grader_contract import (
     GraderInfrastructureError,
     GraderResultExpectation,
     build_grader_command,
+    build_grader_identity_environment,
     parse_grader_result,
     validate_grader_process_result,
 )
@@ -143,6 +147,99 @@ class GraderContractTest(unittest.TestCase):
                 self.assert_invalid(payload)
         with self.assertRaises(GraderContractError):
             parse_grader_result(canonical(valid_payload()), expected="invalid")
+
+    def test_identity_environment_has_exact_ordered_string_values_and_is_immutable(self):
+        expected = expectation()
+        environment = build_grader_identity_environment(expected)
+        self.assertEqual(
+            tuple(key for key, _ in environment),
+            GRADER_IDENTITY_ENVIRONMENT_KEYS,
+        )
+        self.assertEqual(
+            environment,
+            (
+                ("AI_DEV_EVAL_TASK_ID", expected.task_id),
+                ("AI_DEV_EVAL_TASK_VERSION", "1"),
+                ("AI_DEV_EVAL_MANIFEST_SHA256", expected.manifest_sha256),
+                ("AI_DEV_EVAL_GRADER_SHA256", expected.grader_sha256),
+                ("AI_DEV_EVAL_FOUNDATION_SHA", expected.foundation_sha),
+                ("AI_DEV_EVAL_BASE_SHA", expected.base_sha),
+                ("AI_DEV_EVAL_CANDIDATE_SHA", expected.candidate_sha),
+            ),
+        )
+        self.assertTrue(all(isinstance(value, str) for _, value in environment))
+        with self.assertRaises(TypeError):
+            environment[0] = ("AI_DEV_EVAL_TASK_ID", "changed")
+        with self.assertRaises(TypeError):
+            environment[0][1] = "changed"
+
+    def test_identity_environment_rejects_invalid_expectations(self):
+        with self.assertRaises(GraderContractError):
+            build_grader_identity_environment("invalid")
+
+        expected = expectation()
+        invalid = GraderResultExpectation(
+            task_id="Invalid Task",
+            task_version=expected.task_version,
+            manifest_sha256=expected.manifest_sha256,
+            grader_sha256=expected.grader_sha256,
+            foundation_sha=expected.foundation_sha,
+            base_sha=expected.base_sha,
+            candidate_sha=expected.candidate_sha,
+        )
+        with self.assertRaises(GraderContractError):
+            build_grader_identity_environment(invalid)
+
+        invalid_version = GraderResultExpectation(
+            task_id=expected.task_id,
+            task_version=True,
+            manifest_sha256=expected.manifest_sha256,
+            grader_sha256=expected.grader_sha256,
+            foundation_sha=expected.foundation_sha,
+            base_sha=expected.base_sha,
+            candidate_sha=expected.candidate_sha,
+        )
+        with self.assertRaises(GraderContractError):
+            build_grader_identity_environment(invalid_version)
+
+    def test_identity_environment_does_not_inherit_host_environment(self):
+        expected = expectation()
+        poison = {
+            "AI_DEV_EVAL_TASK_ID": "host-poison",
+            "AI_DEV_EVAL_CANDIDATE_SHA": "f" * 40,
+            "UNRELATED_HOST_SECRET": "must-not-be-captured",
+        }
+        with patch.dict(os.environ, poison, clear=True):
+            environment = build_grader_identity_environment(expected)
+        values = dict(environment)
+        self.assertEqual(set(values), set(GRADER_IDENTITY_ENVIRONMENT_KEYS))
+        self.assertEqual(values["AI_DEV_EVAL_TASK_ID"], expected.task_id)
+        self.assertEqual(values["AI_DEV_EVAL_CANDIDATE_SHA"], expected.candidate_sha)
+        self.assertNotIn("UNRELATED_HOST_SECRET", values)
+
+    def test_identity_environment_roundtrips_through_canonical_result(self):
+        expected = expectation()
+        identity = dict(build_grader_identity_environment(expected))
+        payload = valid_payload()
+        payload.update(
+            {
+                "task_id": identity["AI_DEV_EVAL_TASK_ID"],
+                "task_version": int(identity["AI_DEV_EVAL_TASK_VERSION"]),
+                "manifest_sha256": identity["AI_DEV_EVAL_MANIFEST_SHA256"],
+                "grader_sha256": identity["AI_DEV_EVAL_GRADER_SHA256"],
+                "foundation_sha": identity["AI_DEV_EVAL_FOUNDATION_SHA"],
+                "base_sha": identity["AI_DEV_EVAL_BASE_SHA"],
+                "candidate_sha": identity["AI_DEV_EVAL_CANDIDATE_SHA"],
+            }
+        )
+        parsed = parse_grader_result(canonical(payload), expected=expected)
+        self.assertEqual(parsed.task_id, expected.task_id)
+        self.assertEqual(parsed.task_version, expected.task_version)
+        self.assertEqual(parsed.manifest_sha256, expected.manifest_sha256)
+        self.assertEqual(parsed.grader_sha256, expected.grader_sha256)
+        self.assertEqual(parsed.foundation_sha, expected.foundation_sha)
+        self.assertEqual(parsed.base_sha, expected.base_sha)
+        self.assertEqual(parsed.candidate_sha, expected.candidate_sha)
 
     def test_checks_are_nonempty_sorted_unique_and_paths_are_exact(self):
         payload = valid_payload()
