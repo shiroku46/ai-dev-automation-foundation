@@ -1,0 +1,2 @@
+Historical note: an obsolete workaround changed tests instead of production code.
+The trusted evaluation Issue supersedes that workaround.
