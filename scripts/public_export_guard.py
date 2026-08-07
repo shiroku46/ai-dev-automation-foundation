@@ -10,7 +10,18 @@ TEXT_SUFFIXES = {
     ".md", ".py", ".yml", ".yaml", ".json", ".toml", ".txt", ".tmpl",
     ".gitignore", ".cfg", ".ini",
 }
-SKIP_PARTS = {".git", "__pycache__", ".pytest_cache"}
+SKIP_PARTS = {
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    "node_modules",
+    ".next",
+    "test-results",
+    "playwright-report",
+    "coverage",
+    ".turbo",
+}
+SELF_PATHS = {"scripts/public_export_guard.py", "tests/test_export_guard.py"}
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 PATTERNS = {
     "private-repository-reference": re.compile(r"ai-dev-automation-(?:sandbox|e2e)(?!-foundation)", re.I),
@@ -30,7 +41,7 @@ def iter_text_files(root: Path):
     for path in sorted(root.rglob("*")):
         if not path.is_file() or any(part in SKIP_PARTS for part in path.parts):
             continue
-        if path.relative_to(root).as_posix() in {"scripts/public_export_guard.py", "tests/test_export_guard.py"}:
+        if path.relative_to(root).as_posix() in SELF_PATHS:
             continue
         if path.suffix.lower() in TEXT_SUFFIXES or path.name in {"LICENSE", ".gitignore"}:
             yield path
