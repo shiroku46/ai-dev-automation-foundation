@@ -1,0 +1,10 @@
+name: Synthetic OIDC
+on: [push]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo synthetic
