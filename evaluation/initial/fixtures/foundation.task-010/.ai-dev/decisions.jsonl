@@ -1,0 +1,1 @@
+{"decision_id":"resume-decision-001","issue_number":10,"rationale":"Completed discovery should not be repeated.","recorded_at":"2026-08-07T00:00:00Z","recorded_head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","repository":"shiroku46/eval-handoff","schema_version":1,"summary":"Resume from the recorded next action.","supersedes":null}
