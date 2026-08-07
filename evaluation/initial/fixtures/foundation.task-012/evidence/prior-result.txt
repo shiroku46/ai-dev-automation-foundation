@@ -1,0 +1,3 @@
+prior_outcome=passed
+required_check=missing
+accepted_evidence=false
