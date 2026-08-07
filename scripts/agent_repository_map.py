@@ -29,12 +29,12 @@ MAX_IMPACT_DEPTH = 16
 MAX_IMPACT_PATHS = 10_000
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
-_REGULAR_MODES = frozenset({"100644", "100755"})
+_DRIVE_RE = re.compile(r"^[A-Za-z]:/")
+_REGULAR_MODES = {"100644", "100755"}
 
 
 class RepositoryMapError(ValueError):
-    """Repository map input or exact-SHA evidence is unsafe or unbounded."""
+    pass
 
 
 @dataclass(frozen=True, order=True)
@@ -63,7 +63,7 @@ class RepositoryMap:
 
     @property
     def total_bytes(self) -> int:
-        return sum(entry.size for entry in self.entries)
+        return sum(item.size for item in self.entries)
 
 
 @dataclass(frozen=True)
@@ -88,9 +88,9 @@ class _TrackedFile:
 
 
 @dataclass(frozen=True)
-class _PythonImports:
-    modules: tuple[str, ...]
-    candidate_modules: tuple[str, ...]
+class _Imports:
+    observed: tuple[str, ...]
+    candidates: tuple[str, ...]
 
 
 def _git_executable() -> str:
@@ -98,85 +98,59 @@ def _git_executable() -> str:
     if not value:
         raise RepositoryMapError("git executable is unavailable")
     try:
-        path = Path(value).resolve(strict=True)
+        resolved = Path(value).resolve(strict=True)
     except OSError as exc:
         raise RepositoryMapError("git executable cannot be resolved") from exc
-    if not path.is_file():
+    if not resolved.is_file():
         raise RepositoryMapError("git executable is invalid")
-    return str(path)
+    return str(resolved)
 
 
-def _git_environment() -> dict[str, str]:
-    environment = {
-        key: os.environ[key]
-        for key in ("PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR")
-        if key in os.environ
-    }
-    environment.update({
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "LC_ALL": "C",
-        "LANG": "C",
-    })
-    return environment
+def _git_env() -> dict[str, str]:
+    env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TMP", "TEMP", "TMPDIR") if key in os.environ}
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "LC_ALL": "C", "LANG": "C"})
+    return env
 
 
-def _run_git(
-    executable: str,
-    repository_root: Path,
-    args: list[str],
-    *,
-    output_limit: int = MAX_GIT_OUTPUT_BYTES,
-) -> bytes:
+def _git(executable: str, root: Path, args: list[str], *, limit: int = MAX_GIT_OUTPUT_BYTES) -> bytes:
     try:
         completed = subprocess.run(
-            [executable, "-C", str(repository_root), *args],
-            env=_git_environment(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=MAX_GIT_COMMAND_SECONDS,
-            check=False,
+            [executable, "-C", str(root), *args],
+            env=_git_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=MAX_GIT_COMMAND_SECONDS, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RepositoryMapError("local git command could not complete") from exc
-    if len(completed.stdout) > output_limit:
-        raise RepositoryMapError("local git command output exceeded its bounded limit")
-    if len(completed.stderr) > MAX_GIT_DIAGNOSTIC_BYTES:
-        raise RepositoryMapError("local git diagnostics exceeded their bounded limit")
+    if len(completed.stdout) > limit or len(completed.stderr) > MAX_GIT_DIAGNOSTIC_BYTES:
+        raise RepositoryMapError("local git command exceeded bounded output")
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace")[:500]
         raise RepositoryMapError(f"local git command failed: {detail}")
     return completed.stdout
 
 
-def _ascii_line(value: bytes, label: str) -> str:
+def _line(raw: bytes, label: str, *, ascii_only: bool = True) -> str:
     try:
-        text = value.decode("ascii").strip()
+        value = raw.decode("ascii" if ascii_only else "utf-8").strip()
     except UnicodeDecodeError as exc:
-        raise RepositoryMapError(f"{label} is not ASCII") from exc
-    if not text or "\n" in text or "\r" in text:
+        raise RepositoryMapError(f"{label} has invalid encoding") from exc
+    if not value or "\n" in value or "\r" in value or "\x00" in value:
         raise RepositoryMapError(f"{label} is invalid")
-    return text
+    return value
 
 
-def _sha(value: bytes, label: str) -> str:
-    text = _ascii_line(value, label)
-    if _SHA_RE.fullmatch(text) is None:
-        raise RepositoryMapError(f"{label} is not a lowercase SHA-1 identity")
-    return text
+def _sha(raw: bytes, label: str) -> str:
+    value = _line(raw, label)
+    if _SHA_RE.fullmatch(value) is None:
+        raise RepositoryMapError(f"{label} is not a lowercase SHA-1")
+    return value
 
 
 def _safe_path(value: str) -> str:
     if (
-        not isinstance(value, str)
-        or not value
-        or len(value) > MAX_PATH_LENGTH
-        or value != value.strip()
-        or value.startswith(("/", "\\", "./", "../"))
-        or _WINDOWS_DRIVE_RE.match(value)
-        or "\\" in value
-        or "//" in value
-        or _CONTROL_RE.search(value) is not None
+        not value or len(value) > MAX_PATH_LENGTH or value != value.strip()
+        or value.startswith(("/", "\\", "./", "../")) or _DRIVE_RE.match(value)
+        or "\\" in value or "//" in value or _CONTROL_RE.search(value)
     ):
         raise RepositoryMapError("tracked repository path is unsafe")
     parts = value.split("/")
@@ -185,7 +159,7 @@ def _safe_path(value: str) -> str:
     return value
 
 
-def _repository_root(value: str | os.PathLike[str]) -> Path:
+def _root(value: str | os.PathLike[str]) -> Path:
     path = Path(value)
     try:
         info = path.lstat()
@@ -197,316 +171,234 @@ def _repository_root(value: str | os.PathLike[str]) -> Path:
     return resolved
 
 
-def _tracked_files(executable: str, root: Path, repository_sha: str) -> tuple[_TrackedFile, ...]:
-    raw = _run_git(
-        executable,
-        root,
-        ["ls-tree", "-r", "-l", "-z", "--full-tree", repository_sha],
-    )
+def _tracked(executable: str, root: Path, commit: str) -> tuple[_TrackedFile, ...]:
+    raw = _git(executable, root, ["ls-tree", "-r", "-l", "-z", "--full-tree", commit])
     records = raw.split(b"\0")
-    if records and records[-1] == b"":
+    if records and not records[-1]:
         records.pop()
     if len(records) > MAX_TRACKED_FILES:
-        raise RepositoryMapError("tracked file count exceeds its bounded limit")
-    files: list[_TrackedFile] = []
+        raise RepositoryMapError("tracked file count exceeds limit")
+    result: list[_TrackedFile] = []
     seen: set[str] = set()
-    total_bytes = 0
+    total = 0
     for record in records:
         try:
             header, path_raw = record.split(b"\t", 1)
-            mode_raw, type_raw, sha_raw, size_raw = header.split(b" ", 3)
-            mode = mode_raw.decode("ascii")
-            object_type = type_raw.decode("ascii")
-            blob_sha = sha_raw.decode("ascii")
-            size_text = size_raw.decode("ascii")
+            fields = header.split()
+            if len(fields) != 4:
+                raise ValueError
+            mode, object_type, object_sha, size_raw = (field.decode("ascii") for field in fields)
             path = path_raw.decode("utf-8")
         except (ValueError, UnicodeDecodeError) as exc:
-            raise RepositoryMapError("tracked Git tree entry is malformed or non-UTF-8") from exc
+            raise RepositoryMapError("tracked Git tree entry is malformed") from exc
         path = _safe_path(path)
         folded = path.casefold()
         if folded in seen:
-            raise RepositoryMapError("tracked repository paths are case-ambiguous or duplicated")
+            raise RepositoryMapError("tracked paths are duplicated or case-ambiguous")
         seen.add(folded)
         if mode not in _REGULAR_MODES or object_type != "blob":
-            raise RepositoryMapError("tracked repository contains an unsupported non-regular entry")
-        if _SHA_RE.fullmatch(blob_sha) is None or not size_text.isascii() or not size_text.isdigit():
-            raise RepositoryMapError("tracked Git blob identity or size is invalid")
-        size = int(size_text)
-        if size < 0 or size > MAX_TRACKED_BLOB_BYTES:
-            raise RepositoryMapError("tracked Git blob exceeds its bounded per-file limit")
-        total_bytes += size
-        if total_bytes > MAX_TOTAL_TRACKED_BYTES:
-            raise RepositoryMapError("tracked repository exceeds its bounded total-byte limit")
-        files.append(_TrackedFile(path, blob_sha, size, mode == "100755"))
-    files.sort(key=lambda item: item.path)
-    return tuple(files)
+            raise RepositoryMapError("tracked repository contains a non-regular entry")
+        if _SHA_RE.fullmatch(object_sha) is None or not size_raw.isdigit():
+            raise RepositoryMapError("tracked blob identity or size is invalid")
+        size = int(size_raw)
+        if size > MAX_TRACKED_BLOB_BYTES:
+            raise RepositoryMapError("tracked blob exceeds per-file limit")
+        total += size
+        if total > MAX_TOTAL_TRACKED_BYTES:
+            raise RepositoryMapError("tracked repository exceeds total-byte limit")
+        result.append(_TrackedFile(path, object_sha, size, mode == "100755"))
+    return tuple(sorted(result, key=lambda item: item.path))
 
 
-def _module_name(path: str) -> str | None:
+def _module(path: str) -> str | None:
     if not path.endswith(".py"):
         return None
     pure = PurePosixPath(path)
     parts = list(pure.parts)
-    filename = parts.pop()
-    stem = filename[:-3]
-    if stem == "__init__":
-        if not parts:
-            return None
-        components = parts
-    else:
-        components = [*parts, stem]
+    stem = parts.pop()[:-3]
+    components = parts if stem == "__init__" else [*parts, stem]
     if not components or any(not component.isidentifier() for component in components):
         return None
     return ".".join(components)
 
 
-def _package_for_module(path: str, module: str | None) -> tuple[str, ...]:
+def _package(path: str, module: str | None) -> tuple[str, ...]:
     if module is None:
         return ()
     parts = tuple(module.split("."))
-    if path.endswith("/__init__.py"):
-        return parts
-    if path == "__init__.py":
-        return ()
-    return parts[:-1]
+    return parts if path.endswith("/__init__.py") else parts[:-1]
 
 
 def _relative_base(path: str, module: str | None, level: int, imported: str | None) -> str:
-    package = _package_for_module(path, module)
-    if level < 1 or level > len(package) + 1:
-        raise RepositoryMapError("relative Python import cannot be resolved from its package")
-    keep = len(package) - (level - 1)
-    if keep < 0:
+    package = _package(path, module)
+    if level < 1 or not package or level > len(package):
         raise RepositoryMapError("relative Python import escapes its package")
-    components = list(package[:keep])
+    components = list(package[: len(package) - (level - 1)])
     if imported:
         components.extend(imported.split("."))
     if not components:
-        raise RepositoryMapError("relative Python import resolves outside a named package")
+        raise RepositoryMapError("relative Python import has no local package base")
     return ".".join(components)
 
 
-def _python_imports(path: str, module: str | None, content: bytes) -> _PythonImports:
+def _parse_imports(path: str, module: str | None, raw: bytes) -> _Imports:
     try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise RepositoryMapError("tracked Python blob is not UTF-8") from exc
-    try:
-        tree = ast.parse(text, filename=path)
-    except (SyntaxError, ValueError, MemoryError, RecursionError) as exc:
+        tree = ast.parse(raw.decode("utf-8"), filename=path)
+    except (UnicodeDecodeError, SyntaxError, ValueError, MemoryError, RecursionError) as exc:
         raise RepositoryMapError("tracked Python blob cannot be parsed safely") from exc
-    observations: set[str] = set()
+    observed: set[str] = set()
     candidates: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                observations.add(alias.name)
+                observed.add(alias.name)
                 candidates.add(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 base = _relative_base(path, module, node.level, node.module)
-            else:
-                if not node.module:
-                    raise RepositoryMapError("absolute Python import-from lacks a module")
+            elif node.module:
                 base = node.module
-            observations.add(base)
+            else:
+                raise RepositoryMapError("absolute import-from lacks a module")
+            observed.add(base)
             candidates.add(base)
             for alias in node.names:
-                if alias.name == "*":
-                    continue
-                named = f"{base}.{alias.name}"
-                observations.add(named)
-                candidates.add(named)
-        if len(observations) > MAX_IMPORTS_PER_FILE or len(candidates) > MAX_IMPORTS_PER_FILE * 2:
-            raise RepositoryMapError("tracked Python import count exceeds its bounded limit")
-    return _PythonImports(tuple(sorted(observations)), tuple(sorted(candidates)))
+                if alias.name != "*":
+                    named = f"{base}.{alias.name}"
+                    observed.add(named)
+                    candidates.add(named)
+        if len(observed) > MAX_IMPORTS_PER_FILE or len(candidates) > MAX_IMPORTS_PER_FILE * 2:
+            raise RepositoryMapError("Python import count exceeds limit")
+    return _Imports(tuple(sorted(observed)), tuple(sorted(candidates)))
 
 
-def _read_python_blob(executable: str, root: Path, tracked: _TrackedFile) -> bytes:
+def _read_python(executable: str, root: Path, tracked: _TrackedFile) -> bytes:
     if tracked.size > MAX_PYTHON_BLOB_BYTES:
-        raise RepositoryMapError("tracked Python blob exceeds its bounded parse limit")
-    raw = _run_git(
-        executable,
-        root,
-        ["cat-file", "blob", tracked.blob_sha],
-        output_limit=MAX_PYTHON_BLOB_BYTES + 1,
-    )
+        raise RepositoryMapError("tracked Python blob exceeds parse limit")
+    raw = _git(executable, root, ["cat-file", "blob", tracked.blob_sha], limit=MAX_PYTHON_BLOB_BYTES + 1)
     if len(raw) != tracked.size:
-        raise RepositoryMapError("tracked Python blob size changed or is inconsistent")
-    if hashlib.sha1(b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw).hexdigest() != tracked.blob_sha:
-        raise RepositoryMapError("tracked Python blob bytes do not match the Git object identity")
+        raise RepositoryMapError("tracked Python blob size is inconsistent")
+    git_object = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+    if hashlib.sha1(git_object).hexdigest() != tracked.blob_sha:
+        raise RepositoryMapError("tracked Python blob bytes do not match Git identity")
     return raw
 
 
-def _map_payload(
-    repository_sha: str,
-    tree_sha: str,
-    entries: Iterable[RepositoryMapEntry],
-) -> dict[str, object]:
+def _payload(commit: str, tree: str, entries: Iterable[RepositoryMapEntry]) -> dict[str, object]:
     return {
-        "entries": [
-            {
-                "blob_sha": entry.blob_sha,
-                "executable": entry.executable,
-                "imported_modules": list(entry.imported_modules),
-                "kind": entry.kind,
-                "local_dependencies": list(entry.local_dependencies),
-                "local_dependents": list(entry.local_dependents),
-                "module": entry.module,
-                "path": entry.path,
-                "size": entry.size,
-            }
-            for entry in entries
-        ],
-        "repository_sha": repository_sha,
+        "entries": [{
+            "blob_sha": item.blob_sha,
+            "executable": item.executable,
+            "imported_modules": list(item.imported_modules),
+            "kind": item.kind,
+            "local_dependencies": list(item.local_dependencies),
+            "local_dependents": list(item.local_dependents),
+            "module": item.module,
+            "path": item.path,
+            "size": item.size,
+        } for item in entries],
+        "repository_sha": commit,
         "schema_version": 1,
-        "tree_sha": tree_sha,
+        "tree_sha": tree,
     }
 
 
-def _payload_bytes(repository_sha: str, tree_sha: str, entries: Iterable[RepositoryMapEntry]) -> bytes:
-    raw = json.dumps(
-        _map_payload(repository_sha, tree_sha, entries),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
+def _payload_bytes(commit: str, tree: str, entries: Iterable[RepositoryMapEntry]) -> bytes:
+    raw = json.dumps(_payload(commit, tree, entries), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if not raw or len(raw) > MAX_SERIALIZED_MAP_BYTES:
-        raise RepositoryMapError("repository map payload exceeds its bounded serialized limit")
+        raise RepositoryMapError("repository map serialization exceeds limit")
     return raw
 
 
-def build_repository_map(
-    repository_root: str | os.PathLike[str],
-    expected_sha: str,
-) -> RepositoryMap:
-    """Build one immutable map from exact tracked Git objects without reading working-tree file bytes."""
+def build_repository_map(repository_root: str | os.PathLike[str], expected_sha: str) -> RepositoryMap:
     if not isinstance(expected_sha, str) or _SHA_RE.fullmatch(expected_sha) is None:
         raise RepositoryMapError("expected repository SHA is invalid")
-    root = _repository_root(repository_root)
+    root = _root(repository_root)
     executable = _git_executable()
-    object_format = _ascii_line(_run_git(executable, root, ["rev-parse", "--show-object-format"]), "Git object format")
-    if object_format != "sha1":
-        raise RepositoryMapError("repository map currently requires SHA-1 Git object identity")
-    top = _ascii_line(_run_git(executable, root, ["rev-parse", "--show-toplevel"]), "Git top-level path")
-    try:
-        top_path = Path(top).resolve(strict=True)
-    except OSError as exc:
-        raise RepositoryMapError("Git top-level path cannot be resolved") from exc
-    if top_path != root:
-        raise RepositoryMapError("repository root does not match the Git top-level directory")
-    repository_sha = _sha(_run_git(executable, root, ["rev-parse", "HEAD"]), "repository HEAD SHA")
-    if repository_sha != expected_sha:
-        raise RepositoryMapError("repository HEAD SHA does not match expected identity")
-    tree_sha = _sha(_run_git(executable, root, ["rev-parse", f"{repository_sha}^{{tree}}"]), "repository tree SHA")
-    tracked = _tracked_files(executable, root, repository_sha)
+    if _line(_git(executable, root, ["rev-parse", "--show-object-format"]), "Git object format") != "sha1":
+        raise RepositoryMapError("repository map requires SHA-1 Git objects")
+    top = Path(_line(_git(executable, root, ["rev-parse", "--show-toplevel"]), "Git top-level", ascii_only=False)).resolve(strict=True)
+    if top != root:
+        raise RepositoryMapError("repository root does not match Git top-level")
+    commit = _sha(_git(executable, root, ["rev-parse", "HEAD"]), "repository HEAD")
+    if commit != expected_sha:
+        raise RepositoryMapError("repository HEAD does not match expected SHA")
+    tree = _sha(_git(executable, root, ["rev-parse", f"{commit}^{{tree}}"]), "repository tree")
+    tracked = _tracked(executable, root, commit)
 
+    module_by_path = {item.path: _module(item.path) for item in tracked}
     module_to_path: dict[str, str] = {}
-    module_by_path: dict[str, str | None] = {}
-    for item in tracked:
-        module = _module_name(item.path)
-        module_by_path[item.path] = module
+    for path, module in module_by_path.items():
         if module is not None:
             if module in module_to_path:
                 raise RepositoryMapError("tracked Python module identity is ambiguous")
-            module_to_path[module] = item.path
+            module_to_path[module] = path
 
-    imports_by_path: dict[str, _PythonImports] = {}
-    dependencies_by_path: dict[str, tuple[str, ...]] = {}
+    imports: dict[str, _Imports] = {}
+    deps: dict[str, tuple[str, ...]] = {}
     edge_count = 0
     for item in tracked:
-        module = module_by_path[item.path]
-        if item.path.endswith(".py"):
-            parsed = _python_imports(item.path, module, _read_python_blob(executable, root, item))
-        else:
-            parsed = _PythonImports((), ())
-        imports_by_path[item.path] = parsed
-        dependencies = tuple(sorted({
-            module_to_path[candidate]
-            for candidate in parsed.candidate_modules
-            if candidate in module_to_path and module_to_path[candidate] != item.path
-        }))
-        edge_count += len(dependencies)
+        parsed = _parse_imports(item.path, module_by_path[item.path], _read_python(executable, root, item)) if item.path.endswith(".py") else _Imports((), ())
+        imports[item.path] = parsed
+        local = tuple(sorted({module_to_path[name] for name in parsed.candidates if name in module_to_path and module_to_path[name] != item.path}))
+        edge_count += len(local)
         if edge_count > MAX_LOCAL_EDGES:
-            raise RepositoryMapError("local dependency edge count exceeds its bounded limit")
-        dependencies_by_path[item.path] = dependencies
+            raise RepositoryMapError("local dependency edge count exceeds limit")
+        deps[item.path] = local
 
-    dependents: dict[str, set[str]] = {item.path: set() for item in tracked}
-    for source, dependencies in dependencies_by_path.items():
+    reverse = {item.path: set() for item in tracked}
+    for source, dependencies in deps.items():
         for dependency in dependencies:
-            dependents[dependency].add(source)
-
-    entries = tuple(
-        RepositoryMapEntry(
-            path=item.path,
-            blob_sha=item.blob_sha,
-            size=item.size,
-            executable=item.executable,
-            kind="python" if item.path.endswith(".py") else "file",
-            module=module_by_path[item.path],
-            imported_modules=imports_by_path[item.path].modules,
-            local_dependencies=dependencies_by_path[item.path],
-            local_dependents=tuple(sorted(dependents[item.path])),
-        )
-        for item in tracked
-    )
-    payload = _payload_bytes(repository_sha, tree_sha, entries)
-    return RepositoryMap(repository_sha, tree_sha, entries, hashlib.sha256(payload).hexdigest())
+            reverse[dependency].add(source)
+    entries = tuple(RepositoryMapEntry(
+        path=item.path,
+        blob_sha=item.blob_sha,
+        size=item.size,
+        executable=item.executable,
+        kind="python" if item.path.endswith(".py") else "file",
+        module=module_by_path[item.path],
+        imported_modules=imports[item.path].observed,
+        local_dependencies=deps[item.path],
+        local_dependents=tuple(sorted(reverse[item.path])),
+    ) for item in tracked)
+    raw = _payload_bytes(commit, tree, entries)
+    return RepositoryMap(commit, tree, entries, hashlib.sha256(raw).hexdigest())
 
 
 def serialize_repository_map(repository_map: RepositoryMap) -> bytes:
-    """Return bounded canonical JSON including the non-self-referential payload digest."""
     if not isinstance(repository_map, RepositoryMap):
         raise RepositoryMapError("repository map object is invalid")
     payload = _payload_bytes(repository_map.repository_sha, repository_map.tree_sha, repository_map.entries)
-    observed = hashlib.sha256(payload).hexdigest()
-    if observed != repository_map.map_sha256:
-        raise RepositoryMapError("repository map digest does not match its canonical payload")
-    value = _map_payload(repository_map.repository_sha, repository_map.tree_sha, repository_map.entries)
+    if hashlib.sha256(payload).hexdigest() != repository_map.map_sha256:
+        raise RepositoryMapError("repository map digest does not match payload")
+    value = _payload(repository_map.repository_sha, repository_map.tree_sha, repository_map.entries)
     value["map_sha256"] = repository_map.map_sha256
     raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(raw) > MAX_SERIALIZED_MAP_BYTES:
-        raise RepositoryMapError("repository map serialization exceeds its bounded limit")
+        raise RepositoryMapError("repository map serialization exceeds limit")
     return raw
 
 
-def _is_test_path(path: str) -> bool:
+def _expand(adjacency: dict[str, tuple[str, ...]], seeds: tuple[str, ...], depth: int, limit: int) -> tuple[str, ...]:
+    visited, frontier, found = set(seeds), set(seeds), set()
+    for _ in range(depth):
+        next_paths = {candidate for path in frontier for candidate in adjacency[path]} - visited
+        if not next_paths:
+            break
+        visited.update(next_paths)
+        found.update(next_paths)
+        if len(visited) > limit:
+            raise RepositoryMapError("impact expansion exceeds path limit")
+        frontier = next_paths
+    return tuple(sorted(found))
+
+
+def _is_test(path: str) -> bool:
     parts = path.split("/")
     return "tests" in parts or (parts[-1].startswith("test_") and parts[-1].endswith(".py"))
 
 
-def _expand(
-    adjacency: dict[str, tuple[str, ...]],
-    seeds: tuple[str, ...],
-    max_depth: int,
-    max_paths: int,
-) -> tuple[str, ...]:
-    visited = set(seeds)
-    frontier = set(seeds)
-    discovered: set[str] = set()
-    for _ in range(max_depth):
-        following: set[str] = set()
-        for path in sorted(frontier):
-            following.update(adjacency[path])
-        following -= visited
-        if not following:
-            break
-        discovered.update(following)
-        visited.update(following)
-        if len(visited) > max_paths:
-            raise RepositoryMapError("impact expansion exceeds its bounded path limit")
-        frontier = following
-    return tuple(sorted(discovered))
-
-
-def discover_repository_impact(
-    repository_map: RepositoryMap,
-    seed_paths: Iterable[str],
-    *,
-    max_depth: int = 2,
-    max_paths: int = 256,
-) -> RepositoryImpact:
-    """Return bounded advisory read/check context; never mutation authorization."""
+def discover_repository_impact(repository_map: RepositoryMap, seed_paths: Iterable[str], *, max_depth: int = 2, max_paths: int = 256) -> RepositoryImpact:
     if not isinstance(repository_map, RepositoryMap):
         raise RepositoryMapError("repository map object is invalid")
     if isinstance(max_depth, bool) or not isinstance(max_depth, int) or not 0 <= max_depth <= MAX_IMPACT_DEPTH:
@@ -517,23 +409,20 @@ def discover_repository_impact(
         seeds = tuple(seed_paths)
     except TypeError as exc:
         raise RepositoryMapError("impact seed paths are invalid") from exc
-    if not seeds:
-        raise RepositoryMapError("impact seed paths are empty")
-    if seeds != tuple(sorted(seeds)) or len(set(seeds)) != len(seeds):
-        raise RepositoryMapError("impact seed paths must be sorted and unique")
-    entries = {entry.path: entry for entry in repository_map.entries}
+    if not seeds or seeds != tuple(sorted(seeds)) or len(set(seeds)) != len(seeds):
+        raise RepositoryMapError("impact seed paths must be non-empty, sorted, and unique")
+    entries = {item.path: item for item in repository_map.entries}
     if len(seeds) > max_paths:
-        raise RepositoryMapError("impact seed count exceeds its bounded path limit")
+        raise RepositoryMapError("impact seed count exceeds path limit")
     for seed in seeds:
-        _safe_path(seed)
-        if seed not in entries:
-            raise RepositoryMapError("impact seed path is not present in the repository map")
-    forward = {path: entries[path].local_dependencies for path in entries}
-    reverse = {path: entries[path].local_dependents for path in entries}
+        if _safe_path(seed) not in entries:
+            raise RepositoryMapError("impact seed path is absent from repository map")
+    forward = {path: item.local_dependencies for path, item in entries.items()}
+    backward = {path: item.local_dependents for path, item in entries.items()}
     context = _expand(forward, seeds, max_depth, max_paths)
-    dependents = _expand(reverse, seeds, max_depth, max_paths)
-    all_paths = set(seeds) | set(context) | set(dependents)
-    if len(all_paths) > max_paths:
-        raise RepositoryMapError("impact result exceeds its bounded path limit")
-    tests = tuple(sorted(path for path in all_paths if _is_test_path(path)))
+    dependents = _expand(backward, seeds, max_depth, max_paths)
+    union = set(seeds) | set(context) | set(dependents)
+    if len(union) > max_paths:
+        raise RepositoryMapError("impact result exceeds path limit")
+    tests = tuple(sorted(path for path in union if _is_test(path)))
     return RepositoryImpact(seeds, context, dependents, tests, max_depth)
