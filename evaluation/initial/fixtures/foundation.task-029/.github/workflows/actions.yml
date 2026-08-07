@@ -1,0 +1,10 @@
+name: Synthetic Actions Boundary
+on: [push]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo synthetic
