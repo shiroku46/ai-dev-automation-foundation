@@ -1,0 +1,1 @@
+{"decision_id":"stale-decision-001","issue_number":15,"rationale":"This record intentionally belongs to the previous candidate.","recorded_at":"2026-08-07T01:00:00Z","recorded_head_sha":"6666666666666666666666666666666666666666","repository":"shiroku46/eval-stale-handoff","schema_version":1,"summary":"Resume the previous candidate.","supersedes":null}
