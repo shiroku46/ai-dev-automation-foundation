@@ -23,6 +23,26 @@ The runner, not the grader, enforces the manifest timeout and network mode. It p
 
 `build_grader_command` validates the fixed runtime, entrypoint, and absolute path boundaries and returns an immutable argument tuple. It never starts a process and never returns a shell string.
 
+## Runner-owned identity environment
+
+A grader must receive result identity from runner-controlled non-secret process variables rather than deriving identity from candidate workspace contents or embedding bundle identity inside the grader. Embedding the grader digest in the grader bundle would change the bundle digest and create a self-referential identity, so the bundle must not contain a hard-coded copy of its own digest.
+
+`build_grader_identity_environment` first validates the caller-supplied `GraderResultExpectation` through the same fail-closed identity validation used by result parsing. It then returns an immutable, deterministically ordered collection containing exactly these seven string variables:
+
+- `AI_DEV_EVAL_TASK_ID`
+- `AI_DEV_EVAL_TASK_VERSION`
+- `AI_DEV_EVAL_MANIFEST_SHA256`
+- `AI_DEV_EVAL_GRADER_SHA256`
+- `AI_DEV_EVAL_FOUNDATION_SHA`
+- `AI_DEV_EVAL_BASE_SHA`
+- `AI_DEV_EVAL_CANDIDATE_SHA`
+
+`AI_DEV_EVAL_TASK_VERSION` is the validated positive task version rendered as its decimal string. Every other value exactly matches the corresponding validated expectation field.
+
+The runner creates a minimal allowlisted process environment for the grader and adds only these evaluation identity variables. It must not copy or merge arbitrary host, candidate, repository, CI, credential, token, Secret, OIDC, deployment, billing, or user environment variables into the grader process. Any runtime-specific variables required to start the fixed interpreter must be explicitly allowlisted by the runner rather than inherited wholesale.
+
+The grader copies these seven runner-owned identity values into the atomic canonical result. It does not derive them from workspace files, Git state, environment discovery, or grader-bundle contents. The runner still compares the returned result against its independently held `GraderResultExpectation`, so stale, cross-task, cross-bundle, or cross-SHA evidence remains invalid.
+
 ## Result-file boundary
 
 The caller controls the result location. A grader writes one UTF-8 JSON result atomically, using a temporary sibling and replacement rather than exposing a partially written accepted result. The runner applies the 65,536-byte result limit before parsing.
@@ -78,13 +98,14 @@ A runner should:
 
 1. validate the task manifest and suite/bundle identity;
 2. construct exact argv with `build_grader_command`;
-3. enforce timeout, network, credential, and workspace isolation outside the grader;
-4. capture bounded diagnostics separately;
-5. read the atomic result within the byte limit;
-6. parse it with the exact expected identity;
-7. validate process exit/result agreement;
-8. map valid task evidence into the accepted run record;
-9. classify all missing, stale, malformed, or inconsistent evidence as grader/infrastructure failure.
+3. build the seven-variable identity collection with `build_grader_identity_environment` and add it to a minimal runner-owned allowlisted process environment;
+4. enforce timeout, network, credential, and workspace isolation outside the grader;
+5. capture bounded diagnostics separately;
+6. read the atomic result within the byte limit;
+7. parse it with the exact expected identity;
+8. validate process exit/result agreement;
+9. map valid task evidence into the accepted run record;
+10. classify all missing, stale, malformed, or inconsistent evidence as grader/infrastructure failure.
 
 ## Example
 
