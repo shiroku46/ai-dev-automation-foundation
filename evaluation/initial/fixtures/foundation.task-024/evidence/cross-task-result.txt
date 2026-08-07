@@ -1,0 +1,4 @@
+task_id=foundation.task-999
+outcome=passed
+required_check=passed
+accepted_evidence=false
