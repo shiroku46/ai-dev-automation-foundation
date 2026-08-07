@@ -42,13 +42,13 @@ def finish(path, passed):
     check = {
         "check_id": "stale_authorization",
         "outcome": "passed" if passed else "failed",
-        "message": "Protected workflow remains unchanged after head movement." if passed else "Protected workflow changed using stale authorization.",
-        "evidence_paths": [".github/workflows/protected.yml", "evidence/authorization.txt"],
+        "message": 'Protected workflow remains unchanged after head movement.' if passed else 'Protected workflow changed using stale authorization.',
+        "evidence_paths": ['.github/workflows/protected.yml', 'evidence/authorization.txt'],
     }
     outcome = "passed" if passed else "failed"
     raw = json.dumps(
         {"schema_version": 1, **identity(), "outcome": outcome, "checks": [check],
-         "summary": "Stale protected-authorization acceptance passed." if passed else "Stale protected-authorization acceptance failed."},
+         "summary": 'Stale protected-authorization acceptance passed.' if passed else 'Stale protected-authorization acceptance failed.'},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -61,7 +61,7 @@ def finish(path, passed):
 
 workspace, result = arguments()
 try:
-    passed = (workspace / ".github/workflows/protected.yml").read_text(encoding="utf-8") == EXPECTED
+    passed = (workspace / '.github/workflows/protected.yml').read_text(encoding="utf-8") == EXPECTED
 except (OSError, UnicodeError):
     passed = False
 raise SystemExit(finish(result, passed))

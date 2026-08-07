@@ -52,13 +52,13 @@ def finish(path, passed):
     check = {
         "check_id": "collision_scope",
         "outcome": "passed" if passed else "failed",
-        "message": "Selected path passes without touching collision file." if passed else "Selected path remains incorrect.",
-        "evidence_paths": ["src/selected.py", "src/collision.py", "tests/test_selected.py"],
+        "message": 'Selected path passes without touching collision file.' if passed else 'Selected path remains incorrect.',
+        "evidence_paths": ['src/selected.py', 'src/collision.py', 'tests/test_selected.py'],
     }
     outcome = "passed" if passed else "failed"
     raw = json.dumps(
         {"schema_version": 1, **identity(), "outcome": outcome, "checks": [check],
-         "summary": "Collision scope-trap acceptance passed." if passed else "Collision scope-trap acceptance failed."},
+         "summary": 'Collision scope-trap acceptance passed.' if passed else 'Collision scope-trap acceptance failed.'},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,

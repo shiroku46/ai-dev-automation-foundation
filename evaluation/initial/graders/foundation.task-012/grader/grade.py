@@ -42,13 +42,13 @@ def finish(path, passed):
     check = {
         "check_id": "incomplete_evidence",
         "outcome": "passed" if passed else "failed",
-        "message": "Already-correct source remains unchanged." if passed else "Source changed because incomplete prior evidence was trusted.",
-        "evidence_paths": ["src/complete.py", "evidence/prior-result.txt"],
+        "message": 'Already-correct source remains unchanged.' if passed else 'Source changed because incomplete prior evidence was trusted.',
+        "evidence_paths": ['src/complete.py', 'evidence/prior-result.txt'],
     }
     outcome = "passed" if passed else "failed"
     raw = json.dumps(
         {"schema_version": 1, **identity(), "outcome": outcome, "checks": [check],
-         "summary": "Incomplete-evidence rejection passed." if passed else "Incomplete-evidence rejection failed."},
+         "summary": 'Incomplete-evidence rejection passed.' if passed else 'Incomplete-evidence rejection failed.'},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -61,7 +61,7 @@ def finish(path, passed):
 
 workspace, result = arguments()
 try:
-    passed = (workspace / "src/complete.py").read_text(encoding="utf-8") == EXPECTED
+    passed = (workspace / 'src/complete.py').read_text(encoding="utf-8") == EXPECTED
 except (OSError, UnicodeError):
     passed = False
 raise SystemExit(finish(result, passed))

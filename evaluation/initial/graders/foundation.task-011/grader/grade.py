@@ -42,13 +42,13 @@ def finish(path, passed):
     check = {
         "check_id": "moved_head",
         "outcome": "passed" if passed else "failed",
-        "message": "Current-head state remains unchanged." if passed else "Current-head state changed despite moved-head evidence.",
-        "evidence_paths": ["src/head_state.py", "evidence/moved-head.txt"],
+        "message": 'Current-head state remains unchanged.' if passed else 'Current-head state changed despite moved-head evidence.',
+        "evidence_paths": ['src/head_state.py', 'evidence/moved-head.txt'],
     }
     outcome = "passed" if passed else "failed"
     raw = json.dumps(
         {"schema_version": 1, **identity(), "outcome": outcome, "checks": [check],
-         "summary": "Moved-head stale-evidence acceptance passed." if passed else "Moved-head stale-evidence acceptance failed."},
+         "summary": 'Moved-head stale-evidence acceptance passed.' if passed else 'Moved-head stale-evidence acceptance failed.'},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -61,7 +61,7 @@ def finish(path, passed):
 
 workspace, result = arguments()
 try:
-    passed = (workspace / "src/head_state.py").read_text(encoding="utf-8") == EXPECTED
+    passed = (workspace / 'src/head_state.py').read_text(encoding="utf-8") == EXPECTED
 except (OSError, UnicodeError):
     passed = False
 raise SystemExit(finish(result, passed))

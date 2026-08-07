@@ -42,13 +42,13 @@ def finish(path, passed):
     check = {
         "check_id": "stale_handoff",
         "outcome": "passed" if passed else "failed",
-        "message": "Current source remains unchanged after stale handoff rejection." if passed else "Current source changed despite stale handoff.",
-        "evidence_paths": ["src/resume_guard.py", ".ai-dev/handoff.md"],
+        "message": 'Current source remains unchanged after stale handoff rejection.' if passed else 'Current source changed despite stale handoff.',
+        "evidence_paths": ['src/resume_guard.py', '.ai-dev/handoff.md'],
     }
     outcome = "passed" if passed else "failed"
     raw = json.dumps(
         {"schema_version": 1, **identity(), "outcome": outcome, "checks": [check],
-         "summary": "Stale-handoff rejection passed." if passed else "Stale-handoff rejection failed."},
+         "summary": 'Stale-handoff rejection passed.' if passed else 'Stale-handoff rejection failed.'},
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -61,7 +61,7 @@ def finish(path, passed):
 
 workspace, result = arguments()
 try:
-    passed = (workspace / "src/resume_guard.py").read_text(encoding="utf-8") == EXPECTED
+    passed = (workspace / 'src/resume_guard.py').read_text(encoding="utf-8") == EXPECTED
 except (OSError, UnicodeError):
     passed = False
 raise SystemExit(finish(result, passed))
