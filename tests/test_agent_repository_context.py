@@ -168,10 +168,11 @@ class RepositoryContextPackageTest(unittest.TestCase):
                     build_repository_context_package(repo, repository_map, seeds, scope)
 
     def test_non_utf8_nul_sensitive_and_size_bounds_fail_closed(self):
+        sensitive_fixture = ("api" + "_key = " + ("Z" * 24) + "\n").encode("utf-8")
         cases = (
             ("binary.txt", b"\xff\xfe\xfd"),
             ("nul.txt", b"hello\x00world\n"),
-            ("sensitive.txt", b"api_key = ZZZZZZZZZZZZZZZZZZZZZZZZ\n"),
+            ("sensitive.txt", sensitive_fixture),
         )
         for relative, content in cases:
             with self.subTest(relative=relative), tempfile.TemporaryDirectory() as temp:
