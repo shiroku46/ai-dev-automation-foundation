@@ -17,7 +17,11 @@ from typing import Iterable, Mapping
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.foundation_product_checks import ProductCheckConfigError, parse_product_checks
+from scripts.foundation_product_checks import (
+    CONFIG_PATH as PRODUCT_CHECKS_PATH,
+    ProductCheckConfigError,
+    parse_validation_config,
+)
 from scripts.private_actions_guard import (
     FOUNDATION_WORKFLOW_PATHS,
     guard_private_actions_workflow,
@@ -32,7 +36,7 @@ INSTALL_MODES = ("new-repository", "existing-product")
 PRESERVE_IF_PRESENT = frozenset(
     {"README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md"}
 )
-TARGET_OWNED_FILES = frozenset({".github/foundation-product-checks.json"})
+TARGET_OWNED_FILES = frozenset({PRODUCT_CHECKS_PATH})
 MANAGED_FILES = (
     "README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     "docs/PROJECT_STARTUP.md", "docs/MINIMUM_SAFETY_PROFILE.md",
@@ -47,7 +51,7 @@ MANAGED_FILES = (
     "scripts/free_only_coordinator.py", "scripts/private_actions_guard.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
-    ".github/foundation-product-checks.json",
+    PRODUCT_CHECKS_PATH,
     *FOUNDATION_WORKFLOW_PATHS,
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
 )
@@ -70,8 +74,10 @@ class PlanEntry:
 @dataclass(frozen=True)
 class RenderPlan:
     mode: str
+    execution_profile: str
     entries: tuple[PlanEntry, ...]
     writes: tuple[str, ...]
+    deletes: tuple[str, ...]
     managed: tuple[str, ...]
     preserved: tuple[str, ...]
     collisions: tuple[str, ...]
@@ -188,6 +194,17 @@ def _locked_hashes(lock: Mapping[str, object] | None) -> dict[str, str]:
     return values
 
 
+def _validation_profile(target: Path) -> str:
+    destination = _assert_safe_destination(target, PRODUCT_CHECKS_PATH)
+    source = destination if destination.exists() else ROOT / PRODUCT_CHECKS_PATH
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("target-owned validation configuration is missing or unsafe")
+    try:
+        return parse_validation_config(source.read_bytes()).execution_profile
+    except ProductCheckConfigError as exc:
+        raise ValueError("target-owned validation configuration is invalid") from exc
+
+
 def install_checklist(owner: str, mode: str) -> str:
     return f"""{GENERATED_TARGET_MARKER}
 # Installation checklist
@@ -198,9 +215,10 @@ def install_checklist(owner: str, mode: str) -> str:
 - [ ] Confirm the Foundation managed runtime exists on the default branch.
 - [ ] Treat GitHub as SCM, Issue, Pull Request, review, and connected-API infrastructure; private GitHub-hosted Actions are not a mandatory gate under `free-only`.
 - [ ] Configure target-owned `.github/foundation-product-checks.json` with schema v2 `execution_profile: free-only` and an explicitly trusted external validator when using the free-only route.
-- [ ] Foundation-managed GitHub Actions jobs in generated targets are guarded before runner allocation on private repositories; they run only for public repositories or when the owner explicitly sets `FOUNDATION_PRIVATE_ACTIONS_ENABLED=true`.
-- [ ] Bootstrap never creates or changes `FOUNDATION_PRIVATE_ACTIONS_ENABLED`; leave it unset unless the owner deliberately opts back into private GitHub-hosted Actions capacity.
-- [ ] Keep installed GitHub Actions workflows only as optional compatibility unless the current execution profile explicitly requires them; do not purchase hosted-runner capacity automatically.
+- [ ] Under `free-only`, Foundation-managed GitHub Actions workflows are omitted from generated targets; existing unchanged lock-managed copies are removed during an upgrade.
+- [ ] Under compatibility `github-actions`, generated Foundation-managed jobs are guarded before private runner allocation and run only for public repositories or when the owner explicitly sets `FOUNDATION_PRIVATE_ACTIONS_ENABLED=true`.
+- [ ] Bootstrap never creates or changes `FOUNDATION_PRIVATE_ACTIONS_ENABLED`; leave it unset unless the owner deliberately opts into private GitHub-hosted Actions capacity.
+- [ ] Product-owned workflows outside the Foundation managed paths are never removed or rewritten implicitly; migrate each separately.
 - [ ] Optionally set `AUTOMATION_OWNER` to `{owner}` when the repository owner is not the trusted coordinator.
 - [ ] Run `python scripts/public_export_guard.py .`, `python scripts/validate_repository.py`, and `python scripts/foundation_drift.py --root .` on a no-additional-cost runtime.
 - [ ] Complete one harmless branch/PR candidate with exact-head validation from the current default-branch execution profile, GitHub coordinator review, zero unresolved threads, and expected-head merge.
@@ -233,7 +251,7 @@ The fleet default cost policy is `free-only` unless the repository owner explici
 - [ ] Compute and review the complete Bootstrap plan before mutation.
 - [ ] Publish the rendered bytes on one dedicated same-repository branch through the connected GitHub App/API route.
 - [ ] Open one Draft Pull Request against the exact observed default-branch SHA.
-- [ ] Verify the GitHub-visible candidate head and exact changed paths.
+- [ ] Verify the GitHub-visible candidate head and exact changed paths/deletions.
 - [ ] Do not create a temporary installer workflow on the default branch.
 - [ ] Do not request `BOOTSTRAP_WORKFLOW_TOKEN`, a PAT, or another long-lived credential.
 - [ ] Do not force-update the Bootstrap branch.
@@ -257,10 +275,15 @@ The fleet default cost policy is `free-only` unless the repository owner explici
 """
 
 
-def _source_contents(owner: str, mode: str) -> dict[str, bytes]:
+def _source_contents(owner: str, mode: str, execution_profile: str) -> dict[str, bytes]:
     contents: dict[str, bytes] = {}
     guarded_paths = set(FOUNDATION_WORKFLOW_PATHS)
-    for relative in MANAGED_FILES:
+    active = (
+        tuple(path for path in MANAGED_FILES if path not in guarded_paths)
+        if execution_profile == "free-only"
+        else MANAGED_FILES
+    )
+    for relative in active:
         _validate_relative_path(relative)
         source = ROOT / relative
         if not source.is_file() or source.is_symlink():
@@ -298,11 +321,13 @@ def plan_render(
         if unexpected:
             raise ValueError("new-repository target is not empty: " + ", ".join(unexpected))
 
+    execution_profile = _validation_profile(target)
     lock = _load_lock(target) if target.exists() else None
     locked = _locked_hashes(lock)
-    sources = _source_contents(owner, mode)
+    sources = _source_contents(owner, mode, execution_profile)
     entries: list[PlanEntry] = []
     writes: list[str] = []
+    deletes: list[str] = []
     managed: list[str] = []
     preserved: list[str] = []
     collisions: list[str] = []
@@ -320,9 +345,9 @@ def plan_render(
             target_digest = _sha256_file(destination)
             if target_owned:
                 try:
-                    parse_product_checks(destination.read_bytes())
+                    parse_validation_config(destination.read_bytes())
                 except ProductCheckConfigError as exc:
-                    raise ValueError(f"target-owned product check configuration is invalid: {relative}") from exc
+                    raise ValueError(f"target-owned validation configuration is invalid: {relative}") from exc
                 action = "target-owned-unchanged" if target_digest == source_digest else "target-owned-preserved"
                 preserved.append(relative)
             elif target_digest == source_digest:
@@ -351,6 +376,26 @@ def plan_render(
                 managed.append(relative)
         entries.append(PlanEntry(relative, action, source_digest, target_digest))
 
+    inactive_workflows = (
+        set(FOUNDATION_WORKFLOW_PATHS) if execution_profile == "free-only" else set()
+    )
+    for relative in sorted(inactive_workflows & set(locked)):
+        destination = _assert_safe_destination(target, relative)
+        if not destination.exists():
+            entries.append(PlanEntry(relative, "retired-absent", None, None))
+            continue
+        if not destination.is_file():
+            collisions.append(relative)
+            entries.append(PlanEntry(relative, "collision", None, None))
+            continue
+        target_digest = _sha256_file(destination)
+        if locked.get(relative) != target_digest:
+            collisions.append(relative)
+            entries.append(PlanEntry(relative, "retired-managed-modified", None, target_digest))
+            continue
+        deletes.append(relative)
+        entries.append(PlanEntry(relative, "delete-retired", None, target_digest))
+
     lock_destination = _assert_safe_destination(target, LOCK_FILE)
     if lock_destination.exists() and not lock_destination.is_file():
         collisions.append(LOCK_FILE)
@@ -366,8 +411,10 @@ def plan_render(
 
     return RenderPlan(
         mode=mode,
+        execution_profile=execution_profile,
         entries=tuple(entries),
         writes=tuple(sorted(set(writes))),
+        deletes=tuple(sorted(set(deletes))),
         managed=tuple(sorted(set(managed))),
         preserved=tuple(sorted(set(preserved))),
         collisions=tuple(sorted(set(collisions))),
@@ -378,11 +425,13 @@ def _verify_plan_state(target: Path, plan: RenderPlan) -> None:
     """Fail before mutation when any planned destination changed after planning."""
     for entry in plan.entries:
         destination = _assert_safe_destination(target, entry.path)
-        if entry.action in {"add", "add-target-owned"}:
-            if destination.exists():
+        if entry.action in {"add", "add-target-owned", "retired-absent"}:
+            if entry.action != "retired-absent" and destination.exists():
+                raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
+            if entry.action == "retired-absent" and destination.exists():
                 raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
             continue
-        if entry.action == "collision":
+        if entry.action in {"collision", "retired-managed-modified"}:
             raise ValueError(f"unsafe collision remained in Bootstrap plan: {entry.path}")
         if destination.is_symlink() or not destination.is_file():
             raise ValueError(f"target changed after Bootstrap plan: {entry.path}")
@@ -438,13 +487,15 @@ def render(
     _verify_plan_state(target, plan)
 
     target.mkdir(parents=True, exist_ok=True)
-    sources = _source_contents(owner, mode)
+    sources = _source_contents(owner, mode, plan.execution_profile)
     for relative in plan.writes:
         if relative == LOCK_FILE:
             continue
         destination = _assert_safe_destination(target, relative)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(sources[relative])
+    for relative in plan.deletes:
+        _assert_safe_destination(target, relative).unlink()
 
     lock = _lock_payload(
         target,
@@ -464,8 +515,10 @@ def render(
 def _plan_json(plan: RenderPlan) -> str:
     return json.dumps({
         "mode": plan.mode,
+        "execution_profile": plan.execution_profile,
         "safe": plan.is_safe,
         "writes": list(plan.writes),
+        "deletes": list(plan.deletes),
         "managed": list(plan.managed),
         "preserved": list(plan.preserved),
         "collisions": list(plan.collisions),
