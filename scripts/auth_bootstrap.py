@@ -14,7 +14,7 @@ PROVIDERS = frozenset({"github", "vercel", "cloudflare"})
 CLOUDFLARE_ROUTES = frozenset({"local", "github_actions"})
 
 _ALLOWED_CAPABILITIES: dict[str, frozenset[str]] = {
-    "github": frozenset({"github_app_connected"}),
+    "github": frozenset({"github_app_connected", "github_cli_authenticated"}),
     "vercel": frozenset({"git_integration_connected", "oidc_available", "cli_authenticated"}),
     "cloudflare": frozenset(
         {
@@ -84,6 +84,16 @@ def plan_authentication(
                 False,
                 "use_connected_github_app",
                 "github_app_connected",
+            )
+        if caps["github_cli_authenticated"]:
+            return AuthPlan(
+                SCHEMA_VERSION,
+                provider,
+                route,
+                "automatic",
+                False,
+                "use_existing_github_cli_session",
+                "github_cli_authenticated",
             )
         return AuthPlan(
             SCHEMA_VERSION,
