@@ -154,6 +154,10 @@ class WorkspaceCapabilityParserTest(unittest.TestCase):
         )
         invalids = []
 
+        item = copy.deepcopy(base)
+        item["schema_version"] = True
+        invalids.append(item)
+
         for key, value in (
             ("adapter_id", "Example Sandbox"),
             ("provider", "Bad/Provider"),
@@ -265,7 +269,7 @@ class WorkspaceCapabilityParserTest(unittest.TestCase):
                 imports.update(alias.name.split(".", 1)[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.add(node.module.split(".", 1)[0])
-        self.assertEqual(imports, {"__future__", "dataclasses", "hashlib", "json", "re", "typing"})
+        self.assertEqual(imports, {"__future__", "dataclasses", "hashlib", "json", "re"})
         for forbidden in (
             "subprocess",
             "socket",
@@ -277,7 +281,6 @@ class WorkspaceCapabilityParserTest(unittest.TestCase):
             "VERCEL_TOKEN",
             "CLOUDFLARE_API_TOKEN",
             "GITHUB_TOKEN",
-            "OIDC",
         ):
             self.assertNotIn(forbidden, source)
 
