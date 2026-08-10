@@ -214,7 +214,7 @@ The fleet default cost policy is `free-only` unless the repository owner explici
 - [ ] For Cloudflare deployment and validation, prefer Workers Builds Git integration; after Git integration authorization, Cloudflare generates and manages the build API token by default.
 - [ ] The first Cloudflare/GitHub Git integration authorization can still require one interactive dashboard step.
 - [ ] Cloudflare Workers Builds is the first supported external validator for compatible repositories under `free-only`; pin the exact check name and GitHub App identity in target-owned validation config.
-- [ ] Use Cloudflare GitHub Actions API-token/account setup only as an explicit non-default fallback; it is not required by `free-only`.
+- [ ] Use Cloudflare GitHub Actions API-token/account setup only as an explicit external-CI fallback when deliberately selected; it is not required by `free-only`.
 
 ## Installation identity
 
