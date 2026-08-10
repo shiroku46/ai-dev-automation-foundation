@@ -14,11 +14,21 @@ try:
         ProductCheckConfigError,
         parse_product_checks,
     )
+    from scripts.private_actions_guard import (
+        FOUNDATION_WORKFLOW_PATHS,
+        PrivateActionsGuardError,
+        validate_private_actions_workflow,
+    )
 except ModuleNotFoundError:
     from foundation_product_checks import (
         CONFIG_PATH as PRODUCT_CHECKS_PATH,
         ProductCheckConfigError,
         parse_product_checks,
+    )
+    from private_actions_guard import (
+        FOUNDATION_WORKFLOW_PATHS,
+        PrivateActionsGuardError,
+        validate_private_actions_workflow,
     )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,14 +42,11 @@ REQUIRED = {
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
     "scripts/foundation_product_checks.py", "scripts/external_validation.py",
-    "scripts/free_only_coordinator.py",
+    "scripts/free_only_coordinator.py", "scripts/private_actions_guard.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
     PRODUCT_CHECKS_PATH,
-    ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
-    ".github/workflows/claude-queue.yml",
-    ".github/workflows/claude-queue-comment-bridge.yml",
-    ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
+    *FOUNDATION_WORKFLOW_PATHS,
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
 }
 FOUNDATION_ONLY = {"bootstrap/generator.py"}
@@ -139,6 +146,13 @@ def validate() -> None:
             actual = hashlib.sha256(path.read_bytes()).hexdigest()
             if actual != expected_digest:
                 raise ValidationError(f"generated target managed file drifted: {relative}")
+        for relative in FOUNDATION_WORKFLOW_PATHS:
+            try:
+                validate_private_actions_workflow((ROOT / relative).read_bytes())
+            except PrivateActionsGuardError as exc:
+                raise ValidationError(
+                    f"generated target private Actions guard is invalid: {relative}: {exc}"
+                ) from exc
 
     for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
         content = path.read_text(encoding="utf-8")
@@ -304,10 +318,12 @@ def validate() -> None:
             "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
             "scripts/queue_event_guard.py", "scripts/foundation_product_checks.py",
             "scripts/external_validation.py", "scripts/free_only_coordinator.py",
-            "docs/FREE_ONLY_OPERATING_PROFILE.md", "scripts/github_api_governor.py",
-            "scripts/github_coordinator_supervisor.py", "scripts/supervisor_policy.py",
-            ".github/workflows/supervisor.yml", "Codex and Claude setup is optional",
-            "free-only", "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
+            "scripts/private_actions_guard.py", "guard_private_actions_workflow",
+            "FOUNDATION_WORKFLOW_PATHS", "docs/FREE_ONLY_OPERATING_PROFILE.md",
+            "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
+            "scripts/supervisor_policy.py", "Codex and Claude setup is optional",
+            "FOUNDATION_PRIVATE_ACTIONS_ENABLED", "free-only",
+            "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
         ), "Bootstrap")
 
 
