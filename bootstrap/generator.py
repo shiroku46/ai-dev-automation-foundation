@@ -33,12 +33,14 @@ MANAGED_FILES = (
     "README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     "docs/PROJECT_STARTUP.md", "docs/MINIMUM_SAFETY_PROFILE.md",
     "docs/OPERATING_RULES.md", "docs/PUBLIC_SECURITY_MODEL.md",
+    "docs/FREE_ONLY_OPERATING_PROFILE.md",
     "docs/AUTH_BOOTSTRAP.md", "docs/AUTH_DETECT.md", "docs/AUTH_SETUP.md",
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
     "scripts/auth_bootstrap.py", "scripts/auth_detect.py", "scripts/auth_setup.py",
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
-    "scripts/foundation_product_checks.py",
+    "scripts/foundation_product_checks.py", "scripts/external_validation.py",
+    "scripts/free_only_coordinator.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
     ".github/foundation-product-checks.json",
@@ -189,17 +191,18 @@ def install_checklist(owner: str, mode: str) -> str:
     return f"""{GENERATED_TARGET_MARKER}
 # Installation checklist
 
-## Phase 0 — Mandatory GitHub setup
+## Phase 0 — Mandatory SCM and validation setup
 
 - [ ] Connect ChatGPT to GitHub and authorize this exact repository.
-- [ ] Confirm GitHub Actions and Foundation workflows exist on the default branch.
-- [ ] Select **Read and write permissions** under `Settings` → `Actions` → `General` → `Workflow permissions`.
-- [ ] Enable **Allow GitHub Actions to create and approve pull requests**.
+- [ ] Confirm the Foundation managed runtime exists on the default branch.
+- [ ] Treat GitHub as SCM, Issue, Pull Request, review, and connected-API infrastructure; private GitHub-hosted Actions are not a mandatory gate under `free-only`.
+- [ ] Configure target-owned `.github/foundation-product-checks.json` with schema v2 `execution_profile: free-only` and an explicitly trusted external validator when using the free-only route.
+- [ ] Keep installed GitHub Actions workflows only as optional compatibility unless the current execution profile explicitly requires them; do not purchase hosted-runner capacity automatically.
 - [ ] Optionally set `AUTOMATION_OWNER` to `{owner}` when the repository owner is not the trusted coordinator.
-- [ ] Run `python scripts/public_export_guard.py .`, `python scripts/validate_repository.py`, and `python scripts/foundation_drift.py --root .`.
-- [ ] Complete one harmless branch/PR candidate with exact-head checks, GitHub coordinator review, zero unresolved threads, and expected-head merge.
+- [ ] Run `python scripts/public_export_guard.py .`, `python scripts/validate_repository.py`, and `python scripts/foundation_drift.py --root .` on a no-additional-cost runtime.
+- [ ] Complete one harmless branch/PR candidate with exact-head validation from the current default-branch execution profile, GitHub coordinator review, zero unresolved threads, and expected-head merge.
 
-Codex and Claude setup is optional. Provider environment, credential, quota, account, setup or connection is not required for GitHub-only acceptance or product development.
+The fleet default cost policy is `free-only` unless the repository owner explicitly authorizes paid external capacity. Codex and Claude setup is optional. OpenAI API usage, paid GitHub Actions overage, and other new paid services are not assumed by Bootstrap.
 
 ## Optional local provider authentication
 
@@ -208,9 +211,10 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - [ ] Use `python scripts/auth_setup.py <provider>` to preview setup. Existing authenticated sessions are reused automatically and no login runs by default.
 - [ ] Only on a local interactive terminal, opt in to browser/device authentication with `python scripts/auth_setup.py <provider> --interactive`.
 - [ ] Missing provider CLIs are reported as `install_required`; Foundation never auto-installs them.
-- [ ] For Cloudflare deployment, prefer Workers Builds Git integration; after Git integration authorization, Cloudflare generates and manages the build API token by default.
+- [ ] For Cloudflare deployment and validation, prefer Workers Builds Git integration; after Git integration authorization, Cloudflare generates and manages the build API token by default.
 - [ ] The first Cloudflare/GitHub Git integration authorization can still require one interactive dashboard step.
-- [ ] Use Cloudflare GitHub Actions API-token/account setup only as an explicit external-CI fallback; it remains outside this automatic setup.
+- [ ] Cloudflare Workers Builds is the first supported external validator for compatible repositories under `free-only`; pin the exact check name and GitHub App identity in target-owned validation config.
+- [ ] Use Cloudflare GitHub Actions API-token/account setup only as an explicit non-default fallback; it is not required by `free-only`.
 
 ## Installation identity
 
@@ -218,7 +222,7 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - version file: `{LOCK_FILE}`
 - [ ] Confirm the lock records the exact Foundation source SHA and sorted managed-file hashes.
 - [ ] Keep target-owned files outside the managed lock.
-- [ ] Configure required product workflows in `.github/foundation-product-checks.json`; the previous default-branch config judges each configuration-changing PR.
+- [ ] Configure the execution validation contract in `.github/foundation-product-checks.json`; the previous default-branch config judges each configuration-changing PR so a candidate cannot self-authorize.
 - [ ] For upgrades, render a candidate in a separate directory and compare locks before publication.
 
 ## Non-destructive publication
@@ -237,12 +241,13 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - [ ] Use one trusted owner-authored Issue with risk tier, bounded paths, checks, prohibited effects, and rollback.
 - [ ] Inspect current and renamed-path collisions before implementation and merge.
 - [ ] Never push automation changes directly to the default branch.
-- [ ] Require exact-head `CI` and `Unit Tests`.
+- [ ] Require exact-head validation defined by the current default-branch execution profile. Under `free-only`, use allowlisted external check evidence; `CI` and `Unit Tests` are required only when the active profile is `github-actions`.
 - [ ] Require `review_route: github-coordinator` and zero unresolved review threads.
 - [ ] Protected work requires explicit authorization and clean scope/security plus correctness/race markers.
 - [ ] `ai-no-merge` blocks readiness and merge.
 - [ ] Merge only with expected-head-SHA protection.
-- [ ] Optional provider failure remains non-blocking with `human_action_required: false`.
+- [ ] A route that requires a new paid plan, overage, payment method, or API-billed AI service becomes `human_action_required`; automation never enables it automatically.
+- [ ] Optional provider failure remains non-blocking with `human_action_required: false` when another accepted no-cost route exists.
 - [ ] Persist routine automation stops only on `automation-internal-stops`; never publish routine stop comments.
 - [ ] Never output, persist, copy, hash, or infer Secret values.
 - [ ] Never execute proposed-branch code in a job carrying Secrets, OIDC, or repository write permission.
