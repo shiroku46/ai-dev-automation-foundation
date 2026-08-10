@@ -11,7 +11,7 @@ from typing import Mapping
 SCHEMA_VERSION = 1
 STATES = frozenset({"automatic", "interactive_once", "manual_required"})
 PROVIDERS = frozenset({"github", "vercel", "cloudflare"})
-CLOUDFLARE_ROUTES = frozenset({"local", "github_actions"})
+CLOUDFLARE_ROUTES = frozenset({"local", "deployment", "github_actions"})
 
 _ALLOWED_CAPABILITIES: dict[str, frozenset[str]] = {
     "github": frozenset({"github_app_connected", "github_cli_authenticated"}),
@@ -19,6 +19,7 @@ _ALLOWED_CAPABILITIES: dict[str, frozenset[str]] = {
     "cloudflare": frozenset(
         {
             "wrangler_oauth_authenticated",
+            "workers_builds_git_connected",
             "api_token_configured",
             "account_id_configured",
         }
@@ -149,7 +150,8 @@ def plan_authentication(
         )
 
     if route not in CLOUDFLARE_ROUTES:
-        raise CapabilityError("cloudflare route must be local or github_actions")
+        raise CapabilityError("cloudflare route must be local, deployment, or github_actions")
+
     if route == "local":
         if caps["wrangler_oauth_authenticated"]:
             return AuthPlan(
@@ -169,6 +171,27 @@ def plan_authentication(
             True,
             "run_wrangler_login_interactively",
             "wrangler_oauth_login_required",
+        )
+
+    if route == "deployment":
+        if caps["workers_builds_git_connected"]:
+            return AuthPlan(
+                SCHEMA_VERSION,
+                provider,
+                route,
+                "automatic",
+                False,
+                "use_cloudflare_workers_builds_git_integration",
+                "cloudflare_workers_builds_git_connected",
+            )
+        return AuthPlan(
+            SCHEMA_VERSION,
+            provider,
+            route,
+            "interactive_once",
+            True,
+            "connect_cloudflare_workers_builds_git_integration",
+            "cloudflare_workers_builds_git_connection_required",
         )
 
     if caps["api_token_configured"] and caps["account_id_configured"]:
