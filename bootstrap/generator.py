@@ -208,7 +208,9 @@ Codex and Claude setup is optional. Provider environment, credential, quota, acc
 - [ ] Use `python scripts/auth_setup.py <provider>` to preview setup. Existing authenticated sessions are reused automatically and no login runs by default.
 - [ ] Only on a local interactive terminal, opt in to browser/device authentication with `python scripts/auth_setup.py <provider> --interactive`.
 - [ ] Missing provider CLIs are reported as `install_required`; Foundation never auto-installs them.
-- [ ] Cloudflare GitHub Actions API-token/account setup remains outside this local automatic setup and may still require one manual credential step.
+- [ ] For Cloudflare deployment, prefer Workers Builds Git integration; after Git integration authorization, Cloudflare generates and manages the build API token by default.
+- [ ] The first Cloudflare/GitHub Git integration authorization can still require one interactive dashboard step.
+- [ ] Use Cloudflare GitHub Actions API-token/account setup only as an explicit external-CI fallback; it remains outside this automatic setup.
 
 ## Installation identity
 
