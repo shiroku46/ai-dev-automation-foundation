@@ -200,12 +200,13 @@ class ProductCheckConfigTest(unittest.TestCase):
             {**base, "app_id": True},
             {**base, "app_id": 0},
             {**base, "extra": 1},
+            {**base, "name": "CI"},
         ]
         for item in invalid:
             with self.subTest(item=item):
                 with self.assertRaises(ProductCheckConfigError):
                     parse_validation_config(self.v2("free-only", [item]))
-        duplicate = [base, {**base, "name": "Second"}]
+        duplicate = [base, {**base, "name": "Second", "app_id": None}]
         with self.assertRaisesRegex(ProductCheckConfigError, "duplicate external"):
             parse_validation_config(self.v2("free-only", duplicate))
 
