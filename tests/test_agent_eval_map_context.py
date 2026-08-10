@@ -57,7 +57,15 @@ class MapAssistedTrialRequestTest(unittest.TestCase):
 
     def git_dir(self, metadata: Path, *args: str) -> str:
         completed = subprocess.run(
-            ["git", f"--git-dir={metadata}", *args],
+            [
+                "git",
+                f"--git-dir={metadata}",
+                "-c",
+                "user.name=Foundation Test",
+                "-c",
+                "user.email=foundation-test@invalid.local",
+                *args,
+            ],
             capture_output=True,
             text=True,
             check=False,
