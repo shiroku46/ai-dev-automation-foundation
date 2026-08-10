@@ -70,6 +70,35 @@ class AuthBootstrapTest(unittest.TestCase):
         self.assertEqual(login.state, "interactive_once")
         self.assertEqual(login.next_action, "run_wrangler_login_interactively")
 
+    def test_cloudflare_deployment_prefers_workers_builds_without_user_created_token(self):
+        missing = plan_authentication("cloudflare", route="deployment")
+        self.assertEqual(missing.state, "interactive_once")
+        self.assertTrue(missing.human_action_required)
+        self.assertEqual(
+            missing.next_action,
+            "connect_cloudflare_workers_builds_git_integration",
+        )
+        self.assertNotEqual(
+            missing.next_action,
+            "create_and_store_scoped_cloudflare_ci_credentials_once",
+        )
+
+        connected = plan_authentication(
+            "cloudflare",
+            route="deployment",
+            capabilities={"workers_builds_git_connected": True},
+        )
+        self.assertEqual(connected.state, "automatic")
+        self.assertFalse(connected.human_action_required)
+        self.assertEqual(
+            connected.next_action,
+            "use_cloudflare_workers_builds_git_integration",
+        )
+        self.assertNotEqual(
+            connected.next_action,
+            "create_and_store_scoped_cloudflare_ci_credentials_once",
+        )
+
     def test_cloudflare_ci_requires_scoped_prerequisites_when_missing(self):
         missing = plan_authentication("cloudflare", route="github_actions")
         self.assertEqual(missing.state, "manual_required")
@@ -92,6 +121,8 @@ class AuthBootstrapTest(unittest.TestCase):
             plan_authentication("github", capabilities={"token": True})
         with self.assertRaises(CapabilityError):
             plan_authentication("vercel", capabilities={"oidc_available": "yes"})
+        with self.assertRaises(CapabilityError):
+            plan_authentication("cloudflare", route="deployment", capabilities={"build_token": True})
         with self.assertRaises(CapabilityError):
             plan_authentication("cloudflare", route="unknown")
 
