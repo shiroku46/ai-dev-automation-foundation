@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.foundation_product_checks import ProductCheckConfigError, parse_product_checks
+from scripts.private_actions_guard import (
+    FOUNDATION_WORKFLOW_PATHS,
+    guard_private_actions_workflow,
+)
 
 GENERATED_TARGET_MARKER = "<!-- ai-dev-automation-foundation:generated-target -->"
 SOURCE_REPOSITORY = "shiroku46/ai-dev-automation-foundation"
@@ -40,14 +44,11 @@ MANAGED_FILES = (
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
     "scripts/foundation_product_checks.py", "scripts/external_validation.py",
-    "scripts/free_only_coordinator.py",
+    "scripts/free_only_coordinator.py", "scripts/private_actions_guard.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
     ".github/foundation-product-checks.json",
-    ".github/workflows/ci.yml", ".github/workflows/unit-tests.yml",
-    ".github/workflows/trusted-checks.yml", ".github/workflows/claude-queue.yml",
-    ".github/workflows/claude-queue-comment-bridge.yml",
-    ".github/workflows/ci-reconcile.yml", ".github/workflows/supervisor.yml",
+    *FOUNDATION_WORKFLOW_PATHS,
     ".github/ISSUE_TEMPLATE/ai-task.yml", ".github/pull_request_template.md",
 )
 # Compatibility name retained for existing Bootstrap consumers and tests.
@@ -197,6 +198,8 @@ def install_checklist(owner: str, mode: str) -> str:
 - [ ] Confirm the Foundation managed runtime exists on the default branch.
 - [ ] Treat GitHub as SCM, Issue, Pull Request, review, and connected-API infrastructure; private GitHub-hosted Actions are not a mandatory gate under `free-only`.
 - [ ] Configure target-owned `.github/foundation-product-checks.json` with schema v2 `execution_profile: free-only` and an explicitly trusted external validator when using the free-only route.
+- [ ] Foundation-managed GitHub Actions jobs in generated targets are guarded before runner allocation on private repositories; they run only for public repositories or when the owner explicitly sets `FOUNDATION_PRIVATE_ACTIONS_ENABLED=true`.
+- [ ] Bootstrap never creates or changes `FOUNDATION_PRIVATE_ACTIONS_ENABLED`; leave it unset unless the owner deliberately opts back into private GitHub-hosted Actions capacity.
 - [ ] Keep installed GitHub Actions workflows only as optional compatibility unless the current execution profile explicitly requires them; do not purchase hosted-runner capacity automatically.
 - [ ] Optionally set `AUTOMATION_OWNER` to `{owner}` when the repository owner is not the trusted coordinator.
 - [ ] Run `python scripts/public_export_guard.py .`, `python scripts/validate_repository.py`, and `python scripts/foundation_drift.py --root .` on a no-additional-cost runtime.
@@ -256,12 +259,16 @@ The fleet default cost policy is `free-only` unless the repository owner explici
 
 def _source_contents(owner: str, mode: str) -> dict[str, bytes]:
     contents: dict[str, bytes] = {}
+    guarded_paths = set(FOUNDATION_WORKFLOW_PATHS)
     for relative in MANAGED_FILES:
         _validate_relative_path(relative)
         source = ROOT / relative
         if not source.is_file() or source.is_symlink():
             raise FileNotFoundError(f"managed Foundation file is missing or unsafe: {relative}")
-        contents[relative] = source.read_bytes()
+        content = source.read_bytes()
+        if relative in guarded_paths:
+            content = guard_private_actions_workflow(content)
+        contents[relative] = content
     contents["INSTALL_CHECKLIST.md"] = install_checklist(owner, mode).encode("utf-8")
     return contents
 
