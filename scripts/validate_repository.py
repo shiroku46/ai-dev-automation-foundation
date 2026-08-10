@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate GitHub-only runtime, optional-provider isolation and Bootstrap parity."""
+"""Validate GitHub runtime, optional-provider isolation and Bootstrap parity."""
 from __future__ import annotations
 
 import hashlib
@@ -27,10 +27,12 @@ REQUIRED = {
     "README.md", "LICENSE", "SECURITY.md", "AGENTS.md", "CLAUDE.md",
     "docs/PROJECT_STARTUP.md", "docs/MINIMUM_SAFETY_PROFILE.md",
     "docs/OPERATING_RULES.md", "docs/PUBLIC_SECURITY_MODEL.md",
+    "docs/FREE_ONLY_OPERATING_PROFILE.md",
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
-    "scripts/foundation_product_checks.py",
+    "scripts/foundation_product_checks.py", "scripts/external_validation.py",
+    "scripts/free_only_coordinator.py",
     "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
     "scripts/supervisor_policy.py", "scripts/foundation_drift.py",
     PRODUCT_CHECKS_PATH,
@@ -258,6 +260,22 @@ def validate() -> None:
         "optional provider route unavailable; continue GitHub-direct work",
     ), "provider failure policy")
 
+    free_profile = text("docs/FREE_ONLY_OPERATING_PROFILE.md")
+    require(free_profile, (
+        "Free-only operating profile", "GitHub remains the source-control",
+        "Cloudflare Workers Builds", "OpenAI API usage is outside this profile",
+    ), "free-only operating profile")
+    external_validation = text("scripts/external_validation.py")
+    require(external_validation, (
+        "ExternalCheckRequirement", "exact-head", "pull_requests",
+        "app_slug", "external_checks_satisfied",
+    ), "external validation runtime")
+    free_coordinator = text("scripts/free_only_coordinator.py")
+    require(free_coordinator, (
+        "free-only", "default branch has not opted into free-only validation",
+        "external validation evidence changed during evaluation",
+        "expected-head", "ai-no-merge",
+    ), "free-only coordinator")
 
     if not generated_target:
         retired = (
@@ -285,10 +303,11 @@ def validate() -> None:
             "destination.write_bytes(sources[relative])", "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py", "scripts/queue_retry_identity.py",
             "scripts/queue_event_guard.py", "scripts/foundation_product_checks.py",
-            "scripts/github_api_governor.py",
+            "scripts/external_validation.py", "scripts/free_only_coordinator.py",
+            "docs/FREE_ONLY_OPERATING_PROFILE.md", "scripts/github_api_governor.py",
             "scripts/github_coordinator_supervisor.py", "scripts/supervisor_policy.py",
             ".github/workflows/supervisor.yml", "Codex and Claude setup is optional",
-            "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
+            "free-only", "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
         ), "Bootstrap")
 
 
