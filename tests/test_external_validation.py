@@ -32,6 +32,7 @@ def run(
 ):
     return {
         "id": run_id,
+        "started_at": f"2026-08-10T00:00:{run_id:02d}Z",
         "name": name,
         "head_sha": head,
         "status": status,
@@ -126,6 +127,15 @@ class ExternalValidationTest(unittest.TestCase):
         with self.assertRaisesRegex(ExternalValidationError, "check run id"):
             bad = run(10)
             bad["id"] = True
+            snapshot_external_checks(
+                [bad],
+                head_sha=HEAD,
+                pr_number=7,
+                requirements=[REQUIREMENT],
+            )
+        with self.assertRaisesRegex(ExternalValidationError, "started_at"):
+            bad = run(10)
+            bad.pop("started_at")
             snapshot_external_checks(
                 [bad],
                 head_sha=HEAD,
