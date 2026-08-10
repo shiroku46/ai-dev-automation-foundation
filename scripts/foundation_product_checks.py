@@ -111,7 +111,11 @@ def _external(item: dict[str, Any]) -> ExternalCheck:
     app_slug = _text(
         item.get("app_slug"), label="external app slug", limit=MAX_APP_SLUG_LENGTH
     ).casefold()
-    if _PROVIDER_RE.fullmatch(provider) is None or _APP_SLUG_RE.fullmatch(app_slug) is None:
+    if (
+        name.casefold() in {value.casefold() for value in RESERVED_CHECK_NAMES}
+        or _PROVIDER_RE.fullmatch(provider) is None
+        or _APP_SLUG_RE.fullmatch(app_slug) is None
+    ):
         raise ProductCheckConfigError("external provider identity is unsafe")
     app_id = item.get("app_id")
     if app_id is not None and (
@@ -163,7 +167,7 @@ def parse_validation_config(content: bytes | str) -> ProductValidationConfig:
     external_checks: list[ExternalCheck] = []
     names: set[str] = set()
     workflows: set[str] = set()
-    external_identities: set[tuple[str, int | None, str]] = set()
+    external_identities: set[tuple[str, str]] = set()
 
     for item in checks:
         if not isinstance(item, dict):
@@ -187,7 +191,7 @@ def parse_validation_config(content: bytes | str) -> ProductValidationConfig:
             workflows.add(parsed.workflow)
             workflow_checks.append(parsed)
         else:
-            identity = (parsed.app_slug, parsed.app_id, parsed.check_name)
+            identity = (parsed.app_slug, parsed.check_name)
             if identity in external_identities:
                 raise ProductCheckConfigError("checks contain a duplicate external identity")
             external_identities.add(identity)
