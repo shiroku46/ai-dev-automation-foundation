@@ -33,7 +33,9 @@ MANAGED_FILES = (
     "README.md", "LICENSE", "AGENTS.md", "CLAUDE.md", "SECURITY.md",
     "docs/PROJECT_STARTUP.md", "docs/MINIMUM_SAFETY_PROFILE.md",
     "docs/OPERATING_RULES.md", "docs/PUBLIC_SECURITY_MODEL.md",
+    "docs/AUTH_BOOTSTRAP.md", "docs/AUTH_DETECT.md", "docs/AUTH_SETUP.md",
     "scripts/public_export_guard.py", "scripts/validate_repository.py",
+    "scripts/auth_bootstrap.py", "scripts/auth_detect.py", "scripts/auth_setup.py",
     "scripts/queue_failure_classifier.py", "scripts/queue_issue_hydration.py",
     "scripts/queue_retry_identity.py", "scripts/queue_event_guard.py",
     "scripts/foundation_product_checks.py",
@@ -198,6 +200,15 @@ def install_checklist(owner: str, mode: str) -> str:
 - [ ] Complete one harmless branch/PR candidate with exact-head checks, GitHub coordinator review, zero unresolved threads, and expected-head merge.
 
 Codex and Claude setup is optional. Provider environment, credential, quota, account, setup or connection is not required for GitHub-only acceptance or product development.
+
+## Optional local provider authentication
+
+- [ ] Use `python scripts/auth_bootstrap.py <provider>` to plan a provider route from explicit non-secret capabilities; the planner never reads credential values.
+- [ ] Use `python scripts/auth_detect.py <provider>` to detect an existing GitHub CLI, Vercel CLI, or Wrangler login from exit status only; provider output is discarded.
+- [ ] Use `python scripts/auth_setup.py <provider>` to preview setup. Existing authenticated sessions are reused automatically and no login runs by default.
+- [ ] Only on a local interactive terminal, opt in to browser/device authentication with `python scripts/auth_setup.py <provider> --interactive`.
+- [ ] Missing provider CLIs are reported as `install_required`; Foundation never auto-installs them.
+- [ ] Cloudflare GitHub Actions API-token/account setup remains outside this local automatic setup and may still require one manual credential step.
 
 ## Installation identity
 
