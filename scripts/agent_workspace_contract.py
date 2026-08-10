@@ -6,7 +6,6 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
 MAX_MANIFEST_BYTES = 16_384
@@ -220,7 +219,12 @@ def _build(value: dict[str, object]) -> WorkspaceCapabilityManifest:
         },
         "workspace capability manifest",
     )
-    if top["schema_version"] != SCHEMA_VERSION:
+    schema_version = top["schema_version"]
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != SCHEMA_VERSION
+    ):
         raise WorkspaceCapabilityError("workspace capability schema version is unsupported")
 
     adapter_value = _object(
