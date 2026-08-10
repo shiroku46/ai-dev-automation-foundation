@@ -53,6 +53,12 @@ class BootstrapTest(unittest.TestCase):
         self.assertNotIn("bootstrap/generator.py", MANAGED_FILES)
         self.assertFalse(any(path.startswith("tests/") for path in MANAGED_FILES))
         for required in (
+            "docs/AUTH_BOOTSTRAP.md",
+            "docs/AUTH_DETECT.md",
+            "docs/AUTH_SETUP.md",
+            "scripts/auth_bootstrap.py",
+            "scripts/auth_detect.py",
+            "scripts/auth_setup.py",
             "scripts/foundation_drift.py",
             "scripts/queue_issue_hydration.py",
             "scripts/queue_retry_identity.py",
@@ -260,6 +266,14 @@ class BootstrapTest(unittest.TestCase):
                 GENERATED_TARGET_MARKER,
                 "## Phase 0",
                 "Codex and Claude setup is optional",
+                "## Optional local provider authentication",
+                "scripts/auth_bootstrap.py",
+                "scripts/auth_detect.py",
+                "scripts/auth_setup.py",
+                "--interactive",
+                "Existing authenticated sessions are reused automatically",
+                "never auto-installs them",
+                "Cloudflare GitHub Actions API-token/account setup remains outside",
                 "FOUNDATION.lock.json",
                 "## Non-destructive publication",
                 "connected GitHub App/API route",
