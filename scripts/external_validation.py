@@ -8,6 +8,9 @@ from typing import Any, Mapping, Sequence
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
+GITHUB_TIME_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
 MAX_REQUIREMENTS = 20
 MAX_CHECK_RUNS = 5000
 
@@ -146,6 +149,8 @@ def snapshot_external_checks(
                 continue
             run_id = _positive_int(run.get("id"), label="check run id")
             started_at = _text(run.get("started_at"), label="check run started_at", limit=64)
+            if GITHUB_TIME_RE.fullmatch(started_at) is None:
+                raise ExternalValidationError("check run started_at is malformed")
             matches.append((started_at, run_id, run, raw_app_id))
 
         if not matches:
