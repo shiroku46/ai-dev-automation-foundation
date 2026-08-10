@@ -12,11 +12,22 @@ from scripts.auth_bootstrap import CapabilityError, plan_authentication
 
 
 class AuthBootstrapTest(unittest.TestCase):
-    def test_github_prefers_connected_app(self):
-        plan = plan_authentication("github", capabilities={"github_app_connected": True})
-        self.assertEqual(plan.state, "automatic")
-        self.assertFalse(plan.human_action_required)
-        self.assertEqual(plan.next_action, "use_connected_github_app")
+    def test_github_prefers_connected_app_then_existing_cli(self):
+        app_plan = plan_authentication(
+            "github",
+            capabilities={"github_app_connected": True, "github_cli_authenticated": True},
+        )
+        self.assertEqual(app_plan.state, "automatic")
+        self.assertFalse(app_plan.human_action_required)
+        self.assertEqual(app_plan.next_action, "use_connected_github_app")
+
+        cli_plan = plan_authentication(
+            "github",
+            capabilities={"github_cli_authenticated": True},
+        )
+        self.assertEqual(cli_plan.state, "automatic")
+        self.assertFalse(cli_plan.human_action_required)
+        self.assertEqual(cli_plan.next_action, "use_existing_github_cli_session")
 
     def test_github_missing_connection_is_interactive_once(self):
         plan = plan_authentication("github")
