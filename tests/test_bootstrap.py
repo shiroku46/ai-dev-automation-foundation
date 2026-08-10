@@ -21,6 +21,10 @@ from bootstrap.generator import (
     plan_render,
     render,
 )
+from scripts.private_actions_guard import (
+    FOUNDATION_WORKFLOW_PATHS,
+    guard_private_actions_workflow,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SHA = "a" * 40
@@ -47,6 +51,15 @@ def render_new(target: Path):
     )
 
 
+def expected_managed_bytes(relative: str) -> bytes:
+    source = (ROOT / relative).read_bytes()
+    return (
+        guard_private_actions_workflow(source)
+        if relative in FOUNDATION_WORKFLOW_PATHS
+        else source
+    )
+
+
 class BootstrapTest(unittest.TestCase):
     def test_allowlist_alias_and_required_runtime_dependencies(self):
         self.assertEqual(ALLOWLIST, MANAGED_FILES)
@@ -64,6 +77,7 @@ class BootstrapTest(unittest.TestCase):
             "scripts/queue_retry_identity.py",
             "scripts/queue_event_guard.py",
             "scripts/foundation_product_checks.py",
+            "scripts/private_actions_guard.py",
             ".github/foundation-product-checks.json",
             "scripts/github_api_governor.py",
             "scripts/supervisor_policy.py",
@@ -96,7 +110,7 @@ class BootstrapTest(unittest.TestCase):
             for relative in MANAGED_FILES:
                 self.assertEqual(
                     (target / relative).read_bytes(),
-                    (ROOT / relative).read_bytes(),
+                    expected_managed_bytes(relative),
                     relative,
                 )
             lock = json.loads((target / LOCK_FILE).read_text(encoding="utf-8"))
@@ -175,7 +189,10 @@ class BootstrapTest(unittest.TestCase):
                 authorize_overwrite=[".github/workflows/ci.yml"],
             )
             self.assertIn(".github/workflows/ci.yml", plan.writes)
-            self.assertEqual(workflow.read_bytes(), (ROOT / ".github/workflows/ci.yml").read_bytes())
+            self.assertEqual(
+                workflow.read_bytes(),
+                guard_private_actions_workflow((ROOT / ".github/workflows/ci.yml").read_bytes()),
+            )
             with self.assertRaises(ValueError):
                 plan_render(target, "owner", mode="existing-product", authorize_overwrite=["../bad"])
 
@@ -213,8 +230,6 @@ class BootstrapTest(unittest.TestCase):
                     installed_at="2026-08-06T00:00:00Z",
                 )
             self.assertEqual(custom.read_bytes(), before)
-
-
 
     def test_malformed_existing_product_check_config_aborts_before_write(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -277,6 +292,8 @@ class BootstrapTest(unittest.TestCase):
                 "Cloudflare generates and manages the build API token by default",
                 "first Cloudflare/GitHub Git integration authorization",
                 "explicit external-CI fallback",
+                "FOUNDATION_PRIVATE_ACTIONS_ENABLED=true",
+                "Bootstrap never creates or changes `FOUNDATION_PRIVATE_ACTIONS_ENABLED`",
                 "FOUNDATION.lock.json",
                 "## Non-destructive publication",
                 "connected GitHub App/API route",
@@ -296,18 +313,16 @@ class BootstrapTest(unittest.TestCase):
             result = validate(target)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_generated_target_workflows_are_exact_source_bytes(self):
+    def test_generated_target_workflows_are_exact_guarded_source_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
             render_new(target)
-            for relative in (
-                ".github/workflows/ci.yml",
-                ".github/workflows/unit-tests.yml",
-                ".github/workflows/claude-queue.yml",
-                ".github/workflows/ci-reconcile.yml",
-                ".github/workflows/supervisor.yml",
-            ):
-                self.assertEqual((target / relative).read_bytes(), (ROOT / relative).read_bytes())
+            for relative in FOUNDATION_WORKFLOW_PATHS:
+                self.assertEqual(
+                    (target / relative).read_bytes(),
+                    guard_private_actions_workflow((ROOT / relative).read_bytes()),
+                    relative,
+                )
 
     def test_tampering_or_missing_managed_file_fails_validation(self):
         with tempfile.TemporaryDirectory() as directory:
