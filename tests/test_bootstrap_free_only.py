@@ -9,6 +9,11 @@ import unittest
 from pathlib import Path
 
 from bootstrap.generator import MANAGED_FILES, render
+from scripts.private_actions_guard import (
+    FOUNDATION_WORKFLOW_PATHS,
+    guarded_jobs,
+    validate_private_actions_workflow,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_SHA = "a" * 40
@@ -17,6 +22,7 @@ FREE_ONLY_MANAGED = {
     "docs/FREE_ONLY_OPERATING_PROFILE.md",
     "scripts/external_validation.py",
     "scripts/free_only_coordinator.py",
+    "scripts/private_actions_guard.py",
 }
 
 
@@ -54,6 +60,22 @@ class FreeOnlyBootstrapTest(unittest.TestCase):
             result = validate(target)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_generated_foundation_workflow_jobs_are_private_guarded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            render_new(target)
+            for relative in FOUNDATION_WORKFLOW_PATHS:
+                with self.subTest(relative=relative):
+                    content = (target / relative).read_bytes()
+                    validate_private_actions_workflow(content)
+                    jobs = guarded_jobs(content)
+                    self.assertGreater(len(jobs), 0)
+                    for job in jobs:
+                        self.assertIn(
+                            "vars.FOUNDATION_PRIVATE_ACTIONS_ENABLED == 'true'",
+                            job.condition,
+                        )
+
     def test_checklist_uses_free_only_cost_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory)
@@ -63,6 +85,8 @@ class FreeOnlyBootstrapTest(unittest.TestCase):
                 "Mandatory SCM and validation setup",
                 "execution_profile: free-only",
                 "private GitHub-hosted Actions are not a mandatory gate",
+                "FOUNDATION_PRIVATE_ACTIONS_ENABLED=true",
+                "Bootstrap never creates or changes `FOUNDATION_PRIVATE_ACTIONS_ENABLED`",
                 "Cloudflare Workers Builds is the first supported external validator",
                 "OpenAI API usage",
                 "new paid plan, overage, payment method, or API-billed AI service",
