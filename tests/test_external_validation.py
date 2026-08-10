@@ -142,6 +142,15 @@ class ExternalValidationTest(unittest.TestCase):
                 pr_number=7,
                 requirements=[REQUIREMENT],
             )
+        with self.assertRaisesRegex(ExternalValidationError, "started_at"):
+            bad = run(10)
+            bad["started_at"] = "not-a-github-timestamp"
+            snapshot_external_checks(
+                [bad],
+                head_sha=HEAD,
+                pr_number=7,
+                requirements=[REQUIREMENT],
+            )
 
     def test_optional_app_id_still_records_observed_exact_app(self):
         requirement = ExternalCheckRequirement(
