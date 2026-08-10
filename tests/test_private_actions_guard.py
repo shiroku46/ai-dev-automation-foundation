@@ -38,6 +38,36 @@ class PrivateActionsGuardTest(unittest.TestCase):
         self.assertEqual(text.count("FOUNDATION_PRIVATE_ACTIONS_ENABLED"), 2)
         validate_private_actions_workflow(guarded)
 
+    def test_existing_folded_condition_is_preserved_and_wrapped(self):
+        original = (
+            "      github.actor == github.repository_owner &&\n"
+            "      !github.event.issue.pull_request &&\n"
+            "      github.event.comment.body == '/claude-run'\n"
+        )
+        source = (
+            "name: x\n"
+            "on:\n"
+            "  issue_comment:\n"
+            "jobs:\n"
+            "  forward:\n"
+            "    if: >-\n"
+            + original
+            + "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo forward\n"
+        ).encode()
+        guarded = guard_private_actions_workflow(source)
+        text = guarded.decode()
+        self.assertIn("    if: >-\n", text)
+        self.assertIn(original, text)
+        self.assertIn(
+            f"      ({PRIVATE_ACTIONS_GUARD_EXPRESSION}) &&\n      (\n",
+            text,
+        )
+        self.assertIn("      )\n    runs-on: ubuntu-latest\n", text)
+        validate_private_actions_workflow(guarded)
+        self.assertEqual(guard_private_actions_workflow(guarded), guarded)
+
     def test_job_without_condition_gets_guard(self):
         source = b"""name: x\non:\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo test\n"""
         guarded = guard_private_actions_workflow(source)
@@ -52,12 +82,11 @@ class PrivateActionsGuardTest(unittest.TestCase):
         twice = guard_private_actions_workflow(once)
         self.assertEqual(twice, once)
 
-    def test_multiline_or_ambiguous_conditions_fail_closed(self):
+    def test_empty_or_malformed_block_condition_fails_closed(self):
         for condition in ("|", ">", "|-", ">-"):
             source = (
                 "name: x\non:\n  workflow_dispatch:\njobs:\n  test:\n"
                 f"    if: {condition}\n"
-                "      always()\n"
                 "    runs-on: ubuntu-latest\n"
             ).encode()
             with self.subTest(condition=condition):
