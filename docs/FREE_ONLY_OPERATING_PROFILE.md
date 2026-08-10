@@ -10,6 +10,16 @@ This profile is the default for this fleet unless the repository owner explicitl
 - The Foundation must never enable a paid plan, paid overage, payment method, billing feature, or usage-based service automatically.
 - OpenAI API usage is outside this profile. ChatGPT is the interactive AI control plane; deterministic build/test/deploy work may run on Cloudflare.
 
+## Private GitHub Actions cost guard
+
+Bootstrap-generated target copies of Foundation-managed GitHub Actions workflows are transformed deterministically so every job has a server-side guard before runner allocation:
+
+`github.event.repository.private == false || vars.FOUNDATION_PRIVATE_ACTIONS_ENABLED == 'true'`
+
+The public Foundation source workflow files are not rewritten by this policy, so the public Foundation repository can continue using its included public GitHub-hosted runners. In a generated private target, an unset `FOUNDATION_PRIVATE_ACTIONS_ENABLED` leaves the Foundation-managed jobs skipped. Bootstrap never creates or modifies this repository variable. The owner may explicitly set it to `true` later to opt back into legacy private Actions capacity.
+
+Product-owned workflows outside the Foundation managed-file set are not rewritten implicitly. Each such workflow needs its own reviewed migration or an explicit decision to retain it.
+
 ## Validation architecture
 
 SCM evidence and execution evidence are separate.
