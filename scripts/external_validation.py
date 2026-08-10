@@ -123,7 +123,7 @@ def snapshot_external_checks(
 
     result: list[ExternalCheckEvidence] = []
     for requirement in required:
-        matches: list[tuple[int, Mapping[str, Any], int | None]] = []
+        matches: list[tuple[str, int, Mapping[str, Any], int | None]] = []
         for run in check_runs:
             if not isinstance(run, Mapping):
                 continue
@@ -145,7 +145,8 @@ def snapshot_external_checks(
             if not _associated_with_pr(run, pr_number):
                 continue
             run_id = _positive_int(run.get("id"), label="check run id")
-            matches.append((run_id, run, raw_app_id))
+            started_at = _text(run.get("started_at"), label="check run started_at", limit=64)
+            matches.append((started_at, run_id, run, raw_app_id))
 
         if not matches:
             result.append(
@@ -160,10 +161,12 @@ def snapshot_external_checks(
             )
             continue
 
-        # GitHub check-run IDs are immutable monotonically allocated identities.
-        # The highest matching ID is the latest exact identity; stale success cannot
-        # mask a later pending/failing rerun.
-        run_id, selected, observed_app_id = max(matches, key=lambda item: item[0])
+        # Use GitHub's immutable check-run start timestamp as the primary ordering
+        # signal. The run ID is only a deterministic tie-breaker for equal timestamps.
+        # A stale success therefore cannot mask a later pending/failing rerun.
+        _started_at, run_id, selected, observed_app_id = max(
+            matches, key=lambda item: (item[0], item[1])
+        )
         result.append(
             ExternalCheckEvidence(
                 requirement.provider,
