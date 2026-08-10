@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "properties": {
+        "workspace": {
+          "properties": {
+            "git_metadata_visibility": {
+              "const": "external"
+            },
+            "host_filesystem_visible": {
+              "const": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "network": {
+          "properties": {
+            "supported_modes": {
+              "contains": {
+                "const": "deny-all"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "lifecycle": {
+          "properties": {
+            "controller_enforceable_cleanup": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "security": {
+          "properties": {
+            "host_credentials_visible": {
+              "const": false
+            },
+            "oidc_visible": {
+              "const": false
+            },
+            "provider_control_plane_mutation_available": {
+              "const": false
+            },
+            "repository_write_credentials_visible": {
+              "const": false
+            },
+            "secrets_visible": {
+              "const": false
+            }
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "adapter": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$",
+          "type": "string"
+        },
+        "revision_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "provider",
+        "revision_sha"
+      ],
+      "type": "object"
+    },
+    "credentials": {
+      "additionalProperties": false,
+      "properties": {
+        "supported_modes": {
+          "items": {
+            "enum": [
+              "brokered-egress",
+              "none"
+            ],
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "supported_modes"
+      ],
+      "type": "object"
+    },
+    "execution": {
+      "additionalProperties": false,
+      "properties": {
+        "command_transport": {
+          "enum": [
+            "argv",
+            "shell-string"
+          ],
+          "type": "string"
+        },
+        "max_execution_seconds": {
+          "maximum": 3600,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command_transport",
+        "max_execution_seconds"
+      ],
+      "type": "object"
+    },
+    "isolation": {
+      "additionalProperties": false,
+      "properties": {
+        "primitive": {
+          "enum": [
+            "container",
+            "microvm",
+            "process-isolated",
+            "vm-isolated-container"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive"
+      ],
+      "type": "object"
+    },
+    "lifecycle": {
+      "additionalProperties": false,
+      "properties": {
+        "cleanup_modes": {
+          "items": {
+            "enum": [
+              "destroy",
+              "reset",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "controller_enforceable_cleanup": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cleanup_modes",
+        "controller_enforceable_cleanup"
+      ],
+      "type": "object"
+    },
+    "network": {
+      "additionalProperties": false,
+      "properties": {
+        "supported_modes": {
+          "items": {
+            "enum": [
+              "allowlist",
+              "deny-all",
+              "unrestricted"
+            ],
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "supported_modes"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "security": {
+      "additionalProperties": false,
+      "properties": {
+        "host_credentials_visible": {
+          "type": "boolean"
+        },
+        "oidc_visible": {
+          "type": "boolean"
+        },
+        "provider_control_plane_mutation_available": {
+          "type": "boolean"
+        },
+        "repository_write_credentials_visible": {
+          "type": "boolean"
+        },
+        "secrets_visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "host_credentials_visible",
+        "oidc_visible",
+        "provider_control_plane_mutation_available",
+        "repository_write_credentials_visible",
+        "secrets_visible"
+      ],
+      "type": "object"
+    },
+    "workspace": {
+      "additionalProperties": false,
+      "properties": {
+        "git_metadata_visibility": {
+          "enum": [
+            "external",
+            "unknown",
+            "workspace-visible"
+          ],
+          "type": "string"
+        },
+        "host_filesystem_visible": {
+          "type": "boolean"
+        },
+        "persistence": {
+          "enum": [
+            "ephemeral",
+            "persistent",
+            "session-bounded"
+          ],
+          "type": "string"
+        },
+        "root": {
+          "maxLength": 256,
+          "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000-\\u001f\\\\])[^:]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "git_metadata_visibility",
+        "host_filesystem_visible",
+        "persistence",
+        "root"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "adapter",
+    "credentials",
+    "execution",
+    "isolation",
+    "lifecycle",
+    "network",
+    "schema_version",
+    "security",
+    "workspace"
+  ],
+  "title": "AI Development Foundation isolated workspace adapter capability",
+  "type": "object"
+}
