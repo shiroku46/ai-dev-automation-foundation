@@ -115,7 +115,18 @@ class AuthBootstrapTest(unittest.TestCase):
         self.assertNotIn(secret, first.stdout)
         payload = json.loads(first.stdout)
         self.assertEqual(payload["state"], "manual_required")
-        self.assertNotIn("token", json.dumps(payload).lower())
+        self.assertEqual(
+            set(payload),
+            {
+                "schema_version",
+                "provider",
+                "route",
+                "state",
+                "human_action_required",
+                "next_action",
+                "rationale_code",
+            },
+        )
 
     def test_cli_malformed_snapshot_returns_machine_readable_error(self):
         completed = subprocess.run(
