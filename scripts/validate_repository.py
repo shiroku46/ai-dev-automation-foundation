@@ -274,7 +274,7 @@ def validate() -> None:
     require(free_coordinator, (
         "free-only", "default branch has not opted into free-only validation",
         "external validation evidence changed during evaluation",
-        "expected-head", "ai-no-merge",
+        "client.merge(pr_number, decision.head_sha)", "ai-no-merge",
     ), "free-only coordinator")
 
     if not generated_target:
