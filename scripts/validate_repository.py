@@ -319,9 +319,9 @@ def validate() -> None:
             "scripts/queue_event_guard.py", "scripts/foundation_product_checks.py",
             "scripts/external_validation.py", "scripts/free_only_coordinator.py",
             "scripts/private_actions_guard.py", "guard_private_actions_workflow",
-            "docs/FREE_ONLY_OPERATING_PROFILE.md", "scripts/github_api_governor.py",
-            "scripts/github_coordinator_supervisor.py", "scripts/supervisor_policy.py",
-            ".github/workflows/supervisor.yml", "Codex and Claude setup is optional",
+            "FOUNDATION_WORKFLOW_PATHS", "docs/FREE_ONLY_OPERATING_PROFILE.md",
+            "scripts/github_api_governor.py", "scripts/github_coordinator_supervisor.py",
+            "scripts/supervisor_policy.py", "Codex and Claude setup is optional",
             "FOUNDATION_PRIVATE_ACTIONS_ENABLED", "free-only",
             "Non-destructive publication", "BOOTSTRAP_WORKFLOW_TOKEN",
         ), "Bootstrap")
