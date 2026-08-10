@@ -1,0 +1,37 @@
+name: Guarded workflow export probe
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/guarded-export-probe.yml"
+      - "tests/test_guarded_workflow_export_probe.py"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Render guarded workflow bytes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.private_actions_guard import FOUNDATION_WORKFLOW_PATHS, guard_private_actions_workflow
+          root = Path.cwd()
+          out = root / "guarded-workflows"
+          for relative in FOUNDATION_WORKFLOW_PATHS:
+              target = out / relative.removeprefix(".github/workflows/")
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(guard_private_actions_workflow((root / relative).read_bytes()))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: guarded-workflows
+          path: guarded-workflows
+          if-no-files-found: error
+          retention-days: 1
