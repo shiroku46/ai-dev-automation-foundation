@@ -172,24 +172,28 @@ def validate() -> None:
 
     supervisor = text(".github/workflows/supervisor.yml")
     require(supervisor, (
-        'workflows: ["CI", "Unit Tests"]', "issue_comment:", "schedule:",
+        'workflows: ["CI", "Unit Tests"]', "issue_comment:",
         "ref: ${{ github.event.repository.default_branch }}", "persist-credentials: false",
         "actions: read", "issues: read", "pull-requests: write", "contents: write",
         "python -m scripts.github_coordinator_supervisor",
     ), "GitHub coordinator supervisor")
+    if "schedule:" in supervisor:
+        raise ValidationError("GitHub coordinator supervisor must not have a scheduled trigger")
     for forbidden in ("secrets.", "id-token: write", "actions: write", "issues: write", "anthropic", "codex", "supervisor_queue_recovery"):
         if forbidden.lower() in supervisor.lower():
             raise ValidationError(f"Supervisor retains provider/write capability: {forbidden}")
 
     reconcile = text(".github/workflows/ci-reconcile.yml")
     require(reconcile, (
-        'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', "schedule:",
+        'workflows: ["CI", "Unit Tests", "Claude Issue Queue"]',
         "read-only compatibility observation", "queue_recovery:",
         "actions: write", "contents: write", "issues: read", "pull-requests: write",
         "queue-complete-", "queue-wip-", '["git", "apply", "--check"', '["git", "commit-tree"',
         "should_auto_retry", "max_retries = 3", "candidate_execution_with_write_token: `false`",
         "provider_invocation: false", "human_action_required: false",
     ), "CI reconciliation and bounded Queue recovery")
+    if "schedule:" in reconcile:
+        raise ValidationError("CI reconciliation must not have a scheduled trigger")
     observe = job(reconcile, "observe", "queue_recovery")
     require(observe, ("actions: read", "contents: read", "pull-requests: read"), "read-only CI observation")
     for forbidden in ("actions: write", "contents: write", "issues: write", "pull-requests: write", "secrets.", "id-token: write"):
