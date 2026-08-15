@@ -4,8 +4,6 @@ on:
   workflow_run:
     workflows: ["CI", "Unit Tests", "Claude Issue Queue"]
     types: [completed]
-  schedule:
-    - cron: "17 * * * *"
   workflow_dispatch:
   issue_comment:
     types: [created]
