@@ -124,7 +124,7 @@ class WorkflowSecurityTest(unittest.TestCase):
     def test_reconciliation_splits_read_only_observation_from_bounded_recovery(self):
         reconcile = read(".github/workflows/ci-reconcile.yml")
         self.assertIn('workflows: ["CI", "Unit Tests", "Claude Issue Queue"]', reconcile)
-        self.assertIn("schedule:", reconcile)
+        self.assertNotIn("schedule:", reconcile)
         self.assertIn("cancel-in-progress: false", reconcile)
         self.assertIn(
             "if: github.event_name == 'workflow_run' && "
@@ -282,7 +282,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             for index in range(1, len(chain))
         }
         self.assertFalse(linear(chain[-1], chain[0], fetch(graph), 32))
-        self.assertTrue(linear(chain[32], chain[0], fetch(graph), 32))
+        self.assertTrue(linear(chain[32], chain[0], fetch(graph), 32)
 
     def test_reconciliation_control_and_trusted_issue_identity(self):
         reconcile = read(".github/workflows/ci-reconcile.yml")
@@ -362,7 +362,7 @@ class WorkflowSecurityTest(unittest.TestCase):
         supervisor = read(".github/workflows/supervisor.yml")
         self.assertIn('workflows: ["CI", "Unit Tests"]', supervisor)
         self.assertIn("issue_comment:", supervisor)
-        self.assertIn("schedule:", supervisor)
+        self.assertNotIn("schedule:", supervisor)
         self.assertIn("workflow_dispatch:", supervisor)
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", supervisor)
         self.assertIn("persist-credentials: false", supervisor)
