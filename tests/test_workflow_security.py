@@ -282,7 +282,7 @@ class WorkflowSecurityTest(unittest.TestCase):
             for index in range(1, len(chain))
         }
         self.assertFalse(linear(chain[-1], chain[0], fetch(graph), 32))
-        self.assertTrue(linear(chain[32], chain[0], fetch(graph), 32)
+        self.assertTrue(linear(chain[32], chain[0], fetch(graph), 32))
 
     def test_reconciliation_control_and_trusted_issue_identity(self):
         reconcile = read(".github/workflows/ci-reconcile.yml")
